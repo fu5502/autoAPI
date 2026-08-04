@@ -1,0 +1,818 @@
+import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Copy, Filter, GitBranch, KeyRound, LogOut, RefreshCw, Route, Search, ShieldAlert } from "lucide-react";
+import { ApiError, api, clearAdminSession, hasAdminSession } from "./api";
+import { ChannelTable } from "./components/ChannelTable";
+import { ChannelEditor } from "./components/ChannelEditor";
+import { MetricStrip } from "./components/MetricStrip";
+import { ModelAliasDialog } from "./components/ModelAliasDialog";
+import { Playground } from "./components/Playground";
+import { ProviderDrawer } from "./components/ProviderDrawer";
+import { ProbeResultDialog } from "./components/ProbeResultDialog";
+import { GatewayKeyDialog } from "./components/GatewayKeyDialog";
+import { Sidebar } from "./components/Sidebar";
+import { StatusDot } from "./components/StatusDot";
+import type { AdminLoginRecord, Channel, Pool, ProbeResponse, RequestLogEntry, RequestLogPage, Usage, View } from "./types";
+
+const UsageChart = lazy(() => import("./components/UsageChart"));
+
+type HealthWindow = "1h" | "6h" | "12h" | "24h" | "7d";
+type HealthGroup = "default" | "status" | "requests";
+type HealthScope = "all" | "available" | "abnormal" | "no-data";
+type HealthSort = "available" | "requests";
+type HealthTone = "available" | "degraded" | "abnormal" | "no-data";
+
+export default function App() {
+  const queryClient = useQueryClient();
+  const [authenticated, setAuthenticated] = useState(() => hasAdminSession());
+  const [adminUsername, setAdminUsername] = useState("管理员");
+  const [view, setView] = useState<View>("overview");
+  const [usageWindow, setUsageWindow] = useState<Usage["window"]>("24h");
+  const [providerOpen, setProviderOpen] = useState(false);
+  const [aliasOpen, setAliasOpen] = useState(false);
+  const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
+  const [gatewayKeysOpen, setGatewayKeysOpen] = useState(false);
+  const [baseUrlCopied, setBaseUrlCopied] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [probeResult, setProbeResult] = useState<ProbeResponse | null>(null);
+  const [requestFilters, setRequestFilters] = useState({ window: "24h" as Usage["window"], limit: 20, offset: 0, client: "", channel: "", model: "", sourceIp: "", localOnly: false });
+  const [requestDraft, setRequestDraft] = useState(requestFilters);
+
+  const status = useQuery({ queryKey: ["status"], queryFn: api.status, enabled: authenticated, refetchInterval: 30_000 });
+  const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels, enabled: authenticated, refetchInterval: 30_000 });
+  const pools = useQuery({ queryKey: ["pools"], queryFn: api.pools, enabled: authenticated, refetchInterval: 30_000 });
+  const usage = useQuery({ queryKey: ["usage", usageWindow], queryFn: () => api.usage(usageWindow), enabled: authenticated, refetchInterval: 30_000 });
+  const requests = useQuery({ queryKey: ["requests", requestFilters], queryFn: () => api.requests(requestFilters), enabled: authenticated && view === "requests", refetchInterval: 30_000 });
+  const probe = useMutation({
+    mutationFn: api.probe,
+    onSuccess: (result) => {
+      setProbeResult(result);
+      void refreshAll(queryClient);
+    },
+    onError: (error) => setActionError(error instanceof Error ? error.message : "渠道探测失败，请重试。"),
+  });
+  const removeChannel = useMutation({
+    mutationFn: api.deleteChannel,
+    onSuccess: async () => {
+      setActionError(null);
+      await refreshAll(queryClient);
+    },
+    onError: (error) => setActionError(error instanceof Error ? error.message : "渠道删除失败，请重试。"),
+  });
+  const toggleChannel = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.setChannelEnabled(id, enabled),
+    onSuccess: () => void refreshAll(queryClient),
+  });
+
+  const authError = [status.error, channels.error, pools.error, usage.error, ...(view === "requests" ? [requests.error] : [])].find(
+    (error) => error instanceof ApiError && error.status === 401,
+  );
+  const loading = status.isLoading || channels.isLoading || pools.isLoading || usage.isLoading || (view === "requests" && requests.isLoading);
+  const failed = status.error ?? channels.error ?? pools.error ?? usage.error ?? (view === "requests" ? requests.error : null);
+  const showLogin = !authenticated;
+
+  useEffect(() => {
+    if (!authenticated) return;
+    let active = true;
+    void api.me().then((result) => {
+      if (active) setAdminUsername(result.username);
+    }).catch((error: unknown) => {
+      if (active && error instanceof ApiError && error.status === 401) {
+        clearAdminSession();
+        setAuthenticated(false);
+      }
+    });
+    return () => { active = false; };
+  }, [authenticated]);
+
+  if (showLogin) return <LoginPage onAuthenticated={authenticatedSuccessfully} />;
+
+  function refreshed() {
+    void refreshAll(queryClient);
+  }
+
+  function authenticatedSuccessfully(username: string) {
+    setAdminUsername(username);
+    setAuthenticated(true);
+    void queryClient.resetQueries();
+  }
+
+  function logout() {
+    clearAdminSession();
+    setAuthenticated(false);
+    setAdminUsername("管理员");
+    queryClient.clear();
+  }
+
+  function requestDelete(channel: Channel) {
+    if (!window.confirm(`确定删除渠道“${channel.name}”吗？该渠道的模型路由也会被删除。`)) return;
+    setActionError(null);
+    removeChannel.mutate(channel.id);
+  }
+
+  function toggle(channel: Channel) {
+    toggleChannel.mutate({ id: channel.id, enabled: !channel.enabled });
+  }
+
+  async function copyBaseUrl() {
+    const value = status.data?.gatewayBaseUrl;
+    if (!value) return;
+    try {
+      await copyText(value);
+      setBaseUrlCopied(true);
+      window.setTimeout(() => setBaseUrlCopied(false), 1800);
+    } catch {
+      setActionError("Base URL 复制失败，请手动复制。 ");
+    }
+  }
+
+  return (
+    <div className="app-shell">
+      <Sidebar view={view} onChange={setView} />
+      <main className="workspace">
+        <header className="topbar">
+          <div>
+            <span className="context-label">控制面板</span>
+            <h1>{pageTitle(view)}</h1>
+          </div>
+          <div className="top-actions">
+            <div className="gateway-endpoint">
+              <span>网关 Base URL</span>
+              <code className="mono">{status.data?.gatewayBaseUrl ?? "加载中…"}</code>
+              <button className="icon-button" title={baseUrlCopied ? "已复制" : "复制 Base URL"} aria-label={baseUrlCopied ? "已复制" : "复制 Base URL"} onClick={() => void copyBaseUrl()} disabled={!status.data?.gatewayBaseUrl}>{baseUrlCopied ? <Check size={15} /> : <Copy size={15} />}</button>
+            </div>
+            <span className="gateway-live"><span className="live-dot" /> 网关运行中</span>
+            <button className="icon-button" title="刷新数据" aria-label="刷新数据" onClick={refreshed}><RefreshCw size={16} /></button>
+            <button className="button secondary key-button" onClick={() => setGatewayKeysOpen(true)}><KeyRound size={15} /> 访问密钥</button>
+            <button className="button secondary security-button" onClick={() => setView("security")}><ShieldAlert size={15} /> {adminUsername}</button>
+            <button className="button primary" onClick={() => setProviderOpen(true)}><CirclePlus size={16} /> 添加渠道</button>
+          </div>
+        </header>
+        {actionError ? <div className="action-error" role="alert">{actionError}</div> : null}
+
+        {loading ? <LoadingState /> : failed && !authError ? <ErrorState error={failed} onRetry={refreshed} /> : null}
+        {!loading && !failed && status.data && channels.data && pools.data && usage.data ? (
+          <>
+            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} /> : null}
+            {view === "channels" ? <ChannelsView channels={channels.data} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} /> : null}
+            {view === "pools" ? <PoolsView pools={pools.data} onAddRoute={() => setAliasOpen(true)} /> : null}
+            {view === "usage" ? <UsageView usage={usage.data} window={usageWindow} onWindowChange={setUsageWindow} /> : null}
+            {view === "requests" ? <RequestsView page={requests.data} filters={requestFilters} draft={requestDraft} onDraftChange={setRequestDraft} onApply={() => setRequestFilters({ ...requestDraft, offset: 0 })} onRefresh={() => void requests.refetch()} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} /> : null}
+            {view === "playground" ? <Playground channels={channels.data} onUpdated={refreshed} /> : null}
+            {view === "security" ? <SecurityView username={adminUsername} onLogout={logout} /> : null}
+          </>
+        ) : null}
+      </main>
+      <ProviderDrawer open={providerOpen} onClose={() => setProviderOpen(false)} onCreated={refreshed} />
+      <GatewayKeyDialog open={gatewayKeysOpen} onClose={() => setGatewayKeysOpen(false)} />
+      <ChannelEditor channel={editingChannel} onClose={() => setEditingChannel(null)} onSaved={refreshed} />
+      <ProbeResultDialog result={probeResult} onClose={() => setProbeResult(null)} />
+      <ModelAliasDialog open={aliasOpen} channels={channels.data ?? []} onClose={() => setAliasOpen(false)} onCreated={refreshed} />
+    </div>
+  );
+}
+
+function Overview({
+  status,
+  channels,
+  pools,
+  usage,
+  probingId,
+  onProbe,
+  onEdit,
+  onDelete,
+  onToggle,
+  togglingId,
+  deletingId,
+}: {
+  status: NonNullable<ReturnType<typeof api.status> extends Promise<infer T> ? T : never>;
+  channels: Channel[];
+  pools: Pool[];
+  usage: Usage;
+  probingId: string | null;
+  onProbe: (id: string) => void;
+  onEdit: (channel: Channel) => void;
+  onDelete: (channel: Channel) => void;
+  onToggle: (channel: Channel) => void;
+  togglingId: string | null;
+  deletingId: string | null;
+}) {
+  const [healthWindow, setHealthWindow] = useState<HealthWindow>("6h");
+  const [healthGroup, setHealthGroup] = useState<HealthGroup>("default");
+  const [healthScope, setHealthScope] = useState<HealthScope>("all");
+  const [healthSort, setHealthSort] = useState<HealthSort>("available");
+  const visiblePools = pools.filter((pool) => healthScope === "all" || getPoolAvailability(pool, healthWindow).tone === healthScope);
+  const sortedPools = sortPoolsForHealth(visiblePools, healthWindow, healthSort, healthGroup);
+  const totalRequests = pools.reduce((sum, pool) => sum + getPoolHealthMetrics(pool, healthWindow).requests, 0);
+
+  return (
+    <div className="view-stack">
+      <MetricStrip status={status} />
+      <div className="overview-grid">
+        <section className="surface traffic-surface">
+          <SectionHead title="请求趋势" meta={`错误率 ${formatPercent(usage.errorRate)}`} />
+          <Suspense fallback={<div className="chart-frame skeleton" />}><UsageChart usage={usage} /></Suspense>
+        </section>
+      </div>
+      <section className="surface pool-health">
+        <div className="pool-health-toolbar">
+          <div className="pool-health-heading">
+            <h2>模型健康度</h2>
+            <span className="pool-health-total">监控 {visiblePools.length}/{pools.length} 个模型 · 总请求 {totalRequests.toLocaleString("zh-CN")}</span>
+          </div>
+          <span className="pool-health-refresh">每 60s 更新</span>
+        </div>
+        <div className="pool-health-filters">
+          <label className="pool-health-filter">
+            <span>时间范围</span>
+            <select aria-label="健康度时间范围" value={healthWindow} onChange={(event) => setHealthWindow(event.target.value as HealthWindow)}>
+              <option value="1h">近 1 小时</option>
+              <option value="6h">近 6 小时</option>
+              <option value="12h">近 12 小时</option>
+              <option value="24h">近 24 小时</option>
+              <option value="7d">近 7 天</option>
+            </select>
+          </label>
+          <label className="pool-health-filter">
+            <span>分组方式</span>
+            <select aria-label="健康度分组方式" value={healthGroup} onChange={(event) => setHealthGroup(event.target.value as HealthGroup)}>
+              <option value="default">默认分组</option>
+              <option value="status">按状态分组</option>
+              <option value="requests">按请求量分组</option>
+            </select>
+          </label>
+          <label className="pool-health-filter">
+            <span>模型范围</span>
+            <select aria-label="健康度模型范围" value={healthScope} onChange={(event) => setHealthScope(event.target.value as HealthScope)}>
+              <option value="all">全部模型</option>
+              <option value="available">正常模型</option>
+              <option value="abnormal">异常模型</option>
+              <option value="no-data">暂无数据</option>
+            </select>
+          </label>
+          <label className="pool-health-filter">
+            <span>排序方式</span>
+            <select aria-label="健康度排序方式" value={healthSort} onChange={(event) => setHealthSort(event.target.value as HealthSort)}>
+              <option value="available">可用优先</option>
+              <option value="requests">请求量优先</option>
+            </select>
+          </label>
+        </div>
+        <div className="pool-health-list">
+          {pools.length === 0 ? <div className="empty-state compact"><Route size={18} /><span>暂无模型池，请添加渠道并选择模型。</span></div> : sortedPools.length === 0 ? <div className="empty-state compact"><Route size={18} /><span>当前筛选条件下暂无模型。</span></div> : sortedPools.map((pool) => <PoolHealthCard pool={pool} window={healthWindow} key={pool.alias} />)}
+        </div>
+        {pools.length > 0 ? <PoolHealthLegend /> : null}
+      </section>
+      <section className="surface">
+        <SectionHead title="渠道运行情况" meta={`${channels.filter((channel) => channel.status === "isolated").length} 个已隔离`} />
+        <ChannelTable channels={channels} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} />
+      </section>
+    </div>
+  );
+}
+
+function PoolHealthCard({ pool, window }: { pool: Pool; window: HealthWindow }) {
+  const availability = getPoolAvailability(pool, window);
+  const metrics = getPoolHealthMetrics(pool, window);
+  const config = getHealthWindowConfig(window);
+  const successLabel = metrics.successRate === null ? "暂无请求" : `${formatPercent(metrics.successRate, 2)} 成功率`;
+  return (
+    <article className="pool-health-card">
+      <div className="pool-health-head">
+        <div className="pool-health-title">
+          <strong className="mono">{pool.alias}</strong>
+          <span className={`pool-health-status status-${availability.tone}`}>{availability.label}</span>
+        </div>
+        <div className="pool-health-summary">
+          <strong>{successLabel}</strong>
+          <span>{metrics.requests.toLocaleString("zh-CN")} 请求</span>
+        </div>
+      </div>
+      <div className="pool-health-timeline">
+        <HealthStrip points={metrics.points} durationMinutes={config.durationMinutes} label={`${pool.alias} ${config.label}健康状态`} />
+      </div>
+      <div className="pool-health-metrics">
+        <span>{config.startLabel}</span>
+        <span>{config.middleLabel}</span>
+        <span>现在</span>
+      </div>
+    </article>
+  );
+}
+
+function HealthStrip({ points, durationMinutes, label }: { points: Pool["recentHealth"]; durationMinutes: number; label: string }) {
+  const [hoveredBucket, setHoveredBucket] = useState<string | null>(null);
+  return <div className="pool-health-strip" style={{ gridTemplateColumns: `repeat(${Math.max(points.length, 1)}, minmax(0, 1fr))` }} aria-label={label}>
+    {points.map((point) => {
+      const tooltip = formatHealthPointTooltip(point, durationMinutes);
+      const hovered = hoveredBucket === point.bucket;
+      return <span className={`pool-health-cell-wrap${hovered ? " is-hovered" : ""}`} key={point.bucket} tabIndex={0} onMouseEnter={() => setHoveredBucket(point.bucket)} onMouseLeave={() => setHoveredBucket(null)} onFocus={() => setHoveredBucket(point.bucket)} onBlur={() => setHoveredBucket(null)}>
+        <span className={`pool-hour-cell hour-${point.status}`} aria-label={tooltip} />
+        <span className="pool-health-tooltip" role="tooltip" aria-hidden={!hovered}>
+          <strong>{formatHealthRange(point.bucket, durationMinutes)}</strong>
+          <span>总请求 <b>{point.requests}</b></span>
+          <span>成功数 <b>{point.successfulRequests}</b></span>
+          <span>成功率 <b>{point.successRate === null ? "—" : formatPercent(point.successRate, 2)}</b></span>
+        </span>
+      </span>;
+    })}
+  </div>;
+}
+
+function PoolHealthLegend() {
+  return (
+    <div className="pool-health-legend" aria-label="健康状态图例">
+      <span><i className="legend-swatch hour-available" /> 可用 ≥95%</span>
+      <span><i className="legend-swatch hour-degraded" /> 降级 80–95%</span>
+      <span><i className="legend-swatch hour-abnormal" /> 异常 &lt;80%</span>
+      <span><i className="legend-swatch hour-no_request" /> 无请求</span>
+    </div>
+  );
+}
+
+function ChannelsView({ channels, probingId, onProbe, onEdit, onDelete, onToggle, togglingId, deletingId }: { channels: Channel[]; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel) => void; togglingId: string | null; deletingId: string | null }) {
+  return (
+    <div className="view-stack">
+      <section className="channel-summary">
+        <div><span>已知余额</span><strong>{formatKnownBalance(channels)}</strong></div>
+        <div><span>余额未知</span><strong>{channels.filter((item) => item.balance === null).length}</strong></div>
+        <div><span>冷却中</span><strong>{channels.filter((item) => item.cooldownUntil).length}</strong></div>
+        <div><span>可用权重</span><strong>{channels.filter((item) => item.status === "healthy").reduce((sum, item) => sum + item.weight, 0)}</strong></div>
+      </section>
+      <section className="surface">
+        <SectionHead title="全部渠道" meta="实时健康状态与余额" />
+        <ChannelTable channels={channels} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} />
+      </section>
+      <section className="surface detail-list">
+        <SectionHead title="隔离详情" meta="自动熔断状态" />
+        {channels.filter((channel) => channel.status === "isolated" || channel.status === "degraded").map((channel) => (
+          <div className="detail-row" key={channel.id}>
+            <ShieldAlert size={17} />
+            <div><strong>{channel.name}</strong><span>{translateReason(channel.isolationReason)}</span></div>
+            <span>连续失败 {channel.consecutiveFailures} 次</span>
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => void }) {
+  const [expandedAliases, setExpandedAliases] = useState<Set<string>>(new Set());
+
+  function toggleExpanded(alias: string) {
+    setExpandedAliases((current) => {
+      const next = new Set(current);
+      if (next.has(alias)) next.delete(alias);
+      else next.add(alias);
+      return next;
+    });
+  }
+
+  return (
+    <div className="view-stack">
+      <section className="surface">
+          <SectionHead title="模型池" meta={`${pools.length} 个模型，${pools.reduce((sum, pool) => sum + pool.routes.length, 0)} 条渠道路由`} action={<button className="button secondary" onClick={onAddRoute}><GitBranch size={15} /> 添加路由</button>} />
+        <div className="pool-table-scroll">
+          <table className="pool-table">
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th>可用渠道</th>
+                <th>最近 1 小时</th>
+                <th>错误率</th>
+                <th>平均延迟</th>
+                <th>上游路由</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pools.length === 0 ? <tr><td className="empty-table-cell" colSpan={6}>暂无模型池。添加渠道并选择模型后，模型会进入池。</td></tr> : pools.map((pool) => {
+                const expanded = expandedAliases.has(pool.alias);
+                const hasMultipleChannels = pool.routes.length > 1;
+                return (
+                <tr key={pool.alias}>
+                  <td>
+                    <div className="pool-model-name">
+                      <Route size={16} />
+                      <span className="mono">{pool.alias}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <strong className="pool-health-count">{pool.healthyChannels}/{pool.channels}</strong>
+                  </td>
+                  <td>{pool.totalRequests1h.toLocaleString("zh-CN")} 次</td>
+                  <td className={pool.errorRate1h > 0 ? "danger-text" : "subtle"}>{pool.errorRate1h.toFixed(1)}%</td>
+                  <td>{pool.averageLatencyMs1h} ms</td>
+                  <td>
+                    <div className="pool-route-cell">
+                      <button className="pool-expand-button" type="button" onClick={() => toggleExpanded(pool.alias)} aria-expanded={expanded} disabled={!hasMultipleChannels}>
+                        <span className="pool-expand-icon" aria-hidden="true">{hasMultipleChannels ? (expanded ? "−" : "+") : "·"}</span>
+                        <span>{hasMultipleChannels ? (expanded ? `收起 ${pool.routes.length} 个渠道` : `${pool.routes.length} 个渠道`) : "1 个渠道"}</span>
+                      </button>
+                      {expanded ? <div className="pool-route-list">
+                        {pool.routes.map((route) => (
+                          <div className="pool-route-item" key={`${route.channelId}-${route.upstreamModel}`}>
+                            <div className="pool-route-main">
+                              <StatusDot status={route.status} />
+                              <span className="pool-route-channel">{route.channelName}</span>
+                              <span className="mono subtle">{route.upstreamModel}</span>
+                              <span className="pool-route-meta">P{route.priority}</span>
+                              <span className="pool-route-meta">W{route.weight}</span>
+                            </div>
+                            <div className="pool-route-health" aria-label={`${route.channelName} 近 24 小时每小时状态`}>
+                              <span className="pool-route-health-label">近 24h</span>
+                              <div className="pool-route-hour-grid">
+                                {route.hourlyHealth.map((point) => (
+                                  <span className={`pool-hour-cell hour-${point.status}`} key={point.bucket} title={formatHealthTooltip(point)} aria-label={formatHealthTooltip(point)} />
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div> : null}
+                    </div>
+                  </td>
+                </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function UsageView({ usage, window, onWindowChange }: { usage: Usage; window: Usage["window"]; onWindowChange: (window: Usage["window"]) => void }) {
+  return (
+    <div className="view-stack">
+      <div className="usage-toolbar">
+        <div className="segmented" aria-label="用量时间范围">{(["1h", "24h", "7d"] as const).map((value) => <button className={window === value ? "active" : ""} key={value} onClick={() => onWindowChange(value)}>{value}</button>)}</div>
+        <span>{(usage.promptTokens + usage.completionTokens).toLocaleString("zh-CN")} 令牌</span>
+      </div>
+      <section className="surface usage-chart-large">
+        <SectionHead title="请求与失败" meta={`共 ${usage.totalRequests} 次`} />
+        <Suspense fallback={<div className="chart-frame skeleton" />}><UsageChart usage={usage} /></Suspense>
+      </section>
+      <div className="two-columns">
+        <UsageBreakdown title="按模型" rows={usage.byModel} />
+        <UsageBreakdown title="按渠道" rows={usage.byChannel} />
+        <UsageBreakdown title="按客户端" rows={usage.byClient} />
+        <UsageBreakdown title="失败原因" rows={usage.byError} />
+      </div>
+    </div>
+  );
+}
+
+type RequestFilters = { window: Usage["window"]; limit: number; offset: number; client: string; channel: string; model: string; sourceIp: string; localOnly: boolean };
+
+function RequestsView({ page, filters, draft, onDraftChange, onApply, onRefresh, onPageChange }: { page: RequestLogPage | undefined; filters: RequestFilters; draft: RequestFilters; onDraftChange: (filters: RequestFilters) => void; onApply: () => void; onRefresh: () => void; onPageChange: (offset: number) => void }) {
+  const items = page?.items ?? [];
+  const total = page?.total ?? 0;
+  const from = total === 0 ? 0 : filters.offset + 1;
+  const to = Math.min(filters.offset + items.length, total);
+  const canPrevious = filters.offset > 0;
+  const canNext = Boolean(page?.hasMore);
+
+  function update<K extends keyof RequestFilters>(key: K, value: RequestFilters[K]) {
+    onDraftChange({ ...draft, [key]: value });
+  }
+
+  return (
+    <div className="view-stack requests-view">
+      <section className="surface requests-surface">
+        <div className="requests-heading">
+          <div>
+            <h2>最新请求</h2>
+            <p>按时间倒序查看网关实际转发记录，包含失败重试渠道。</p>
+          </div>
+          <div className="requests-heading-actions">
+            <span className="request-count"><span className="live-dot" /> 已加载 {items.length} 条</span>
+            <button className="icon-button" type="button" title="刷新请求" aria-label="刷新请求" onClick={onRefresh}><RefreshCw size={16} /></button>
+          </div>
+        </div>
+        <form className="requests-filters" onSubmit={(event) => { event.preventDefault(); onApply(); }}>
+          <label className="request-local-toggle"><input type="checkbox" checked={draft.localOnly} onChange={(event) => update("localOnly", event.target.checked)} /> 仅看本机</label>
+          <label>时间范围<select value={draft.window} onChange={(event) => update("window", event.target.value as Usage["window"])}><option value="1h">最近 1 小时</option><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option></select></label>
+          <label>每页条数<select value={draft.limit} onChange={(event) => update("limit", Number(event.target.value))}><option value={20}>20 条</option><option value={50}>50 条</option><option value={100}>100 条</option></select></label>
+          <label className="request-filter-search"><span>客户端 / 渠道 / 模型</span><div className="request-search-input"><Search size={14} /><input value={draft.client} onChange={(event) => update("client", event.target.value)} placeholder="搜索客户端" /></div></label>
+          <label>来源 IP<input value={draft.sourceIp} onChange={(event) => update("sourceIp", event.target.value)} placeholder="可选" /></label>
+          <button className="button secondary request-filter-button" type="submit"><Filter size={15} /> 应用筛选</button>
+        </form>
+        <div className="request-filter-secondary">
+          <label>渠道<input value={draft.channel} onChange={(event) => update("channel", event.target.value)} placeholder="渠道名称" /></label>
+          <label>模型<input value={draft.model} onChange={(event) => update("model", event.target.value)} placeholder="模型别名或上游模型" /></label>
+          <span className="request-range">{total ? `${from}-${to} / 共 ${total} 条` : "暂无请求记录"}</span>
+        </div>
+        <RequestTable items={items} />
+        <footer className="request-pagination">
+          <span>{page?.hasMore ? "还有更多请求" : total ? "已到列表末尾" : "调整筛选条件后重试"}</span>
+          <div><button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={!canPrevious} onClick={() => onPageChange(Math.max(0, filters.offset - filters.limit))}><ChevronLeft size={16} /></button><button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={!canNext} onClick={() => onPageChange(filters.offset + filters.limit)}><ChevronRight size={16} /></button></div>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function RequestTable({ items }: { items: RequestLogEntry[] }) {
+  if (items.length === 0) return <div className="request-empty"><Search size={22} /><strong>暂无请求</strong><span>请求经过网关后会出现在这里。</span></div>;
+  return (
+    <div className="request-table-scroll">
+      <table className="request-table">
+        <thead><tr><th>时间</th><th>客户端</th><th>同来源 / 渠道</th><th>流式</th><th>请求模型 → 转发模型</th><th>端点</th><th>输入</th><th>输出</th><th>缓存</th><th>费用</th><th>耗时</th><th>首字节</th></tr></thead>
+        <tbody>{items.map((item) => <RequestRow item={item} key={item.id} />)}</tbody>
+      </table>
+    </div>
+  );
+}
+
+function RequestRow({ item }: { item: RequestLogEntry }) {
+  const success = item.statusCode < 400;
+  const date = new Date(item.createdAt);
+  const clientLabel = item.clientName === "unknown" ? "未知客户端" : item.clientName;
+  return <tr className={success ? "" : "request-row-error"}>
+    <td className="request-time">{formatRequestTime(date)}</td>
+    <td><span className={`request-client request-client-${clientLabel.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`}>{clientLabel}</span></td>
+    <td><div className="request-source"><strong>{item.channelName ?? "未路由"}</strong><span>{item.sourceIp ?? item.providerName ?? "—"}</span></div></td>
+    <td><span className={item.streamed ? "request-pill stream" : "request-pill non-stream"}>{item.streamed ? "流式" : "非流式"}</span></td>
+    <td><div className="request-model"><strong>{item.modelAlias}</strong><span>→ <code>{item.upstreamModel ?? "—"}</code></span></div></td>
+    <td><code className="request-endpoint">{item.endpoint}</code></td>
+    <td className="request-number">{formatTokens(item.promptTokens)}</td>
+    <td className="request-number">{formatTokens(item.completionTokens)}</td>
+    <td className="request-number request-cache">{item.cachedTokens === null ? "—" : formatTokens(item.cachedTokens)}</td>
+    <td className="request-number">{item.costUsd === null ? "—" : `$${item.costUsd.toFixed(4)}`}</td>
+    <td><span className={success ? "request-metric good" : "request-metric bad"}>{formatDuration(item.latencyMs)}</span></td>
+    <td><span className="request-metric good">{item.firstByteLatencyMs === null ? "—" : formatDuration(item.firstByteLatencyMs)}</span></td>
+  </tr>;
+}
+
+function UsageBreakdown({ title, rows }: { title: string; rows: Usage["byModel"] }) {
+  return <section className="surface breakdown"><SectionHead title={title} meta={`${rows.length} 项`} />{rows.map((row) => <div className="breakdown-row" key={row.name}><div><strong>{row.name}</strong><span>平均 {row.latencyMs} ms</span></div><span>{row.requests} 次</span><span className={row.errors ? "danger-text" : "subtle"}>{row.errors} 错误</span></div>)}</section>;
+}
+
+function SectionHead({ title, meta, action }: { title: string; meta: string; action?: React.ReactNode }) {
+  return <header className="section-head"><div><h2>{title}</h2><span>{meta}</span></div>{action}</header>;
+}
+
+function LoginPage({ onAuthenticated }: { onAuthenticated: (username: string) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const username = String(form.get("username") ?? "").trim();
+    const password = String(form.get("password") ?? "");
+    setPending(true);
+    setError(null);
+    try {
+      const result = await api.login({ username, password });
+      onAuthenticated(result.username);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "登录失败，请重试。");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return <div className="login-layer"><form className="login-panel login-page-panel" onSubmit={submit}>
+    <span className="login-icon"><KeyRound size={20} /></span>
+    <div><h2>登录 autoAPI</h2><p>使用管理员账号进入控制台。</p></div>
+    {error ? <div className="form-error" role="alert">{error}</div> : null}
+    <label className="field"><span>用户名</span><input name="username" autoComplete="username" autoFocus required placeholder="管理员用户名" /></label>
+    <label className="field"><span>密码</span><input name="password" type="password" autoComplete="current-password" required placeholder="管理员密码" /></label>
+    <button className="button primary" disabled={pending}>{pending ? "登录中…" : "登录后台"}</button>
+  </form></div>;
+}
+
+function SecurityView({ username, onLogout }: { username: string; onLogout: () => void }) {
+  const history = useQuery({ queryKey: ["admin-login-history"], queryFn: api.loginHistory });
+  const changePassword = useMutation({ mutationFn: api.changePassword });
+  const [message, setMessage] = useState<string | null>(null);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const currentPassword = String(form.get("currentPassword") ?? "");
+    const newPassword = String(form.get("newPassword") ?? "");
+    const confirmPassword = String(form.get("confirmPassword") ?? "");
+    if (newPassword !== confirmPassword) {
+      setMessage("两次输入的新密码不一致。");
+      return;
+    }
+    const formElement = event.currentTarget;
+    setMessage(null);
+    changePassword.mutate({ currentPassword, newPassword }, {
+      onSuccess: () => {
+        formElement.reset();
+        setMessage("密码已修改，下次登录请使用新密码。");
+      },
+      onError: (error) => setMessage(error instanceof Error ? error.message : "密码修改失败。"),
+    });
+  }
+
+  return <div className="view-stack security-view">
+    <section className="security-summary">
+      <div><span>当前账号</span><strong>{username}</strong></div>
+      <div><span>会话状态</span><strong className="security-online">已登录</strong></div>
+      <button className="button secondary" onClick={onLogout}><LogOut size={15} /> 退出登录</button>
+    </section>
+    <div className="security-grid">
+      <section className="surface security-panel">
+        <SectionHead title="修改密码" meta="修改后立即生效" />
+        <form className="security-form" onSubmit={submit}>
+          <label className="field"><span>当前密码</span><input name="currentPassword" type="password" autoComplete="current-password" required /></label>
+          <label className="field"><span>新密码</span><input name="newPassword" type="password" autoComplete="new-password" minLength={8} required /><small>至少 8 个字符。</small></label>
+          <label className="field"><span>确认新密码</span><input name="confirmPassword" type="password" autoComplete="new-password" minLength={8} required /></label>
+          {message ? <div className="form-notice" role="status">{message}</div> : null}
+          <button className="button primary" disabled={changePassword.isPending}>{changePassword.isPending ? "保存中…" : "保存新密码"}</button>
+        </form>
+      </section>
+      <section className="surface security-panel login-history-panel">
+        <SectionHead title="登录历史" meta="最近 10 条，包含登录 IP" />
+        {history.isLoading ? <div className="security-empty">正在加载登录记录…</div> : history.error ? <div className="security-empty danger-text">登录记录加载失败。</div> : history.data?.length ? <div className="login-history-list">{history.data.map((record) => <LoginHistoryRow record={record} key={record.id} />)}</div> : <div className="security-empty">暂无登录记录。</div>}
+      </section>
+    </div>
+  </div>;
+}
+
+function LoginHistoryRow({ record }: { record: AdminLoginRecord }) {
+  return <div className="login-history-row">
+    <span className={`login-result ${record.success ? "success" : "failed"}`}>{record.success ? "成功" : "失败"}</span>
+    <div><strong>{record.ip}</strong><span>{record.username} · {formatDateTime(record.createdAt)}</span></div>
+    <span className="login-user-agent" title={record.userAgent}>{record.userAgent}</span>
+  </div>;
+}
+
+function LoadingState() {
+  return <div className="loading-layout"><div className="skeleton metric-placeholder" /><div className="skeleton chart-placeholder" /><div className="skeleton table-placeholder" /></div>;
+}
+
+function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return <div className="error-state"><Activity size={22} /><h2>控制面板暂时不可用</h2><p>{error instanceof Error ? error.message : "控制台加载失败。"}</p><button className="button secondary" onClick={onRetry}><RefreshCw size={15} /> 重试</button></div>;
+}
+
+function refreshAll(client: ReturnType<typeof useQueryClient>) {
+  return Promise.all([client.invalidateQueries({ queryKey: ["status"] }), client.invalidateQueries({ queryKey: ["channels"] }), client.invalidateQueries({ queryKey: ["pools"] }), client.invalidateQueries({ queryKey: ["usage"] })]);
+}
+
+function pageTitle(view: View) {
+  return { overview: "网关概览", channels: "渠道管理", pools: "模型路由", usage: "用量分析", requests: "调用请求", playground: "模型测试", security: "安全设置" }[view];
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(value));
+}
+
+function formatRequestTime(value: Date) {
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(value);
+}
+
+function formatTokens(value: number) {
+  if (!value) return "0";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
+  return value.toLocaleString("zh-CN");
+}
+
+function formatDuration(value: number) {
+  if (value < 1000) return `${value}ms`;
+  return `${(value / 1000).toFixed(value >= 10_000 ? 1 : 2)}s`;
+}
+
+function formatPercent(value: number, maximumFractionDigits = 1) {
+  return new Intl.NumberFormat("zh-CN", { style: "percent", maximumFractionDigits }).format(value);
+}
+
+function getPoolHealthMetrics(pool: Pool, window: HealthWindow) {
+  const points = window === "1h" ? pool.health1h
+    : window === "6h" ? pool.recentHealth
+      : window === "12h" ? pool.health12h
+        : window === "24h" ? pool.hourlyHealth
+          : pool.health7d;
+  const requests = points.reduce((sum, point) => sum + point.requests, 0);
+  const successfulRequests = points.reduce((sum, point) => sum + point.successfulRequests, 0);
+  return {
+    points,
+    requests,
+    successfulRequests,
+    successRate: requests === 0 ? null : successfulRequests / requests,
+  };
+}
+
+function getHealthWindowConfig(window: HealthWindow) {
+  return {
+    "1h": { label: "近 1 小时", durationMinutes: 5, startLabel: "1 小时前", middleLabel: "30 分钟前" },
+    "6h": { label: "近 6 小时", durationMinutes: 5, startLabel: "6 小时前", middleLabel: "3 小时前" },
+    "12h": { label: "近 12 小时", durationMinutes: 60, startLabel: "12 小时前", middleLabel: "6 小时前" },
+    "24h": { label: "近 24 小时", durationMinutes: 60, startLabel: "24 小时前", middleLabel: "12 小时前" },
+    "7d": { label: "近 7 天", durationMinutes: 24 * 60, startLabel: "7 天前", middleLabel: "3 天前" },
+  }[window];
+}
+
+function getPoolAvailability(pool: Pool, window: HealthWindow): { label: string; tone: HealthTone } {
+  const metrics = getPoolHealthMetrics(pool, window);
+  if (metrics.successRate === null) {
+    return { label: "暂无数据", tone: "no-data" };
+  }
+  if (metrics.successRate >= 0.8) return { label: "正常", tone: "available" };
+  return { label: "异常", tone: "abnormal" };
+}
+
+function formatHealthTooltip(point: Pool["hourlyHealth"][number]) {
+  const time = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit" }).format(new Date(point.bucket));
+  const status = point.status === "available" ? "可用" : point.status === "degraded" ? "降级" : point.status === "abnormal" ? "异常" : "无请求";
+  const success = point.successRate === null ? "无请求" : `成功率 ${formatPercent(point.successRate, 1)}`;
+  return `${time} · ${status} · 请求 ${point.requests} · 成功 ${point.successfulRequests} · ${success}`;
+}
+
+function formatHealthRange(value: string, durationMinutes: number) {
+  const start = new Date(value);
+  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  return `${formatRecentHealthTime(start)} ~ ${formatRecentHealthTime(end)}`;
+}
+
+function formatRecentHealthTime(value: Date) {
+  const parts = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(value);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  return `${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
+}
+
+function formatHealthPointTooltip(point: Pool["recentHealth"][number], durationMinutes: number) {
+  return `${formatHealthRange(point.bucket, durationMinutes)} · 总请求 ${point.requests} · 成功数 ${point.successfulRequests} · 成功率 ${point.successRate === null ? "—" : formatHealthPercent(point.successRate)}`;
+}
+
+function formatHealthPercent(value: number) {
+  return new Intl.NumberFormat("zh-CN", { style: "percent", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+}
+
+function sortPoolsForHealth(pools: Pool[], window: HealthWindow, sort: HealthSort, group: HealthGroup) {
+  const rank = { available: 0, degraded: 1, abnormal: 2, "no-data": 3 } as const;
+  return [...pools].sort((a, b) => {
+    const aMetrics = getPoolHealthMetrics(a, window);
+    const bMetrics = getPoolHealthMetrics(b, window);
+    const aAvailability = getPoolAvailability(a, window);
+    const bAvailability = getPoolAvailability(b, window);
+    if (group === "status") {
+      const rankDiff = rank[aAvailability.tone] - rank[bAvailability.tone];
+      if (rankDiff !== 0) return rankDiff;
+    }
+    if (group === "requests") {
+      const requestsDiff = bMetrics.requests - aMetrics.requests;
+      if (requestsDiff !== 0) return requestsDiff;
+    }
+    if (sort === "available") {
+      const rankDiff = rank[aAvailability.tone] - rank[bAvailability.tone];
+      if (rankDiff !== 0) return rankDiff;
+      const successDiff = (bMetrics.successRate ?? -1) - (aMetrics.successRate ?? -1);
+      if (successDiff !== 0) return successDiff;
+    } else {
+      const requestsDiff = bMetrics.requests - aMetrics.requests;
+      if (requestsDiff !== 0) return requestsDiff;
+    }
+    return a.alias.localeCompare(b.alias);
+  });
+}
+
+function formatHour(value: string | undefined) {
+  return value ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit" }).format(new Date(value)) : "—";
+}
+
+function formatLatency(value: number) {
+  if (value <= 0) return "—";
+  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 1 : 2)} s`;
+  return `${value.toLocaleString("zh-CN")} ms`;
+}
+
+function formatKnownBalance(channels: Channel[]) {
+  return `$${channels.reduce((sum, channel) => sum + (channel.balanceCurrency === "USD" ? channel.balance ?? 0 : 0), 0).toFixed(2)}`;
+}
+
+function translateReason(reason: string | null) {
+  const labels: Record<string, string> = {
+    balance_below_minimum: "余额低于最低阈值",
+    balance_exhausted: "余额不足",
+    rate_limited: "触发频率限制",
+    upstream_5xx: "上游服务错误",
+    connection_error: "连接失败",
+    timeout: "上游请求超时",
+  };
+  return reason ? labels[reason] ?? reason : "健康检查失败";
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "true");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) throw new Error("copy failed");
+}

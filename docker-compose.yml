@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: autoapi
+      POSTGRES_USER: autoapi
+      POSTGRES_PASSWORD: autoapi
+    volumes:
+      - autoapi-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autoapi -d autoapi"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - autoapi-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  autoapi:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      APP_MODE: production
+      HOST: 0.0.0.0
+      PORT: 8080
+      DATABASE_URL: postgres://autoapi:autoapi@postgres:5432/autoapi
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  autoapi-postgres:
+  autoapi-redis:

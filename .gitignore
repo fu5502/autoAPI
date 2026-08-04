@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.pnpm-store/
+coverage/
+playwright-report/
+test-results/
+.playwright-cli/
+*.log
+.autoapi-data/
+apps/api/.autoapi-data/
