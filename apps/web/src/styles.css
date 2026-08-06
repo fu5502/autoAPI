@@ -2000,8 +2000,6 @@ th:last-child {
 }
 
 .pool-route-list {
-  container-name: pool-route-list;
-  container-type: inline-size;
   display: grid;
   gap: 8px;
   margin-top: 9px;
@@ -2062,18 +2060,17 @@ th:last-child {
 
 .pool-route-main {
   display: grid;
-  grid-template-columns: max-content minmax(76px, 0.75fr) minmax(108px, 1fr) max-content max-content;
+  grid-template-columns: max-content minmax(40px, 1fr) max-content max-content;
   align-items: center;
   min-width: 0;
-  gap: 7px;
+  gap: 5px;
 }
 
 .pool-route-main .status {
   min-width: 52px;
 }
 
-.pool-route-channel,
-.pool-route-main .mono {
+.pool-route-channel {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2084,8 +2081,10 @@ th:last-child {
   display: inline-flex;
   align-items: baseline;
   gap: 3px;
+  justify-self: end;
   color: var(--faint);
   font-variant-numeric: tabular-nums;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -2093,23 +2092,6 @@ th:last-child {
   color: var(--muted);
   font-size: inherit;
   font-weight: 600;
-}
-
-@container pool-route-list (max-width: 360px) {
-  .pool-route-main {
-    grid-template-columns: max-content minmax(70px, 0.8fr) minmax(98px, 1.2fr);
-    row-gap: 4px;
-  }
-
-  .pool-route-conversation {
-    grid-column: 2;
-    grid-row: 2;
-  }
-
-  .pool-route-ping {
-    grid-column: 3;
-    grid-row: 2;
-  }
 }
 
 .pool-route-health {

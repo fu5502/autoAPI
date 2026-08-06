@@ -518,7 +518,6 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                             <div className="pool-route-main">
                               <StatusDot status={route.status} />
                               <span className="pool-route-channel" title={route.channelName}>{route.channelName}</span>
-                              <span className="mono subtle" title={route.upstreamModel}>{route.upstreamModel}</span>
                               <span className="pool-route-meta pool-route-conversation" title="最近 1 小时真实请求的平均响应耗时">
                                 <span>对话延迟</span>
                                 <strong>{formatLatency(route.conversationLatencyMs)}</strong>
