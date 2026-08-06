@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { Pool, type PoolClient } from "pg";
 import type {
   AdminAccount,
@@ -10,6 +11,8 @@ import type {
   PlaygroundSession,
   UsageEventInput,
 } from "../domain/types.js";
+import { hashGatewayKey } from "../security/gateway-key.js";
+import { createSecretBox } from "../security/secret-box.js";
 
 type PersistedUsage = UsageEventInput & { createdAt: string };
 
@@ -39,18 +42,25 @@ async function main() {
   if (!statePath) throw new Error("Usage: import-memory-state <state.json>");
   if (!connectionString) throw new Error("DATABASE_URL is required");
 
-  const state = parseState(await readFile(statePath, "utf8"));
+  const sourceCredentialKey = process.env.SOURCE_CREDENTIAL_ENCRYPTION_KEY;
+  const targetCredentialKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+  const gatewayApiKey = process.env.GATEWAY_API_KEY;
+  const prepared = prepareState(parseState(await readFile(statePath, "utf8")), {
+    sourceCredentialKey,
+    targetCredentialKey,
+    gatewayApiKey,
+  });
   const pool = new Pool({ connectionString, max: 2 });
   try {
     await migrateSchema(pool);
-    const result = await importState(pool, state);
-    console.log(JSON.stringify(result));
+    const result = await importState(pool, prepared.state);
+    console.log(JSON.stringify({ ...result, ...prepared.changes }));
   } finally {
     await pool.end();
   }
 }
 
-function parseState(raw: string): PersistedMemoryState {
+export function parseState(raw: string): PersistedMemoryState {
   const state = JSON.parse(raw) as Partial<PersistedMemoryState>;
   if (!Array.isArray(state.channels) || !Array.isArray(state.routes) || !Array.isArray(state.usage)) {
     throw new Error("Invalid memory state: channels, routes and usage must be arrays");
@@ -64,6 +74,52 @@ function parseState(raw: string): PersistedMemoryState {
     playgroundSessions: Array.isArray(state.playgroundSessions) ? state.playgroundSessions : [],
     adminAccount: state.adminAccount,
     adminLoginHistory: Array.isArray(state.adminLoginHistory) ? state.adminLoginHistory : [],
+  };
+}
+
+export function prepareState(
+  state: PersistedMemoryState,
+  options: {
+    sourceCredentialKey?: string | undefined;
+    targetCredentialKey?: string | undefined;
+    gatewayApiKey?: string | undefined;
+  },
+): { state: PersistedMemoryState; changes: { credentialsReencrypted: number; developmentGatewayKeysRotated: number } } {
+  let credentialsReencrypted = 0;
+  let developmentGatewayKeysRotated = 0;
+  let channels = state.channels;
+  let gatewayKeys = state.gatewayKeys;
+
+  if (options.sourceCredentialKey) {
+    if (!options.targetCredentialKey) {
+      throw new Error("CREDENTIAL_ENCRYPTION_KEY is required when SOURCE_CREDENTIAL_ENCRYPTION_KEY is set");
+    }
+    const source = createSecretBox(options.sourceCredentialKey);
+    const target = createSecretBox(options.targetCredentialKey);
+    channels = state.channels.map((channel) => {
+      const plaintext = source.decrypt(channel.keyCiphertext);
+      credentialsReencrypted += 1;
+      return { ...channel, keyCiphertext: target.encrypt(plaintext) };
+    });
+  }
+
+  if (options.gatewayApiKey) {
+    const developmentHash = hashGatewayKey("change-me-gateway");
+    gatewayKeys = state.gatewayKeys.map((key) => {
+      if (key.keyHash !== developmentHash) return key;
+      developmentGatewayKeysRotated += 1;
+      return {
+        ...key,
+        keyHash: hashGatewayKey(options.gatewayApiKey!),
+        keyLast4: options.gatewayApiKey!.slice(-4),
+        lastUsedAt: null,
+      };
+    });
+  }
+
+  return {
+    state: { ...state, channels, gatewayKeys },
+    changes: { credentialsReencrypted, developmentGatewayKeysRotated },
   };
 }
 
@@ -326,7 +382,9 @@ function normalizeIp(value?: string | null): string | null {
   return normalized === "localhost" ? "127.0.0.1" : normalized;
 }
 
-void main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
