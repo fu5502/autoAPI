@@ -22,6 +22,7 @@ import { createSecretBox } from "./security/secret-box.js";
 import { hashGatewayKey } from "./security/gateway-key.js";
 import { AdminAuthService } from "./security/admin-auth.js";
 import { createCheckinModule, registerCheckinRoutes, type CheckinModule } from "./checkin/module.js";
+import { registerBrowserProxy, type BrowserProxyController } from "./checkin/browser-proxy.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -69,6 +70,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await adminAuth.ensureAccount(config.adminUsername, config.adminPassword);
   const startCheckin = options.startCheckin ?? config.nodeEnv !== "test";
   const checkin = startCheckin ? createCheckinModule(store) : null;
+  let browserProxy: BrowserProxyController | null = null;
   const runtime = options.runtime ?? (config.appMode === "demo"
     ? new MemoryRuntimeState()
     : await RedisRuntimeState.connect(config.redisUrl));
@@ -115,6 +117,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
         return;
       }
     }, { agent });
+    browserProxy = await registerBrowserProxy(app, (token) => adminAuth.isValidToken(token));
   }
   await registerProxyRoutes(app, { router, store });
 
@@ -125,6 +128,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   app.addHook("onClose", async () => {
     agent.stop();
+    browserProxy?.close();
     await Promise.all([store.close(), runtime.close(), checkin?.close()]);
   });
   if (options.startAgent !== false && config.appMode === "production") agent.start();

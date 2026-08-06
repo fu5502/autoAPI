@@ -1080,19 +1080,50 @@ function EditSiteModal({ site, onClose, onSaved, notify }: {
 function AuthModal({ session, site, browserAccessUrl, channelImportMode = false, onClose, onCancel }: { session: AuthSessionState; site?: Site; browserAccessUrl?: string | null; channelImportMode?: boolean; onClose: () => void; onCancel: () => void }) {
   const waiting = session.status === 'waiting'
   const accountPasswordLogin = site?.adapter === 'sub2api' || site?.baseUrl === 'https://token.dialoguedui.com'
-  return <Modal title={waiting ? (channelImportMode ? '授权登录后导入渠道池' : '等待站点授权') : session.status === 'success' ? '授权成功' : '授权未完成'} description={channelImportMode ? '授权成功后会自动读取 API Key，并打开导入信息窗口' : '授权在隔离的 Chrome 配置中进行'} onClose={waiting ? onCancel : onClose}>
+  return <Modal className={waiting ? 'auth-browser-modal' : ''} title={waiting ? (channelImportMode ? '授权登录后导入渠道池' : '等待站点授权') : session.status === 'success' ? '授权成功' : '授权未完成'} description={channelImportMode ? '授权成功后会自动读取 API Key，并打开导入信息窗口' : '授权在隔离的 Chrome 配置中进行'} onClose={waiting ? onCancel : onClose}>
     <div className={`auth-state ${session.status}`}>
       <div className="auth-state-icon">{waiting ? <LoaderCircle className="spin" /> : session.status === 'success' ? <CheckCircle2 /> : <CircleAlert />}</div>
       <h3>{waiting ? (channelImportMode ? '完成登录后会自动继续导入' : '请在浏览器窗口中继续') : session.status === 'success' ? '站点已可以自动签到' : '需要重新尝试'}</h3>
       <p>{session.message}</p>
       {waiting && channelImportMode ? <p className="auth-import-note">无需再次点击导入按钮，授权完成后会自动显示 Key、Base URL 和导入结果。</p> : null}
-      {browserAccessUrl ? <p><a className="checkin-browser-link" href={browserAccessUrl} target="_blank" rel="noreferrer">打开 Docker 浏览器授权入口</a></p> : null}
+      {waiting ? <EmbeddedBrowser fallbackUrl={browserAccessUrl} /> : null}
       {waiting && (accountPasswordLogin
         ? <ol><li>在打开的页面输入站点账号和密码</li><li>完成人机验证并登录</li><li>登录成功后保持页面片刻，程序会自动识别</li></ol>
         : <ol><li>在打开的站点中点击站点提供的登录方式（Linux.do、GitHub 等）</li><li>完成第三方授权或人机验证</li><li>登录成功后保持页面片刻，程序会自动识别</li></ol>)}
     </div>
     <div className="modal-actions"><button className={`button ${waiting ? 'secondary' : 'primary'}`} onClick={waiting ? onCancel : onClose}>{waiting ? '取消授权' : '完成'}</button></div>
   </Modal>
+}
+
+function EmbeddedBrowser({ fallbackUrl }: { fallbackUrl?: string | null | undefined }) {
+  const [browserUrl, setBrowserUrl] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    setBrowserUrl(null)
+    setError(null)
+    void api.createBrowserSession()
+      .then((result) => {
+        if (active) setBrowserUrl(result.url)
+      })
+      .catch((cause) => {
+        if (active) setError(cause instanceof Error ? cause.message : '无法打开服务器浏览器')
+      })
+    return () => { active = false }
+  }, [])
+
+  const openUrl = browserUrl ?? fallbackUrl ?? null
+  return <div className="auth-browser-shell">
+    {browserUrl
+      ? <iframe title="服务器浏览器授权" className="checkin-browser-frame" src={browserUrl} />
+      : <div className="checkin-browser-loading"><LoaderCircle size={17} className="spin" /><span>{error ?? '正在连接服务器浏览器…'}</span></div>}
+    <div className="auth-browser-toolbar">
+      <span>{browserUrl ? '服务器浏览器已嵌入当前窗口' : error ? '嵌入浏览器连接失败，可使用备用入口' : '正在准备授权浏览器'}</span>
+      {openUrl ? <a className="checkin-browser-link" href={openUrl} target="_blank" rel="noreferrer">在新窗口打开授权浏览器</a> : null}
+    </div>
+    {error && !fallbackUrl ? <p className="auth-browser-error">{error}</p> : null}
+  </div>
 }
 
 function SiteDrawer({ site, results, onClose, onRun, onAuthorize }: { site: Site; results: CheckinResult[]; onClose: () => void; onRun: () => void; onAuthorize: () => void }) {

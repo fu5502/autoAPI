@@ -59,7 +59,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 docker compose up --build -d
 ```
 
-后台和网关统一运行在 `http://localhost:8080`。PostgreSQL 和 Redis 只在 Compose 内网开放，不映射到宿主机。签到授权浏览器默认通过 `http://localhost:6080/vnc.html?autoconnect=true` 访问，6080 默认只绑定本机；需要远程授权时，应将它放在 HTTPS 反向代理后，再把 `CHECKIN_VNC_BIND_ADDRESS` 配置为可访问地址。
+后台和网关统一运行在 `http://localhost:8080`。PostgreSQL 和 Redis 只在 Compose 内网开放，不映射到宿主机。签到授权时，后台会通过短期授权会话将服务器 noVNC 浏览器嵌入授权弹窗，6080 继续只绑定容器/服务器本机，不需要额外开放端口或建立 SSH 隧道；授权弹窗也保留新窗口打开入口作为备用。
 
 ### 管理后台登录
 

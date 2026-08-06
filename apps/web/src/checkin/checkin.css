@@ -1337,3 +1337,83 @@
 :root[data-theme="dark"] .checkin-module .channel-expand-button:hover {
   background: #17383b;
 }
+
+.checkin-modal-dialog.auth-browser-modal {
+  width: min(900px, calc(100vw - 36px)) !important;
+}
+
+.checkin-module .auth-browser-shell {
+  margin-top: 16px;
+  text-align: left;
+}
+
+.checkin-module .checkin-browser-frame,
+.checkin-module .checkin-browser-loading {
+  display: block;
+  width: 100%;
+  height: min(58vh, 620px);
+  min-height: 320px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0b1117;
+}
+
+.checkin-module .checkin-browser-frame {
+  color-scheme: dark;
+}
+
+.checkin-module .checkin-browser-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #b6c4ce;
+  font-size: 11px;
+}
+
+.checkin-module .auth-browser-toolbar {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.checkin-module .auth-browser-toolbar .checkin-browser-link {
+  flex: 0 0 auto;
+  color: var(--green);
+  text-decoration: none;
+}
+
+.checkin-module .auth-browser-toolbar .checkin-browser-link:hover {
+  text-decoration: underline;
+}
+
+.checkin-module .auth-browser-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .checkin-modal-dialog.auth-browser-modal {
+    width: min(100%, calc(100vw - 20px)) !important;
+  }
+
+  .checkin-module .checkin-browser-frame,
+  .checkin-module .checkin-browser-loading {
+    height: min(50vh, 440px);
+    min-height: 250px;
+  }
+
+  .checkin-module .auth-browser-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 0 2px;
+  }
+}

@@ -41,6 +41,7 @@ export const api = {
   refreshSiteFavicon: (id: number) => request<Site>(`/admin/checkin/sites/${id}/favicon/refresh`, { method: 'POST', body: '{}' }),
   deleteSite: (id: number) => request<void>(`/admin/checkin/sites/${id}`, { method: 'DELETE' }),
   authorizeSite: (id: number) => request<AuthSessionState>(`/admin/checkin/sites/${id}/authorize`, { method: 'POST', body: '{}' }),
+  createBrowserSession: () => request<{ url: string }>('/admin/checkin/browser/session', { method: 'POST', body: '{}' }),
   prepareChannelImport: (id: number) => request<ChannelImportPrepareResult>(`/admin/checkin/sites/${id}/channel-import/prepare`, { method: 'POST', body: '{}' }),
   discoverChannelImportModels: (id: number, candidateId: string) => request<ChannelImportModelResult>(`/admin/checkin/sites/${id}/channel-import/models`, { method: 'POST', body: JSON.stringify({ candidateId }) }),
   confirmChannelImport: (id: number, input: { candidateId: string; name: string; models: string[]; priority: number; weight: number; tags: string[] }) => request<ChannelImportResult>(`/admin/checkin/sites/${id}/channel-import/confirm`, { method: 'POST', body: JSON.stringify(input) }),
