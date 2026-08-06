@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
+    "import:memory-state": "tsx src/db/import-memory-state.ts",
     "migrate:checkin": "tsx src/checkin/migrate.ts",
     "backup:checkin": "tsx src/checkin/migrate.ts --backup",
     "test": "vitest run",

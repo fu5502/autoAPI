@@ -27,7 +27,7 @@ services:
   autoapi:
     build: .
     ports:
-      - "8080:8080"
+      - "${AUTOAPI_BIND_ADDRESS:-0.0.0.0}:${AUTOAPI_PORT:-8080}:8080"
       - "${CHECKIN_VNC_BIND_ADDRESS:-127.0.0.1}:${CHECKIN_VNC_PORT:-6080}:6080"
     env_file:
       - .env
