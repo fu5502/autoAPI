@@ -445,7 +445,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
       </div>
 
       {addOpen && <AddSiteModal onClose={() => setAddOpen(false)} onAdded={async (sites) => { setAddOpen(false); await refresh(true); if (sites.length === 1) void authorize(sites[0]!) }} notify={notify} />}
-      {authSession && state?.sites.find((site) => site.id === authSession.siteId) ? <AuthModal session={authSession} site={state.sites.find((site) => site.id === authSession.siteId)!} channelImportMode={pendingChannelImportSite?.id === authSession.siteId} {...(state.browserAccessUrl !== undefined ? { browserAccessUrl: state.browserAccessUrl } : {})} onClose={() => { setPendingChannelImportSite(null); setAuthSession(null) }} onCancel={async () => { const cancelled = await api.cancelAuthSession(authSession.id); setPendingChannelImportSite(null); setAuthSession(cancelled) }} /> : null}
+      {authSession && state?.sites.find((site) => site.id === authSession.siteId) ? <AuthModal session={authSession} site={state.sites.find((site) => site.id === authSession.siteId)!} channelImportMode={pendingChannelImportSite?.id === authSession.siteId} onClose={() => { setPendingChannelImportSite(null); setAuthSession(null) }} onCancel={async () => { const cancelled = await api.cancelAuthSession(authSession.id); setPendingChannelImportSite(null); setAuthSession(cancelled) }} /> : null}
       {channelImport && <ChannelImportModal site={channelImport.site} candidates={channelImport.candidates} onClose={() => setChannelImport(null)} onDiscoverModels={(candidateId) => api.discoverChannelImportModels(channelImport.site.id, candidateId)} onConfirm={confirmChannelImport} />}
       {channelBalanceLink && <ChannelBalanceLinkModal site={channelBalanceLink.site} channels={channelBalanceLink.channels} reason={channelBalanceLink.reason} onClose={() => setChannelBalanceLink(null)} onConfirm={confirmChannelBalanceLink} onCreate={createManualChannel} />}
       {channelImportStatus && <ChannelImportStatusModal status={channelImportStatus} onClose={() => setChannelImportStatus(null)} onRetry={() => {
@@ -1077,7 +1077,7 @@ function EditSiteModal({ site, onClose, onSaved, notify }: {
   </Modal>
 }
 
-function AuthModal({ session, site, browserAccessUrl, channelImportMode = false, onClose, onCancel }: { session: AuthSessionState; site?: Site; browserAccessUrl?: string | null; channelImportMode?: boolean; onClose: () => void; onCancel: () => void }) {
+function AuthModal({ session, site, channelImportMode = false, onClose, onCancel }: { session: AuthSessionState; site?: Site; channelImportMode?: boolean; onClose: () => void; onCancel: () => void }) {
   const waiting = session.status === 'waiting'
   const accountPasswordLogin = site?.adapter === 'sub2api' || site?.baseUrl === 'https://token.dialoguedui.com'
   return <Modal className={waiting ? 'auth-browser-modal' : ''} title={waiting ? (channelImportMode ? '授权登录后导入渠道池' : '等待站点授权') : session.status === 'success' ? '授权成功' : '授权未完成'} description={channelImportMode ? '授权成功后会自动读取 API Key，并打开导入信息窗口' : '授权在隔离的 Chrome 配置中进行'} onClose={waiting ? onCancel : onClose}>
@@ -1086,7 +1086,7 @@ function AuthModal({ session, site, browserAccessUrl, channelImportMode = false,
       <h3>{waiting ? (channelImportMode ? '完成登录后会自动继续导入' : '请在浏览器窗口中继续') : session.status === 'success' ? '站点已可以自动签到' : '需要重新尝试'}</h3>
       <p>{session.message}</p>
       {waiting && channelImportMode ? <p className="auth-import-note">无需再次点击导入按钮，授权完成后会自动显示 Key、Base URL 和导入结果。</p> : null}
-      {waiting ? <EmbeddedBrowser fallbackUrl={browserAccessUrl} /> : null}
+      {waiting ? <EmbeddedBrowser /> : null}
       {waiting && (accountPasswordLogin
         ? <ol><li>在打开的页面输入站点账号和密码</li><li>完成人机验证并登录</li><li>登录成功后保持页面片刻，程序会自动识别</li></ol>
         : <ol><li>在打开的站点中点击站点提供的登录方式（Linux.do、GitHub 等）</li><li>完成第三方授权或人机验证</li><li>登录成功后保持页面片刻，程序会自动识别</li></ol>)}
@@ -1095,7 +1095,7 @@ function AuthModal({ session, site, browserAccessUrl, channelImportMode = false,
   </Modal>
 }
 
-function EmbeddedBrowser({ fallbackUrl }: { fallbackUrl?: string | null | undefined }) {
+function EmbeddedBrowser() {
   const [browserUrl, setBrowserUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -1113,16 +1113,15 @@ function EmbeddedBrowser({ fallbackUrl }: { fallbackUrl?: string | null | undefi
     return () => { active = false }
   }, [])
 
-  const openUrl = browserUrl ?? fallbackUrl ?? null
   return <div className="auth-browser-shell">
     {browserUrl
       ? <iframe title="服务器浏览器授权" className="checkin-browser-frame" src={browserUrl} />
       : <div className="checkin-browser-loading"><LoaderCircle size={17} className="spin" /><span>{error ?? '正在连接服务器浏览器…'}</span></div>}
     <div className="auth-browser-toolbar">
       <span>{browserUrl ? '服务器浏览器已嵌入当前窗口' : error ? '嵌入浏览器连接失败，可使用备用入口' : '正在准备授权浏览器'}</span>
-      {openUrl ? <a className="checkin-browser-link" href={openUrl} target="_blank" rel="noreferrer">在新窗口打开授权浏览器</a> : null}
+      {browserUrl ? <a className="checkin-browser-link" href={browserUrl} target="_blank" rel="noreferrer">在新窗口打开授权浏览器</a> : null}
     </div>
-    {error && !fallbackUrl ? <p className="auth-browser-error">{error}</p> : null}
+    {error ? <p className="auth-browser-error">{error}</p> : null}
   </div>
 }
 
