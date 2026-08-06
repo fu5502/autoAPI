@@ -5,6 +5,7 @@ import { loadConfig } from "../config.js";
 import { MemoryStore } from "../db/memory-store.js";
 import { MemoryRuntimeState } from "../runtime/runtime-state.js";
 import { createSecretBox } from "../security/secret-box.js";
+import { hashGatewayKey } from "../security/gateway-key.js";
 import { addHealthyChannel, startMockUpstream } from "../test/test-helpers.js";
 
 const resources: FastifyInstance[] = [];
@@ -117,5 +118,153 @@ describe("proxy HTTP surface", () => {
         { role: "user", content: "hello" },
       ],
     });
+  });
+
+  it("preserves Codex function-call loops when Responses falls back to Chat Completions", async () => {
+    let capturedBody: Record<string, unknown> | null = null;
+    const mock = await startMockUpstream((upstream) => {
+      upstream.post("/v1/responses", async (_, reply) => reply.code(404).send({ error: { message: "not supported" } }));
+      upstream.post("/v1/chat/completions", async (request) => {
+        capturedBody = request.body as Record<string, unknown>;
+        return {
+          id: "chatcmpl-tools",
+          object: "chat.completion",
+          choices: [{
+            index: 0,
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "call_next", type: "function", function: { name: "write_file", arguments: "{\"path\":\"notes.txt\"}" } }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 },
+        };
+      });
+    });
+    resources.push(mock.app);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-tools-token",
+      GATEWAY_API_KEY: "gateway-tools-token",
+      CREDENTIAL_ENCRYPTION_KEY: "bridge-tools-encryption-key",
+      UPSTREAM_TIMEOUT_MS: "1000",
+    });
+    const store = new MemoryStore();
+    await addHealthyChannel(store, createSecretBox(config.credentialEncryptionKey), { name: "tool-bridge", baseUrl: mock.baseUrl, model: "gpt-tools" });
+    const built = await buildApp({ config, store, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(built.app);
+
+    const response = await built.app.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: { authorization: "Bearer gateway-tools-token", "user-agent": "Codex/1.0" },
+      payload: {
+        model: "gpt-tools",
+        input: [
+          { type: "function_call", call_id: "call_previous", name: "read_file", arguments: "{\"path\":\"notes.txt\"}" },
+          { type: "function_call_output", call_id: "call_previous", output: "existing notes" },
+        ],
+        tools: [{ type: "function", name: "write_file", description: "Write a file", parameters: { type: "object" }, strict: true }],
+        tool_choice: { type: "function", name: "write_file" },
+        max_output_tokens: 200,
+        stream: false,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(capturedBody).toMatchObject({
+      messages: [
+        { role: "assistant", tool_calls: [{ id: "call_previous", function: { name: "read_file" } }] },
+        { role: "tool", tool_call_id: "call_previous", content: "existing notes" },
+      ],
+      tools: [{ type: "function", function: { name: "write_file", description: "Write a file", parameters: { type: "object" }, strict: true } }],
+      tool_choice: { type: "function", function: { name: "write_file" } },
+      max_completion_tokens: 200,
+    });
+    expect(response.json().output).toEqual([
+      expect.objectContaining({ type: "function_call", call_id: "call_next", name: "write_file", arguments: "{\"path\":\"notes.txt\"}" }),
+    ]);
+  });
+
+  it("records the actual gateway key name used by each client request", async () => {
+    const mock = await startMockUpstream((upstream) => {
+      upstream.post("/v1/chat/completions", async () => ({
+        id: "chatcmpl-key-name",
+        object: "chat.completion",
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 2, completion_tokens: 1 },
+      }));
+    });
+    resources.push(mock.app);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-test-token",
+      GATEWAY_API_KEY: "unused-environment-key",
+      CREDENTIAL_ENCRYPTION_KEY: "gateway-key-name-encryption-key",
+      UPSTREAM_TIMEOUT_MS: "1000",
+    });
+    const store = new MemoryStore();
+    await store.createGatewayKey("WorkBuddy", hashGatewayKey("workbuddy-token"), "oken");
+    await store.createGatewayKey("cc", hashGatewayKey("cc-token"), "oken");
+    await addHealthyChannel(store, createSecretBox(config.credentialEncryptionKey), { name: "key-name-channel", baseUrl: mock.baseUrl, model: "gpt-key-name" });
+    const built = await buildApp({ config, store, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(built.app);
+
+    for (const token of ["workbuddy-token", "cc-token"]) {
+      const response = await built.app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        headers: { "x-api-key": token },
+        payload: { model: "gpt-key-name", messages: [{ role: "user", content: "hello" }] },
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const logs = await built.app.inject({ method: "GET", url: "/admin/requests?window=1h&limit=10", headers: { authorization: "Bearer admin-test-token" } });
+    expect(logs.statusCode).toBe(200);
+    expect(logs.json().items.map((item: { gatewayKeyName: string }) => item.gatewayKeyName)).toEqual(["cc", "WorkBuddy"]);
+  });
+
+  it("records reasoning effort from OpenAI-compatible requests", async () => {
+    const mock = await startMockUpstream((upstream) => {
+      upstream.post("/v1/chat/completions", async () => ({
+        id: "chatcmpl-reasoning",
+        object: "chat.completion",
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 2, completion_tokens: 1 },
+      }));
+    });
+    resources.push(mock.app);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-test-token",
+      GATEWAY_API_KEY: "gateway-test-token",
+      CREDENTIAL_ENCRYPTION_KEY: "reasoning-effort-encryption-key",
+      UPSTREAM_TIMEOUT_MS: "1000",
+    });
+    const store = new MemoryStore();
+    await addHealthyChannel(store, createSecretBox(config.credentialEncryptionKey), { name: "reasoning-channel", baseUrl: mock.baseUrl, model: "gpt-reasoning" });
+    const built = await buildApp({ config, store, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(built.app);
+
+    const response = await built.app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { authorization: "Bearer gateway-test-token" },
+      payload: {
+        model: "gpt-reasoning",
+        reasoning: { effort: "high" },
+        messages: [{ role: "user", content: "hello" }],
+      },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const logs = await built.app.inject({ method: "GET", url: "/admin/requests?window=1h&limit=10", headers: { authorization: "Bearer admin-test-token" } });
+    expect(logs.statusCode).toBe(200);
+    expect(logs.json().items[0]).toMatchObject({ modelAlias: "gpt-reasoning", reasoningEffort: "high" });
   });
 });

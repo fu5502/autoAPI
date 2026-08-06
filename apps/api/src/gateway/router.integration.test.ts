@@ -19,6 +19,8 @@ afterEach(async () => {
 
 describe("gateway router failover", () => {
   it.each([
+    [401, "upstream_auth_failed"],
+    [403, "upstream_auth_failed"],
     [429, "rate_limited"],
     [503, "upstream_5xx"],
   ])("replays a non-streaming request after upstream %s", async (statusCode, expectedError) => {
@@ -39,6 +41,16 @@ describe("gateway router failover", () => {
     expect(store.usage).toHaveLength(2);
     expect(store.usage[0]?.errorType).toBe(expectedError);
     expect(store.usage[1]?.retryCount).toBe(1);
+  });
+
+  it("does not degrade a channel for a non-retryable client request error", async () => {
+    const rejected = await mockJson((_, reply) => reply.code(400).send({ error: { message: "invalid request payload" } }));
+    const { router, store, secrets } = testRouter();
+    const channel = await addHealthyChannel(store, secrets, { name: "client-error", baseUrl: rejected.baseUrl, priority: 20 });
+
+    await expect(router.execute(gatewayRequest(false))).rejects.toMatchObject({ statusCode: 400, errorType: "upstream_rejected" });
+    expect(await store.getChannel(channel.id)).toMatchObject({ status: "healthy", consecutiveFailures: 0, isolationReason: null });
+    expect(store.usage[0]).toMatchObject({ statusCode: 400, errorType: "upstream_rejected" });
   });
 
   it("skips a channel disabled after candidate selection", async () => {
@@ -88,6 +100,44 @@ describe("gateway router failover", () => {
     expect(calls).toEqual(["first", "second", "first"]);
   });
 
+  it("keeps using a successful fallback and advances to the next healthy channel after another failure", async () => {
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    let reserveCalls = 0;
+    let fallbackAvailable = true;
+    const primary = await mockJson((_, reply) => {
+      primaryCalls += 1;
+      return reply.code(503).send({ error: { message: "primary unavailable" } });
+    });
+    const fallback = await mockJson((_, reply) => {
+      fallbackCalls += 1;
+      return fallbackAvailable
+        ? reply.send(completion("fallback-response"))
+        : reply.code(503).send({ error: { message: "fallback unavailable" } });
+    });
+    const reserve = await mockJson((_, reply) => {
+      reserveCalls += 1;
+      return reply.send(completion("reserve-response"));
+    });
+    const { router, store, secrets } = testRouter();
+    const primaryChannel = await addHealthyChannel(store, secrets, { name: "primary", baseUrl: primary.baseUrl, priority: 30 });
+    const fallbackChannel = await addHealthyChannel(store, secrets, { name: "fallback", baseUrl: fallback.baseUrl, priority: 20 });
+    const reserveChannel = await addHealthyChannel(store, secrets, { name: "reserve", baseUrl: reserve.baseUrl, priority: 10 });
+
+    expect((await router.execute(gatewayRequest(false))).channelId).toBe(fallbackChannel.id);
+    expect((await router.execute(gatewayRequest(false))).channelId).toBe(fallbackChannel.id);
+    expect(primaryCalls).toBe(1);
+    expect(fallbackCalls).toBe(2);
+
+    fallbackAvailable = false;
+    expect((await router.execute(gatewayRequest(false))).channelId).toBe(reserveChannel.id);
+    expect((await router.execute(gatewayRequest(false))).channelId).toBe(reserveChannel.id);
+    expect(primaryCalls).toBe(1);
+    expect(fallbackCalls).toBe(3);
+    expect(reserveCalls).toBe(2);
+    expect((await store.getChannel(primaryChannel.id))?.status).toBe("degraded");
+  });
+
   it("switches streams when the first upstream ends before emitting an event", async () => {
     let fallbackCalls = 0;
     const failing = await mockStream((_request, reply) => {
@@ -127,7 +177,7 @@ describe("gateway router failover", () => {
       return reply.send("data: fallback-must-not-appear\n\n");
     });
     const { router, store, secrets } = testRouter();
-    await addHealthyChannel(store, secrets, { name: "primary", baseUrl: interrupted.baseUrl, priority: 20 });
+    const primary = await addHealthyChannel(store, secrets, { name: "primary", baseUrl: interrupted.baseUrl, priority: 20 });
     await addHealthyChannel(store, secrets, { name: "fallback", baseUrl: fallback.baseUrl, priority: 20 });
 
     const output = await readBody((await router.execute(gatewayRequest(true))).body);
@@ -135,17 +185,80 @@ describe("gateway router failover", () => {
     expect(output).toContain("upstream_stream_interrupted");
     expect(output).not.toContain("fallback-must-not-appear");
     expect(fallbackCalls).toBe(0);
+    expect(store.usage).toHaveLength(1);
+    expect(store.usage[0]).toMatchObject({ channelId: primary.id, statusCode: 502, errorType: "upstream_stream_interrupted" });
+    expect(await store.getChannel(primary.id)).toMatchObject({ status: "degraded", consecutiveFailures: 1 });
+  });
+
+  it("uses the timeout for connection and first byte without cutting off a healthy long stream", async () => {
+    const upstream = await mockStream((_request, reply) => {
+      reply.hijack();
+      reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+      reply.raw.write("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n");
+      setTimeout(() => reply.raw.end("data: {\"choices\":[{\"delta\":{\"content\":\"-later\"}}]}\n\ndata: [DONE]\n\n"), 80);
+      return reply;
+    });
+    const { router, store, secrets } = testRouter(new MemoryStore(), 30);
+    await addHealthyChannel(store, secrets, { name: "long-stream", baseUrl: upstream.baseUrl });
+
+    const output = await readBody((await router.execute(gatewayRequest(true))).body);
+    expect(output).toContain("first");
+    expect(output).toContain("-later");
+    expect(store.usage[0]).toMatchObject({ statusCode: 200, errorType: null });
+  });
+
+  it("records streaming token usage after the client consumes the response", async () => {
+    const upstream = await mockStream((_request, reply) => {
+      reply.hijack();
+      reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+      reply.raw.end([
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":4}}}\n\n",
+        "data: [DONE]\n\n",
+      ].join(""));
+      return reply;
+    });
+    const { router, store, secrets } = testRouter();
+    await addHealthyChannel(store, secrets, { name: "stream-usage", baseUrl: upstream.baseUrl });
+
+    const result = await router.execute(gatewayRequest(true));
+    expect(store.usage).toHaveLength(0);
+    await readBody(result.body);
+    expect(store.usage).toHaveLength(1);
+    expect(store.usage[0]).toMatchObject({ promptTokens: 12, completionTokens: 3, cachedTokens: 4, firstByteLatencyMs: expect.any(Number) });
+  });
+
+  it("records a client-cancelled stream without degrading the upstream channel", async () => {
+    const upstream = await mockStream((_request, reply) => {
+      reply.hijack();
+      reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+      reply.raw.write("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n");
+      setTimeout(() => reply.raw.end("data: [DONE]\n\n"), 1_000);
+      return reply;
+    });
+    const { router, store, secrets } = testRouter();
+    const channel = await addHealthyChannel(store, secrets, { name: "cancelled-stream", baseUrl: upstream.baseUrl });
+
+    const result = await router.execute(gatewayRequest(true));
+    if (result.body instanceof Uint8Array) throw new Error("Expected a streaming response");
+    const iterator = result.body[Symbol.asyncIterator]();
+    expect((await iterator.next()).done).toBe(false);
+    await iterator.return?.();
+
+    expect(store.usage).toHaveLength(1);
+    expect(store.usage[0]).toMatchObject({ statusCode: 499, errorType: "client_closed_request" });
+    expect(await store.getChannel(channel.id)).toMatchObject({ status: "healthy", consecutiveFailures: 0 });
   });
 });
 
-function testRouter(store = new MemoryStore()) {
+function testRouter(store = new MemoryStore(), timeoutMs = 1_000) {
   const secrets = createSecretBox("router-integration-test-key");
   const router = new GatewayRouter({
     store,
     secrets,
     runtime: new MemoryRuntimeState(),
     registry: new AdapterRegistry([new OpenAiAdapter(), new ClaudeAdapter(), new GeminiAdapter()]),
-    timeoutMs: 1_000,
+    timeoutMs,
     failureThreshold: 3,
   });
   return { router, store, secrets };

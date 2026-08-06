@@ -68,6 +68,62 @@ describe("MemoryStore channel management", () => {
     expect(await store.listRoutingCandidates("gpt-a")).toHaveLength(0);
   });
 
+  it("reorders every channel without changing health or routing data", async () => {
+    const store = new MemoryStore();
+    const secrets = createSecretBox("memory-channel-reorder-test");
+    const first = await store.importProvider(
+      { name: "Relay A", baseUrl: "https://relay-a.example", apiKey: "sk-reorder-a", protocol: "openai", models: ["gpt-a"], priority: 1, weight: 10, tags: [] },
+      secrets.encrypt("sk-reorder-a"),
+      "-a",
+    );
+    const second = await store.importProvider(
+      { name: "Relay B", baseUrl: "https://relay-b.example", apiKey: "sk-reorder-b", protocol: "openai", models: ["gpt-a"], priority: 2, weight: 20, tags: [] },
+      secrets.encrypt("sk-reorder-b"),
+      "-b",
+    );
+    const before = await store.getChannel(second.channel.id);
+    await expect(store.reorderChannels([first.channel.id])).rejects.toThrow("every channel");
+
+    const reordered = await store.reorderChannels([first.channel.id, second.channel.id]);
+    expect(reordered.map((channel) => channel.id)).toEqual([first.channel.id, second.channel.id]);
+    expect(reordered.map((channel) => channel.priority)).toEqual([2, 1]);
+    expect(await store.getChannel(second.channel.id)).toMatchObject({
+      weight: before?.weight,
+      status: before?.status,
+      models: before?.models,
+    });
+  });
+
+  it("lists active channels by recent call health before their configured priority", async () => {
+    const store = new MemoryStore();
+    const secrets = createSecretBox("memory-channel-health-order-test");
+    const lowerHealth = await store.importProvider(
+      { name: "Lower Health", baseUrl: "https://lower-health.example", apiKey: "sk-lower", protocol: "openai", models: ["gpt-a"], priority: 30, weight: 10, tags: [] },
+      secrets.encrypt("sk-lower"),
+      "ower",
+    );
+    const higherHealth = await store.importProvider(
+      { name: "Higher Health", baseUrl: "https://higher-health.example", apiKey: "sk-higher", protocol: "openai", models: ["gpt-a"], priority: 10, weight: 10, tags: [] },
+      secrets.encrypt("sk-higher"),
+      "gher",
+    );
+    const noRequests = await store.importProvider(
+      { name: "No Requests", baseUrl: "https://no-requests.example", apiKey: "sk-none", protocol: "openai", models: ["gpt-a"], priority: 50, weight: 10, tags: [] },
+      secrets.encrypt("sk-none"),
+      "none",
+    );
+    const now = new Date().toISOString();
+    await store.recordUsage(usageEvent(lowerHealth.channel.id, now, 200));
+    await store.recordUsage(usageEvent(lowerHealth.channel.id, now, 503));
+    await store.recordUsage(usageEvent(higherHealth.channel.id, now, 200));
+
+    expect((await store.listChannels()).map((channel) => channel.id)).toEqual([
+      higherHealth.channel.id,
+      lowerHealth.channel.id,
+      noRequests.channel.id,
+    ]);
+  });
+
   it("builds independent hourly health for each channel route", async () => {
     const store = new MemoryStore();
     const secrets = createSecretBox("memory-pool-health-test");
@@ -99,11 +155,33 @@ describe("MemoryStore channel management", () => {
     expect(routeB?.hourlyHealth.find((point) => point.requests === 1)).toMatchObject({ requests: 1, successfulRequests: 0, status: "abnormal" });
   });
 
+  it("orders model pools by their most recent request", async () => {
+    const store = new MemoryStore();
+    const secrets = createSecretBox("memory-pool-order-test");
+    const older = await store.importProvider(
+      { name: "Older Relay", baseUrl: "https://older.example", apiKey: "sk-old", protocol: "openai", models: ["model-older"], priority: 10, weight: 1, tags: [] },
+      secrets.encrypt("sk-old"),
+      "-old",
+    );
+    const recent = await store.importProvider(
+      { name: "Recent Relay", baseUrl: "https://recent.example", apiKey: "sk-recent", protocol: "openai", models: ["model-recent"], priority: 10, weight: 1, tags: [] },
+      secrets.encrypt("sk-recent"),
+      "cent",
+    );
+    const now = Date.now();
+    store.usage.push(
+      { ...usageEvent(older.channel.id, new Date(now - 10 * 60_000).toISOString(), 200), modelAlias: "model-older", upstreamModel: "model-older" },
+      { ...usageEvent(recent.channel.id, new Date(now - 60_000).toISOString(), 200), modelAlias: "model-recent", upstreamModel: "model-recent" },
+    );
+
+    expect((await store.getPools()).map((pool) => pool.alias)).toEqual(["model-recent", "model-older"]);
+  });
+
   it("lists request logs with pagination, filters, channel details, and legacy-compatible fields", async () => {
     const store = new MemoryStore();
     const secrets = createSecretBox("memory-request-log-test");
     const imported = await store.importProvider(
-      { name: "Request Relay", baseUrl: "https://relay.example", apiKey: "sk-request-log", protocol: "openai", models: ["model-a", "model-b"], priority: 0, weight: 1, tags: [] },
+      { name: "Request Relay", keyName: "WorkBuddy", baseUrl: "https://relay.example", apiKey: "sk-request-log", protocol: "openai", models: ["model-a", "model-b"], priority: 0, weight: 1, tags: [] },
       secrets.encrypt("sk-request-log"),
       "-log",
     );
@@ -123,6 +201,7 @@ describe("MemoryStore channel management", () => {
       streamed: true,
       endpoint: "/responses",
       sourceIp: "127.0.0.1",
+      reasoningEffort: "high",
     });
     await store.recordUsage({
       requestId: "request-b",
@@ -143,7 +222,13 @@ describe("MemoryStore channel management", () => {
 
     const firstPage = await store.listRequestLogs({ limit: 1, offset: 0, window: "24h", localOnly: true });
     expect(firstPage).toMatchObject({ total: 1, hasMore: false });
-    expect(firstPage.items[0]).toMatchObject({ requestId: "request-a", endpoint: "/responses", channelName: "Request Relay", sourceIp: "127.0.0.1", streamed: true });
+    expect(firstPage.items[0]).toMatchObject({ requestId: "request-a", endpoint: "/responses", channelName: "Request Relay", keyName: "WorkBuddy", sourceIp: "127.0.0.1", streamed: true, reasoningEffort: "high" });
+    expect(firstPage.filterOptions).toEqual({
+      clients: ["claude-code", "codex"],
+      channels: ["Request Relay"],
+      models: ["model-a", "model-b"],
+      sourceIps: ["10.0.0.2", "127.0.0.1"],
+    });
 
     const secondPage = await store.listRequestLogs({ limit: 20, offset: 0, window: "24h", client: "claude", model: "model-b", channel: "Request Relay" });
     expect(secondPage).toMatchObject({ total: 1 });
@@ -160,6 +245,7 @@ describe("MemoryStore channel management", () => {
         {
           name: "Persistent Relay",
           baseUrl: "https://relay.example/v1",
+          faviconUrl: "https://assets.example/persistent-relay.png",
           apiKey: "sk-persistent-key",
           protocol: "openai",
           models: ["gpt-selected"],
@@ -200,7 +286,7 @@ describe("MemoryStore channel management", () => {
       await first.close();
 
       const second = await PersistentMemoryStore.fromFile(statePath);
-      expect(await second.listChannels()).toMatchObject([{ id: imported.channel.id, balance: 8.5, balanceCurrency: "USD", models: ["gpt-selected"] }]);
+      expect(await second.listChannels()).toMatchObject([{ id: imported.channel.id, faviconUrl: "https://assets.example/persistent-relay.png", balance: 8.5, balanceCurrency: "USD", models: ["gpt-selected"] }]);
       expect(await second.listRoutingCandidates("gpt-selected")).toHaveLength(1);
       expect(await second.listRoutingCandidates("gpt-not-selected")).toHaveLength(0);
       expect((await second.getUsage("24h")).totalRequests).toBe(1);

@@ -24,6 +24,8 @@ export async function registerProxyRoutes(
       clientName: clientName(request, kind),
       endpoint: endpointForKind(kind),
       sourceIp: request.ip ?? null,
+      gatewayKeyName: (request as FastifyRequest & { gatewayKeyName?: string }).gatewayKeyName ?? null,
+      reasoningEffort: extractReasoningEffort(body),
       protocolHeaders: protocolHeaders(request),
     };
     const result = await dependencies.router.execute(gatewayRequest);
@@ -68,16 +70,47 @@ export async function registerProxyRoutes(
 
 export function gatewayErrorHandler(error: Error, request: FastifyRequest, reply: FastifyReply) {
   if (error instanceof GatewayError) {
-    return sendProtocolError(reply, request, error.statusCode, error.message, error.errorType);
+    return sendProtocolError(reply, request, error.statusCode, sanitizeErrorMessage(error.message), error.errorType);
   }
   if (error.name === "ZodError") {
     return sendProtocolError(reply, request, 400, "Invalid request payload", "invalid_request_error");
   }
+  const statusCode = Number((error as Error & { statusCode?: number }).statusCode);
+  if (Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 500) {
+    const message = statusCode === 429 ? "请求过于频繁，请稍后再试" : sanitizeErrorMessage(error.message);
+    return sendProtocolError(reply, request, statusCode, message, statusCode === 429 ? "rate_limited" : "request_error");
+  }
+  request.log.error({
+    errorName: error.name,
+    errorMessage: sanitizeErrorMessage(error.message),
+    requestId: request.id,
+    method: request.method,
+    path: request.url.split("?", 1)[0],
+  }, "Unhandled request error");
   return sendProtocolError(reply, request, 500, "Internal gateway error", "internal_error");
+}
+
+function sanitizeErrorMessage(message: string): string {
+  return message
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "sk-[redacted]")
+    .replace(/\b(api[-_ ]?key|token|authorization)\s*[:=]\s*["']?[^\s"']+/gi, "$1=[redacted]")
+    .slice(0, 500);
 }
 
 function asBody(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function extractReasoningEffort(body: Record<string, unknown>): string | null {
+  const direct = typeof body.reasoning_effort === "string" ? body.reasoning_effort : null;
+  const reasoning = body.reasoning;
+  const nested = reasoning && typeof reasoning === "object" && !Array.isArray(reasoning)
+    && typeof (reasoning as Record<string, unknown>).effort === "string"
+    ? (reasoning as Record<string, unknown>).effort as string
+    : null;
+  const value = (direct ?? nested)?.trim().toLowerCase();
+  return value ? value.slice(0, 40) : null;
 }
 
 function clientName(request: FastifyRequest, kind: RequestKind): string {
@@ -138,9 +171,33 @@ async function sendResult(reply: FastifyReply, result: UpstreamResult) {
     "x-autoapi-channel": result.channelId,
     connection: "keep-alive",
   });
-  for await (const chunk of result.body) reply.raw.write(chunk);
-  reply.raw.end();
+  for await (const chunk of result.body) {
+    if (reply.raw.destroyed || reply.raw.writableEnded) break;
+    if (!reply.raw.write(chunk) && !(await waitForDrain(reply))) break;
+  }
+  if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
   return reply;
+}
+
+function waitForDrain(reply: FastifyReply): Promise<boolean> {
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      reply.raw.off("drain", onDrain);
+      reply.raw.off("close", onClose);
+      reply.raw.off("error", onClose);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve(true);
+    };
+    const onClose = () => {
+      cleanup();
+      resolve(false);
+    };
+    reply.raw.once("drain", onDrain);
+    reply.raw.once("close", onClose);
+    reply.raw.once("error", onClose);
+  });
 }
 
 function sendProtocolError(reply: FastifyReply, request: FastifyRequest, status: number, message: string, type: string) {

@@ -20,7 +20,9 @@ export function ProviderDrawer({ open, onClose, onCreated }: { open: boolean; on
     try {
       await api.importProvider({
         name: form.get("name"),
+        keyName: String(form.get("keyName") ?? "").trim() || "API Key",
         baseUrl: form.get("baseUrl"),
+        faviconUrl: String(form.get("faviconUrl") ?? "").trim() || null,
         apiKey: form.get("apiKey"),
         protocol: form.get("protocol"),
         models: String(form.get("models") ?? "").split(",").map((item) => item.trim()).filter(Boolean),
@@ -71,8 +73,10 @@ export function ProviderDrawer({ open, onClose, onCreated }: { open: boolean; on
     setModels(selected.includes(model) ? selected.filter((item) => item !== model).join(", ") : [...selected, model].join(", "));
   }
 
+  if (!open) return null;
+
   return (
-    <div className={open ? "drawer-layer open" : "drawer-layer"} aria-hidden={!open}>
+    <div className="drawer-layer open">
       <button className="drawer-backdrop" aria-label="关闭抽屉" onClick={onClose} />
       <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="provider-title">
         <div className="drawer-head">
@@ -81,7 +85,9 @@ export function ProviderDrawer({ open, onClose, onCreated }: { open: boolean; on
         </div>
         <form ref={formRef} onSubmit={submit}>
           <div className="field"><label htmlFor="name">渠道名称</label><input id="name" name="name" required placeholder="例如：主用渠道" /></div>
+          <div className="field"><label htmlFor="keyName">密钥名称</label><input id="keyName" name="keyName" maxLength={120} placeholder="例如：WorkBuddy" /></div>
           <div className="field"><label htmlFor="baseUrl">Base URL</label><input id="baseUrl" name="baseUrl" type="url" required placeholder="https://api.example.com/v1" /></div>
+          <div className="field"><label htmlFor="faviconUrl">自定义渠道图标 <small>可选，留空自动获取</small></label><input id="faviconUrl" name="faviconUrl" type="url" placeholder="https://example.com/icon.png" /></div>
           <div className="field"><label htmlFor="apiKey">API Key</label><input id="apiKey" name="apiKey" type="password" required autoComplete="off" placeholder="sk-..." /></div>
           <div className="field"><label htmlFor="protocol">协议类型</label><select id="protocol" name="protocol" value={protocol} onChange={(event) => setProtocol(event.target.value)}><option value="auto">自动识别</option><option value="openai">OpenAI 兼容</option><option value="claude">Claude 兼容</option><option value="gemini">Gemini 兼容</option><option value="new-api">New API</option><option value="sub2api">Sub2API</option></select></div>
           <div className="field"><label htmlFor="models">已知模型</label><div className="model-input-row"><input id="models" name="models" value={models} onChange={(event) => setModels(event.target.value)} placeholder="gpt-5-codex, gpt-5" /><button type="button" className="button secondary" onClick={() => void discoverModels()} disabled={discovering}><RefreshCw size={14} className={discovering ? "spin" : ""} /> {discovering ? "获取中…" : "获取模型列表"}</button></div><span>可选，填写 Base URL 和 API Key 后获取；点击模型即可加入或移除</span>{discoveredModels.length > 0 ? <div className="model-picker" aria-label="可选模型">{discoveredModels.map((model) => <button type="button" className={splitList(models).includes(model) ? "model-chip selected" : "model-chip"} key={model} onClick={() => toggleModel(model)}>{model}</button>)}</div> : null}</div>

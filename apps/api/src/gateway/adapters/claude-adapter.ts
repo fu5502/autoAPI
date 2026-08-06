@@ -1,7 +1,8 @@
 import type { Channel, GatewayRequest, ProbeResult } from "../../domain/types.js";
-import type { AdapterAttempt, UpstreamAdapter } from "../adapter.js";
+import type { AdapterAttempt, AdapterUsage, UpstreamAdapter } from "../adapter.js";
 import { fetchUpstream, parseJson, responseHeaders } from "../http.js";
 import { errorMessage, optionalBalance, probeJson, probeStream } from "../probe-utils.js";
+import { observeSseUsage } from "../streaming.js";
 import { apiUrl } from "../url.js";
 
 export class ClaudeAdapter implements UpstreamAdapter {
@@ -26,22 +27,26 @@ export class ClaudeAdapter implements UpstreamAdapter {
     timeoutMs: number,
   ): Promise<AdapterAttempt> {
     const payload = { ...request.body, model: upstreamModel, stream: request.stream };
-    const { response, body } = await fetchUpstream(
+    const { response, body, firstByteLatencyMs, streamError } = await fetchUpstream(
       apiUrl(channel.baseUrl, "/v1/messages"),
       { method: "POST", headers: claudeHeaders(apiKey, request.protocolHeaders), body: JSON.stringify(payload) },
       timeoutMs,
       request.stream,
     );
-    const usage = body instanceof Uint8Array ? readUsage(body) : { promptTokens: 0, completionTokens: 0 };
+    const usage = body instanceof Uint8Array ? readUsage(body) : { promptTokens: 0, completionTokens: 0, cachedTokens: null };
+    const observed = body instanceof Uint8Array ? null : observeSseUsage(body, readStreamUsage);
     return {
       result: {
         channelId: channel.id,
         status: response.status,
         headers: responseHeaders(response, request.stream),
-        body,
+        body: observed?.stream ?? body,
         streaming: request.stream,
       },
       ...usage,
+      firstByteLatencyMs,
+      ...(observed ? { streamUsage: observed.usage } : {}),
+      ...(streamError ? { streamError } : {}),
     };
   }
 
@@ -118,8 +123,35 @@ function readUsage(body: Uint8Array) {
   try {
     const payload = parseJson(body);
     const usage = payload.usage && typeof payload.usage === "object" ? (payload.usage as Record<string, unknown>) : {};
-    return { promptTokens: Number(usage.input_tokens ?? 0), completionTokens: Number(usage.output_tokens ?? 0) };
+    return {
+      promptTokens: Number(usage.input_tokens ?? 0),
+      completionTokens: Number(usage.output_tokens ?? 0),
+      cachedTokens: typeof usage.cache_read_input_tokens === "number"
+        ? usage.cache_read_input_tokens
+        : typeof usage.cached_tokens === "number" ? usage.cached_tokens : null,
+    };
   } catch {
-    return { promptTokens: 0, completionTokens: 0 };
+    return { promptTokens: 0, completionTokens: 0, cachedTokens: null };
   }
+}
+
+function readStreamUsage(payload: Record<string, unknown>): Partial<AdapterUsage> | null {
+  const direct = payload.usage && typeof payload.usage === "object" && !Array.isArray(payload.usage)
+    ? payload.usage as Record<string, unknown>
+    : null;
+  const message = payload.message && typeof payload.message === "object" && !Array.isArray(payload.message)
+    ? payload.message as Record<string, unknown>
+    : null;
+  const nested = message?.usage && typeof message.usage === "object" && !Array.isArray(message.usage)
+    ? message.usage as Record<string, unknown>
+    : null;
+  const usage = direct ?? nested;
+  if (!usage) return null;
+  const inputTokens = usage.input_tokens;
+  const outputTokens = usage.output_tokens;
+  return {
+    ...(typeof inputTokens === "number" ? { promptTokens: inputTokens } : {}),
+    ...(typeof outputTokens === "number" ? { completionTokens: outputTokens } : {}),
+    ...(typeof usage.cache_read_input_tokens === "number" ? { cachedTokens: usage.cache_read_input_tokens } : {}),
+  };
 }

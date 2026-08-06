@@ -1,15 +1,27 @@
-import { classifyUpstreamError, toUpstreamError } from "./errors.js";
+import { classifyUpstreamError, toUpstreamError, type UpstreamError } from "./errors.js";
 import { primeStream } from "./streaming.js";
+
+const MIN_STREAM_IDLE_TIMEOUT_MS = 5 * 60_000;
 
 export async function fetchUpstream(
   url: string,
   init: RequestInit,
   timeoutMs: number,
   streaming: boolean,
-): Promise<{ response: Response; body: Uint8Array | AsyncIterable<Uint8Array> }> {
+): Promise<{
+  response: Response;
+  body: Uint8Array | AsyncIterable<Uint8Array>;
+  firstByteLatencyMs: number | null;
+  streamError: Promise<UpstreamError | null> | null;
+}> {
+  const startedAt = Date.now();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timeout = setTimeout(() => controller.abort(), timeoutMs);
   const cleanup = () => clearTimeout(timeout);
+  const refreshStreamIdleTimeout = () => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => controller.abort(), Math.max(timeoutMs, MIN_STREAM_IDLE_TIMEOUT_MS));
+  };
   let response: Response;
   try {
     response = await fetch(url, { ...init, signal: controller.signal });
@@ -25,12 +37,13 @@ export async function fetchUpstream(
     throw Object.assign(error, { responseBody: body });
   }
   if (streaming) {
-    return { response, body: await primeStream(response, cleanup) };
+    const primed = await primeStream(response, cleanup, startedAt, refreshStreamIdleTimeout);
+    return { response, body: primed.stream, firstByteLatencyMs: primed.firstByteLatencyMs, streamError: primed.error };
   }
   try {
     const body = new Uint8Array(await response.arrayBuffer());
     cleanup();
-    return { response, body };
+    return { response, body, firstByteLatencyMs: null, streamError: null };
   } catch (error) {
     cleanup();
     throw toUpstreamError(error);

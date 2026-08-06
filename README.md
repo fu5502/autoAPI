@@ -42,7 +42,7 @@ The main implementation seams are deliberately small:
 - `UpstreamAdapter` owns provider wire formats, headers, probes, and response normalization.
 - `GatewayStore` has PostgreSQL and in-memory adapters so routing tests do not require external infrastructure.
 
-## Docker deployment
+## Docker 部署
 
 1. Create the environment file:
 
@@ -51,7 +51,7 @@ Copy-Item .env.example .env
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-2. Put the generated value in `CREDENTIAL_ENCRYPTION_KEY`, then replace `ADMIN_TOKEN` and `GATEWAY_API_KEY` with separate long random values.
+2. 将生成值填入 `CREDENTIAL_ENCRYPTION_KEY`，并分别替换 `POSTGRES_PASSWORD`、`ADMIN_TOKEN`、`GATEWAY_API_KEY` 和 `CHECKIN_VNC_PASSWORD`。同步修改 `DATABASE_URL` 中的 PostgreSQL 密码。VNC 密码必须恰好 8 个字符。
 
 3. Start the stack:
 
@@ -59,18 +59,18 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 docker compose up --build -d
 ```
 
-The control plane and gateway are served together at `http://localhost:8080`. PostgreSQL and Redis are private Compose services and are not published to the host.
+后台和网关统一运行在 `http://localhost:8080`。PostgreSQL 和 Redis 只在 Compose 内网开放，不映射到宿主机。签到授权浏览器默认通过 `http://localhost:6080/vnc.html?autoconnect=true` 访问，6080 默认只绑定本机；需要远程授权时，应将它放在 HTTPS 反向代理后，再把 `CHECKIN_VNC_BIND_ADDRESS` 配置为可访问地址。
 
 ### 管理后台登录
 
-首次启动默认登录信息：
+开发/演示模式首次启动默认登录信息：
 
 - 用户名：`admin`
 - 初始密码：`AutoAPI@123456`
 
 登录地址：`http://localhost:8080`（本地开发模式为 `http://localhost:5173`）。登录后台后进入“安全设置”即可修改密码。安全设置会保留最近 10 条登录记录，包括登录时间、成功/失败状态、登录 IP 和客户端信息。
 
-生产部署前请在 `.env` 中设置 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。已有本地数据不会因升级登录功能而清空，账号信息和登录记录会以新增字段保存到现有数据文件中。
+生产部署前必须在 `.env` 中设置 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 和所有生产密钥；生产模式会拒绝默认密码和 `change-me-*` 密钥。已有本地数据不会因升级登录功能而清空，账号信息和登录记录会以新增字段保存到现有数据文件中。
 
 ## Local development
 
@@ -199,7 +199,7 @@ Balance discovery is deliberately non-blocking. A provider without a recognized 
 ## Routing semantics
 
 1. Resolve the client model alias to candidate channel/model pairs.
-2. Remove disabled, pending, isolated, cooling, exhausted, under-minimum, and protocol-incompatible channels.
+2. Remove disabled, isolated, cooling, exhausted, under-minimum, and protocol-incompatible channels. `pending`（检测中）渠道仍可参与调用，只要没有被禁用、隔离、冷却或余额门槛过滤。
 3. Use the highest `priority` tier first.
 4. Within a tier, use Redis-backed weighted round-robin with small error-rate and latency penalties.
 5. Retry another candidate only for connection errors, timeouts, 402/quota errors, 429, 5xx, or recognized balance errors.
@@ -221,4 +221,5 @@ The integration suite starts real local mock upstream servers and covers 429/5xx
 - Cross-protocol routing is intentionally constrained: Claude Messages routes to Claude channels, Responses routes to OpenAI-compatible channels, and Gemini adapts OpenAI Chat requests.
 - Generic balance discovery supports common credit and New API-style payloads; provider-specific adapters can be added behind the existing balance interface.
 - A stream that fails after its first event cannot continue on another channel without corrupting conversation state. autoAPI emits a structured SSE error instead.
-- The first release uses one administrator token and one shared client gateway key; multi-tenant quotas and resale billing are not included.
+- The first release uses one administrator account and supports multiple named client gateway keys; multi-tenant quotas and resale billing are not included.
+- Streaming applies the connection/first-byte timeout first, then a five-minute idle timeout that resets whenever upstream data arrives. Once output has started, a failed stream is reported as an SSE error and is never joined with another channel.

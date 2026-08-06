@@ -41,6 +41,7 @@ export class PostgresStore implements GatewayStore {
     input: ProviderImportInput,
     encryptedKey: string,
     keyLast4: string,
+    keyName?: string,
   ): Promise<ImportedProvider> {
     const client = await this.pool.connect();
     try {
@@ -51,20 +52,21 @@ export class PostgresStore implements GatewayStore {
       );
       const providerId = provider.rows[0]!.id;
       const credential = await client.query<{ id: string }>(
-        `INSERT INTO provider_credentials (provider_id, key_ciphertext, key_last4)
-         VALUES ($1, $2, $3) RETURNING id`,
-        [providerId, encryptedKey, keyLast4],
+        `INSERT INTO provider_credentials (provider_id, key_ciphertext, key_name, key_last4)
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+        [providerId, encryptedKey, input.keyName?.trim() || keyName?.trim() || "API Key", keyLast4],
       );
       const channelResult = await client.query(
         `INSERT INTO channels
-          (provider_id, credential_id, name, base_url, protocol, priority, weight, min_balance, available_models, tags)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          (provider_id, credential_id, name, base_url, favicon_url, protocol, priority, weight, min_balance, available_models, tags)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING *`,
         [
           providerId,
           credential.rows[0]!.id,
           input.channelName ?? input.name,
           normalizeBaseUrl(input.baseUrl),
+          input.faviconUrl ?? null,
           input.protocol,
           input.priority,
           input.weight,
@@ -95,16 +97,52 @@ export class PostgresStore implements GatewayStore {
   }
 
   async listChannels(): Promise<Channel[]> {
-    const result = await this.pool.query(channelSelect("true") + " ORDER BY c.priority DESC, c.created_at DESC");
+    const result = await this.pool.query(
+      channelSelect("true") + ` ORDER BY
+        CASE
+          WHEN NOT c.enabled OR c.status IN ('disabled', 'isolated') THEN 2
+          WHEN c.status = 'degraded' THEN 1
+          ELSE 0
+        END ASC,
+        CASE WHEN coalesce(stats.requests, 0) > 0 THEN 0 ELSE 1 END ASC,
+        coalesce(stats.error_rate, 1) ASC,
+        coalesce(stats.requests, 0) DESC,
+        c.last_latency_ms ASC NULLS LAST,
+        c.priority DESC,
+        c.created_at DESC`,
+    );
     return result.rows.map(mapChannel);
   }
 
-  async updateChannel(id: string, input: ChannelUpdateInput, encryptedKey?: string, keyLast4?: string): Promise<Channel | null> {
+  async reorderChannels(channelIds: string[]): Promise<Channel[]> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const current = await client.query<{ provider_id: string; credential_id: string; current_balance: string | null; balance_currency: string | null }>(
-        "SELECT provider_id, credential_id, current_balance, balance_currency FROM channels WHERE id = $1 FOR UPDATE",
+      const current = await client.query<{ id: string }>("SELECT id FROM channels FOR UPDATE");
+      const currentIds = new Set(current.rows.map((row) => String(row.id)));
+      const requestedIds = new Set(channelIds);
+      if (requestedIds.size !== channelIds.length || requestedIds.size !== currentIds.size || [...currentIds].some((id) => !requestedIds.has(id))) {
+        throw new Error("Channel reorder must include every channel exactly once");
+      }
+      for (const [index, id] of channelIds.entries()) {
+        await client.query("UPDATE channels SET priority = $2, updated_at = now() WHERE id = $1", [id, channelIds.length - index]);
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return this.listChannels();
+  }
+
+  async updateChannel(id: string, input: ChannelUpdateInput, encryptedKey?: string, keyLast4?: string, keyName?: string): Promise<Channel | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query<{ provider_id: string; credential_id: string; current_balance: string | null; balance_currency: string | null; favicon_url: string | null }>(
+        "SELECT provider_id, credential_id, current_balance, balance_currency, favicon_url FROM channels WHERE id = $1 FOR UPDATE",
         [id],
       );
       const row = current.rows[0];
@@ -114,22 +152,28 @@ export class PostgresStore implements GatewayStore {
       }
       if (encryptedKey && keyLast4) {
         await client.query(
-          "UPDATE provider_credentials SET key_ciphertext = $2, key_last4 = $3, rotated_at = now() WHERE id = $1",
-          [row.credential_id, encryptedKey, keyLast4],
+          "UPDATE provider_credentials SET key_ciphertext = $2, key_name = $3, key_last4 = $4, rotated_at = now() WHERE id = $1",
+          [row.credential_id, encryptedKey, input.keyName?.trim() || keyName?.trim() || "API Key", keyLast4],
+        );
+      } else if (input.keyName !== undefined || keyName !== undefined) {
+        await client.query(
+          "UPDATE provider_credentials SET key_name = $2 WHERE id = $1",
+          [row.credential_id, input.keyName?.trim() || keyName?.trim() || "API Key"],
         );
       }
       const balance = input.balance === undefined ? (row.current_balance === null ? null : Number(row.current_balance)) : input.balance;
       const balanceCurrency = input.balanceCurrency === undefined ? row.balance_currency : input.balanceCurrency;
+      const faviconUrl = input.faviconUrl === undefined ? row.favicon_url : input.faviconUrl;
       await client.query(
         `UPDATE channels SET
-          name = $2, base_url = $3, protocol = $4, priority = $5, weight = $6,
-          min_balance = $7, available_models = $8, tags = $9,
-          enabled = $10, status = CASE WHEN $10 THEN 'pending' ELSE 'disabled' END,
+          name = $2, base_url = $3, favicon_url = $4, protocol = $5, priority = $6, weight = $7,
+          min_balance = $8, available_models = $9, tags = $10,
+          enabled = $11, status = CASE WHEN $11 THEN 'pending' ELSE 'disabled' END,
           consecutive_failures = 0, cooldown_until = NULL, isolation_reason = NULL,
-          last_checked_at = NULL, last_latency_ms = NULL, current_balance = $11,
-          balance_currency = $12, balance_status = $13, updated_at = now()
+          last_checked_at = NULL, last_latency_ms = NULL, current_balance = $12,
+          balance_currency = $13, balance_status = $14, updated_at = now()
          WHERE id = $1`,
-        [id, input.name, normalizeBaseUrl(input.baseUrl), input.protocol, input.priority, input.weight, input.minBalance, input.models, input.tags, input.enabled ?? true, balance, balanceCurrency, getBalanceStatus(balance, input.minBalance)],
+        [id, input.name, normalizeBaseUrl(input.baseUrl), faviconUrl, input.protocol, input.priority, input.weight, input.minBalance, input.models, input.tags, input.enabled ?? true, balance, balanceCurrency, getBalanceStatus(balance, input.minBalance)],
       );
       await client.query(
         `UPDATE model_aliases SET enabled = false
@@ -147,6 +191,23 @@ export class PostgresStore implements GatewayStore {
     } finally {
       client.release();
     }
+    return this.getChannel(id);
+  }
+
+  async updateChannelBalance(id: string, balance: number, balanceCurrency: string | null): Promise<Channel | null> {
+    await this.pool.query(
+      `UPDATE channels SET
+        current_balance = $2,
+        balance_currency = $3,
+        balance_status = CASE
+          WHEN $2 <= 0 THEN 'exhausted'
+          WHEN min_balance IS NOT NULL AND $2 < min_balance THEN 'low'
+          ELSE 'ok'
+        END,
+        updated_at = now()
+       WHERE id = $1`,
+      [id, balance, balanceCurrency],
+    );
     return this.getChannel(id);
   }
 
@@ -274,9 +335,9 @@ export class PostgresStore implements GatewayStore {
     await this.pool.query(
       `INSERT INTO usage_events
        (request_id, channel_id, model_alias, upstream_model, client_name, request_kind, status_code,
-        prompt_tokens, completion_tokens, latency_ms, error_type, retry_count, streamed,
-        endpoint, source_ip, cached_tokens, cost_usd, first_byte_latency_ms)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+       prompt_tokens, completion_tokens, latency_ms, error_type, retry_count, streamed,
+        endpoint, source_ip, gateway_key_name, cached_tokens, cost_usd, first_byte_latency_ms, reasoning_effort)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
       [
         event.requestId,
         event.channelId,
@@ -293,9 +354,11 @@ export class PostgresStore implements GatewayStore {
         event.streamed,
         event.endpoint ?? null,
         event.sourceIp ?? null,
+        event.gatewayKeyName ?? null,
         event.cachedTokens ?? null,
         event.costUsd ?? null,
         event.firstByteLatencyMs ?? null,
+        event.reasoningEffort ?? null,
       ],
     );
   }
@@ -316,18 +379,26 @@ export class PostgresStore implements GatewayStore {
     addFilter(filters.sourceIp, "coalesce(ue.source_ip::text, '')");
     if (filters.localOnly) clauses.push("ue.source_ip::text IN ('127.0.0.1', '::1', '::ffff:127.0.0.1')");
     const where = clauses.join(" AND ");
-    const countResult = await this.pool.query(`SELECT count(*)::int AS total FROM usage_events ue LEFT JOIN channels c ON c.id = ue.channel_id LEFT JOIN providers p ON p.id = c.provider_id WHERE ${where}`, params);
+    const [countResult, clientOptions, channelOptions, modelOptions, sourceIpOptions] = await Promise.all([
+      this.pool.query(`SELECT count(*)::int AS total FROM usage_events ue LEFT JOIN channels c ON c.id = ue.channel_id LEFT JOIN providers p ON p.id = c.provider_id WHERE ${where}`, params),
+      this.pool.query<{ value: string }>("SELECT DISTINCT client_name AS value FROM usage_events WHERE created_at >= now() - $1::interval AND client_name <> '' ORDER BY 1", [interval]),
+      this.pool.query<{ value: string }>("SELECT DISTINCT coalesce(c.name, 'unrouted') AS value FROM usage_events ue LEFT JOIN channels c ON c.id = ue.channel_id WHERE ue.created_at >= now() - $1::interval ORDER BY 1", [interval]),
+      this.pool.query<{ value: string }>("SELECT DISTINCT model_alias AS value FROM usage_events WHERE created_at >= now() - $1::interval AND model_alias <> '' ORDER BY 1", [interval]),
+      this.pool.query<{ value: string }>("SELECT DISTINCT source_ip::text AS value FROM usage_events WHERE created_at >= now() - $1::interval AND source_ip IS NOT NULL ORDER BY 1", [interval]),
+    ]);
     const total = Number(countResult.rows[0]?.total ?? 0);
     const limitParam = params.length + 1;
     const offsetParam = params.length + 2;
     const rows = await this.pool.query(
       `SELECT ue.id, ue.request_id, ue.created_at, ue.channel_id, c.name AS channel_name, p.name AS provider_name,
-              ue.model_alias, ue.upstream_model, ue.client_name, ue.source_ip, ue.request_kind, ue.endpoint,
+              pc.key_name, pc.key_last4,
+              ue.model_alias, ue.upstream_model, ue.client_name, ue.source_ip, ue.gateway_key_name, ue.reasoning_effort, ue.request_kind, ue.endpoint,
               ue.status_code, ue.prompt_tokens, ue.completion_tokens, ue.cached_tokens, ue.cost_usd,
               ue.latency_ms, ue.first_byte_latency_ms, ue.error_type, ue.retry_count, ue.streamed
        FROM usage_events ue
        LEFT JOIN channels c ON c.id = ue.channel_id
        LEFT JOIN providers p ON p.id = c.provider_id
+       LEFT JOIN provider_credentials pc ON pc.id = c.credential_id
        WHERE ${where}
        ORDER BY ue.created_at DESC, ue.id DESC
        LIMIT $${limitParam} OFFSET $${offsetParam}`,
@@ -341,6 +412,9 @@ export class PostgresStore implements GatewayStore {
         channelId: row.channel_id === null ? null : String(row.channel_id),
         channelName: row.channel_name === null ? null : String(row.channel_name),
         providerName: row.provider_name === null ? null : String(row.provider_name),
+        keyName: row.key_name === null ? "API Key" : String(row.key_name),
+        gatewayKeyName: row.gateway_key_name === null ? null : String(row.gateway_key_name),
+        reasoningEffort: row.reasoning_effort === null ? null : String(row.reasoning_effort),
         modelAlias: String(row.model_alias),
         upstreamModel: row.upstream_model === null ? null : String(row.upstream_model),
         clientName: String(row.client_name),
@@ -362,6 +436,12 @@ export class PostgresStore implements GatewayStore {
       limit: filters.limit,
       offset: filters.offset,
       hasMore: filters.offset + rows.rows.length < total,
+      filterOptions: {
+        clients: clientOptions.rows.map((row) => String(row.value)),
+        channels: channelOptions.rows.map((row) => String(row.value)),
+        models: modelOptions.rows.map((row) => String(row.value)),
+        sourceIps: sourceIpOptions.rows.map((row) => String(row.value)),
+      },
     };
   }
 
@@ -464,9 +544,23 @@ export class PostgresStore implements GatewayStore {
                count(*) FILTER (WHERE created_at >= now() - interval '15 minutes')::int AS requests_15m,
                coalesce(avg(latency_ms) FILTER (WHERE created_at >= now() - interval '15 minutes'), 0)::float AS latency_15m,
                coalesce(max(latency_ms) FILTER (WHERE created_at >= now() - interval '15 minutes'), 0)::float AS peak_latency_15m
-        FROM usage_events WHERE created_at >= now() - interval '24 hours' GROUP BY model_alias`,
+       FROM usage_events
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= now() - interval '24 hours'
+       GROUP BY model_alias`,
+    );
+    const latestRequests = await this.pool.query(
+      `SELECT model_alias, max(created_at) AS last_requested_at
+       FROM usage_events
+       GROUP BY model_alias`,
     );
     const metricMap = new Map(metrics.rows.map((row) => [String(row.model_alias), row]));
+    const latestRequestByAlias = new Map<string, number>();
+    for (const row of latestRequests.rows) {
+      const value = row.last_requested_at;
+      const timestamp = value instanceof Date ? value.getTime() : Date.parse(String(value));
+      if (Number.isFinite(timestamp)) latestRequestByAlias.set(String(row.model_alias), timestamp);
+    }
     const hourly = await this.pool.query(
       `SELECT model_alias, date_trunc('hour', created_at) AS bucket,
               count(*)::int AS requests,
@@ -474,7 +568,8 @@ export class PostgresStore implements GatewayStore {
               coalesce(avg(latency_ms), 0)::float AS latency,
               coalesce(max(latency_ms), 0)::float AS peak_latency
        FROM usage_events
-       WHERE created_at >= date_trunc('hour', now()) - interval '23 hours'
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= date_trunc('hour', now()) - interval '23 hours'
        GROUP BY model_alias, date_trunc('hour', created_at)`,
     );
     const routeHourly = await this.pool.query(
@@ -484,7 +579,8 @@ export class PostgresStore implements GatewayStore {
               coalesce(avg(latency_ms), 0)::float AS latency,
               coalesce(max(latency_ms), 0)::float AS peak_latency
        FROM usage_events
-       WHERE created_at >= date_trunc('hour', now()) - interval '23 hours'
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= date_trunc('hour', now()) - interval '23 hours'
        GROUP BY model_alias, channel_id, date_trunc('hour', created_at)`,
     );
     const recent = await this.pool.query(
@@ -495,7 +591,8 @@ export class PostgresStore implements GatewayStore {
               coalesce(avg(latency_ms), 0)::float AS latency,
               coalesce(max(latency_ms), 0)::float AS peak_latency
        FROM usage_events
-       WHERE created_at >= now() - interval '6 hours'
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= now() - interval '6 hours'
        GROUP BY model_alias, to_timestamp(floor(extract(epoch FROM created_at) / 300) * 300)`,
     );
     const routeRecent = await this.pool.query(
@@ -506,7 +603,8 @@ export class PostgresStore implements GatewayStore {
               coalesce(avg(latency_ms), 0)::float AS latency,
               coalesce(max(latency_ms), 0)::float AS peak_latency
        FROM usage_events
-       WHERE created_at >= now() - interval '6 hours'
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= now() - interval '6 hours'
        GROUP BY model_alias, channel_id, to_timestamp(floor(extract(epoch FROM created_at) / 300) * 300)`,
     );
     const health1h = await this.pool.query(
@@ -517,7 +615,8 @@ export class PostgresStore implements GatewayStore {
               coalesce(avg(latency_ms), 0)::float AS latency,
               coalesce(max(latency_ms), 0)::float AS peak_latency
        FROM usage_events
-       WHERE created_at >= now() - interval '1 hour'
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= now() - interval '1 hour'
        GROUP BY model_alias, to_timestamp(floor(extract(epoch FROM created_at) / 300) * 300)` ,
     );
     const routeHealth1h = await this.pool.query(
@@ -528,7 +627,8 @@ export class PostgresStore implements GatewayStore {
               coalesce(avg(latency_ms), 0)::float AS latency,
               coalesce(max(latency_ms), 0)::float AS peak_latency
        FROM usage_events
-       WHERE created_at >= now() - interval '1 hour'
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= now() - interval '1 hour'
        GROUP BY model_alias, channel_id, to_timestamp(floor(extract(epoch FROM created_at) / 300) * 300)` ,
     );
     const health12h = await this.pool.query(
@@ -538,7 +638,8 @@ export class PostgresStore implements GatewayStore {
               coalesce(avg(latency_ms), 0)::float AS latency,
               coalesce(max(latency_ms), 0)::float AS peak_latency
        FROM usage_events
-       WHERE created_at >= date_trunc('hour', now()) - interval '11 hours'
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= date_trunc('hour', now()) - interval '11 hours'
        GROUP BY model_alias, date_trunc('hour', created_at)` ,
     );
     const routeHealth12h = await this.pool.query(
@@ -548,7 +649,8 @@ export class PostgresStore implements GatewayStore {
               coalesce(avg(latency_ms), 0)::float AS latency,
               coalesce(max(latency_ms), 0)::float AS peak_latency
        FROM usage_events
-       WHERE created_at >= date_trunc('hour', now()) - interval '11 hours'
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= date_trunc('hour', now()) - interval '11 hours'
        GROUP BY model_alias, channel_id, date_trunc('hour', created_at)` ,
     );
     const health7d = await this.pool.query(
@@ -558,7 +660,8 @@ export class PostgresStore implements GatewayStore {
               coalesce(avg(latency_ms), 0)::float AS latency,
               coalesce(max(latency_ms), 0)::float AS peak_latency
        FROM usage_events
-       WHERE created_at >= date_trunc('day', now()) - interval '6 days'
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= date_trunc('day', now()) - interval '6 days'
        GROUP BY model_alias, date_trunc('day', created_at)` ,
     );
     const routeHealth7d = await this.pool.query(
@@ -568,7 +671,8 @@ export class PostgresStore implements GatewayStore {
               coalesce(avg(latency_ms), 0)::float AS latency,
               coalesce(max(latency_ms), 0)::float AS peak_latency
        FROM usage_events
-       WHERE created_at >= date_trunc('day', now()) - interval '6 days'
+       WHERE error_type IS DISTINCT FROM 'client_closed_request'
+         AND created_at >= date_trunc('day', now()) - interval '6 days'
        GROUP BY model_alias, channel_id, date_trunc('day', created_at)` ,
     );
     const hourlyMap = new Map<string, typeof hourly.rows>();
@@ -679,7 +783,10 @@ export class PostgresStore implements GatewayStore {
       });
       pools.set(alias, pool);
     }
-    return [...pools.values()];
+    return [...pools.values()].sort((a, b) => {
+      const latestDifference = (latestRequestByAlias.get(b.alias) ?? 0) - (latestRequestByAlias.get(a.alias) ?? 0);
+      return latestDifference || a.alias.localeCompare(b.alias, "zh-CN");
+    });
   }
 
   async getUsage(window: "1h" | "24h" | "7d"): Promise<UsageSummary> {
@@ -807,6 +914,26 @@ export class PostgresStore implements GatewayStore {
     return result.rowCount === 1;
   }
 
+  async findGatewayKey(keyHash: string): Promise<GatewayKeySummary | null> {
+    const result = await this.pool.query(
+      `UPDATE gateway_keys
+       SET last_used_at = now()
+       WHERE key_hash = $1 AND enabled = true
+       RETURNING id, name, key_last4, enabled, created_at, last_used_at`,
+      [keyHash],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      name: String(row.name),
+      keyLast4: String(row.key_last4),
+      enabled: Boolean(row.enabled),
+      createdAt: new Date(row.created_at).toISOString(),
+      lastUsedAt: row.last_used_at ? new Date(row.last_used_at).toISOString() : null,
+    };
+  }
+
   async getAdminAccount(): Promise<AdminAccount | null> {
     const result = await this.pool.query("SELECT username, password_hash, created_at, updated_at FROM admin_accounts WHERE id = 1");
     const row = result.rows[0];
@@ -862,7 +989,8 @@ export class PostgresStore implements GatewayStore {
 }
 
 function channelSelect(where: string, includeAlias = false): string {
-  return `SELECT c.*, p.name AS provider_name, pc.key_ciphertext, pc.key_last4,
+  return `SELECT c.*, p.name AS provider_name, pc.key_ciphertext, pc.key_name, pc.key_last4,
+                 coalesce(stats.requests, 0)::int AS recent_request_count,
                  coalesce(stats.error_rate, 0)::float AS recent_error_rate
                  ${includeAlias ? ", ma.upstream_model" : ""}
           FROM channels c
@@ -870,9 +998,13 @@ function channelSelect(where: string, includeAlias = false): string {
           JOIN provider_credentials pc ON pc.id = c.credential_id
           ${includeAlias ? "JOIN model_aliases ma ON ma.channel_id = c.id" : ""}
           LEFT JOIN LATERAL (
-            SELECT CASE WHEN count(*) = 0 THEN 0
+            SELECT count(*)::int AS requests,
+                   CASE WHEN count(*) = 0 THEN 0
                         ELSE count(*) FILTER (WHERE status_code >= 400)::float / count(*) END AS error_rate
-            FROM usage_events ue WHERE ue.channel_id = c.id AND ue.created_at >= now() - interval '15 minutes'
+            FROM usage_events ue
+            WHERE ue.channel_id = c.id
+              AND ue.error_type IS DISTINCT FROM 'client_closed_request'
+              AND ue.created_at >= now() - interval '15 minutes'
           ) stats ON true
           WHERE ${where}`;
 }
@@ -940,8 +1072,10 @@ function mapChannel(row: QueryResultRow): Channel {
     providerName: String(row.provider_name),
     name: String(row.name),
     baseUrl: String(row.base_url),
+    faviconUrl: row.favicon_url === null || row.favicon_url === undefined ? null : String(row.favicon_url),
     protocol: row.protocol,
     keyCiphertext: String(row.key_ciphertext),
+    keyName: row.key_name ? String(row.key_name) : "API Key",
     keyLast4: String(row.key_last4),
     status: row.status,
     enabled: Boolean(row.enabled),
@@ -956,6 +1090,7 @@ function mapChannel(row: QueryResultRow): Channel {
     isolationReason: row.isolation_reason === null ? null : String(row.isolation_reason),
     lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at).toISOString() : null,
     lastLatencyMs: row.last_latency_ms === null ? null : Number(row.last_latency_ms),
+    recentRequestCount: Number(row.recent_request_count ?? 0),
     recentErrorRate: Number(row.recent_error_rate ?? 0),
     models: Array.isArray(row.available_models) ? row.available_models : [],
     tags: Array.isArray(row.tags) ? row.tags : [],

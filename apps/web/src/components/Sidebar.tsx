@@ -1,4 +1,4 @@
-import { Activity, Boxes, Cable, ClipboardList, FlaskConical, Gauge, Network, ShieldCheck } from "lucide-react";
+import { Activity, BadgeCheck, Boxes, Cable, ClipboardList, FlaskConical, Gauge, Network, ShieldCheck } from "lucide-react";
 import type { View } from "../types";
 
 const nav = [
@@ -8,6 +8,7 @@ const nav = [
   { id: "usage" as const, label: "用量", icon: Activity },
   { id: "requests" as const, label: "调用请求", icon: ClipboardList },
   { id: "playground" as const, label: "模型测试", icon: FlaskConical },
+  { id: "checkin" as const, label: "公益站签到", icon: BadgeCheck },
   { id: "security" as const, label: "安全设置", icon: ShieldCheck },
 ];
 

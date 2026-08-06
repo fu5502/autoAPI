@@ -42,9 +42,7 @@ export class AdminAuthService {
     });
     if (!valid || !account) return null;
 
-    const token = `autoapi_session_${randomBytes(32).toString("base64url")}`;
-    this.sessions.set(token, { username: account.username, expiresAt: Date.now() + SESSION_TTL_MS });
-    return { token, username: account.username, expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString() };
+    return this.issueSession(account.username);
   }
 
   isValidToken(token: string): boolean {
@@ -56,22 +54,27 @@ export class AdminAuthService {
     return constantTimeEqual(token, this.legacyToken);
   }
 
-  async changePassword(currentPassword: string, newPassword: string): Promise<boolean> {
+  async changePassword(currentPassword: string, newPassword: string) {
     const account = await this.store.getAdminAccount();
-    if (!account || !verifyPassword(currentPassword, account.passwordHash)) return false;
-    return Boolean(await this.store.saveAdminAccount({
+    if (!account || !verifyPassword(currentPassword, account.passwordHash)) return null;
+    await this.store.saveAdminAccount({
       ...account,
       passwordHash: hashPassword(newPassword),
       updatedAt: new Date().toISOString(),
-    }));
+    });
+    this.sessions.clear();
+    return this.issueSession(account.username);
+  }
+
+  private issueSession(username: string) {
+    const expiresAt = Date.now() + SESSION_TTL_MS;
+    const token = `autoapi_session_${randomBytes(32).toString("base64url")}`;
+    this.sessions.set(token, { username, expiresAt });
+    return { token, username, expiresAt: new Date(expiresAt).toISOString() };
   }
 }
 
 export function requestIp(request: FastifyRequest): string {
-  const forwarded = request.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && isIP(forwarded.split(",")[0]!.trim())) return forwarded.split(",")[0]!.trim();
-  const realIp = request.headers["x-real-ip"];
-  if (typeof realIp === "string" && isIP(realIp.trim())) return realIp.trim();
   const directIp = request.ip || request.socket.remoteAddress || "";
   return isIP(directIp) ? directIp : "0.0.0.0";
 }

@@ -15,22 +15,23 @@ const ONE_HOUR_BUCKETS = ONE_HOUR_MS / RECENT_BUCKET_MS;
 type UsageEvent = UsageEventInput & { createdAt: string };
 
 export function buildPoolHealth(events: readonly UsageEvent[], now = Date.now()): PoolHealthMetrics {
+  const healthEvents = events.filter(isHealthRelevantEvent);
   const dayAgo = now - DAY_HOURS * HOUR_MS;
   const weekAgo = now - WEEK_MS;
   const fifteenMinutesAgo = now - 15 * 60 * 1000;
-  const events24h = events.filter((event) => Date.parse(event.createdAt) >= dayAgo);
-  const events6h = events.filter((event) => Date.parse(event.createdAt) >= now - RECENT_WINDOW_MS);
-  const events7d = events.filter((event) => Date.parse(event.createdAt) >= weekAgo);
-  const events15m = events.filter((event) => Date.parse(event.createdAt) >= fifteenMinutesAgo);
+  const events24h = healthEvents.filter((event) => Date.parse(event.createdAt) >= dayAgo);
+  const events6h = healthEvents.filter((event) => Date.parse(event.createdAt) >= now - RECENT_WINDOW_MS);
+  const events7d = healthEvents.filter((event) => Date.parse(event.createdAt) >= weekAgo);
+  const events15m = healthEvents.filter((event) => Date.parse(event.createdAt) >= fifteenMinutesAgo);
   const health1h = createRecentHealth(now, ONE_HOUR_MS);
   const recentHealth = createRecentHealth(now);
   const health12h = createHourlyHealth(now, HALF_DAY_HOURS);
   const hourlyHealth = createHourlyHealth(now);
   const health7d = createDailyHealth(now);
 
-  aggregateEvents(events.filter((event) => Date.parse(event.createdAt) >= now - ONE_HOUR_MS), health1h, RECENT_BUCKET_MS);
+  aggregateEvents(healthEvents.filter((event) => Date.parse(event.createdAt) >= now - ONE_HOUR_MS), health1h, RECENT_BUCKET_MS);
   aggregateEvents(events6h, recentHealth, RECENT_BUCKET_MS);
-  aggregateEvents(events.filter((event) => Date.parse(event.createdAt) >= now - TWELVE_HOURS_MS), health12h, HOUR_MS);
+  aggregateEvents(healthEvents.filter((event) => Date.parse(event.createdAt) >= now - TWELVE_HOURS_MS), health12h, HOUR_MS);
   aggregateEvents(events24h, hourlyHealth, HOUR_MS);
   aggregateEvents(events7d, health7d, 24 * HOUR_MS);
 
@@ -52,6 +53,10 @@ export function buildPoolHealth(events: readonly UsageEvent[], now = Date.now())
     health12h,
     health7d,
   };
+}
+
+export function isHealthRelevantEvent(event: Pick<UsageEventInput, "errorType">): boolean {
+  return event.errorType !== "client_closed_request";
 }
 
 export function createHourlyHealth(now = Date.now(), hours = DAY_HOURS): PoolHealthPoint[] {

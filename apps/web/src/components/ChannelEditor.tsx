@@ -7,7 +7,9 @@ export function ChannelEditor({ channel, onClose, onSaved }: { channel: Channel 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
+  const [keyName, setKeyName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [faviconUrl, setFaviconUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [protocol, setProtocol] = useState<Channel["protocol"]>("auto");
   const [models, setModels] = useState("");
@@ -24,7 +26,9 @@ export function ChannelEditor({ channel, onClose, onSaved }: { channel: Channel 
   useEffect(() => {
     if (!channel) return;
     setName(channel.name);
+    setKeyName(channel.keyName ?? "API Key");
     setBaseUrl(channel.baseUrl);
+    setFaviconUrl(channel.faviconUrl ?? "");
     setApiKey("");
     setProtocol(channel.protocol);
     setModels(channel.models.join(", "));
@@ -47,7 +51,9 @@ export function ChannelEditor({ channel, onClose, onSaved }: { channel: Channel 
     try {
       await api.updateChannel(channel.id, {
         name: name.trim(),
+        keyName: keyName.trim() || "API Key",
         baseUrl: baseUrl.trim(),
+        faviconUrl: faviconUrl.trim() || null,
         apiKey: apiKey.trim(),
         protocol,
         models: splitList(models),
@@ -93,8 +99,10 @@ export function ChannelEditor({ channel, onClose, onSaved }: { channel: Channel 
     setModels(selected.includes(model) ? selected.filter((item) => item !== model).join(", ") : [...selected, model].join(", "));
   }
 
+  if (!channel) return null;
+
   return (
-    <div className={channel ? "drawer-layer open" : "drawer-layer"} aria-hidden={!channel}>
+    <div className="drawer-layer open">
       <button className="drawer-backdrop" aria-label="关闭编辑" onClick={onClose} />
       <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="channel-editor-title">
         <div className="drawer-head">
@@ -103,7 +111,9 @@ export function ChannelEditor({ channel, onClose, onSaved }: { channel: Channel 
         </div>
         <form onSubmit={submit}>
           <div className="field"><label htmlFor="edit-name">渠道名称</label><input id="edit-name" value={name} onChange={(event) => setName(event.target.value)} required /></div>
+          <div className="field"><label htmlFor="edit-key-name">密钥名称</label><input id="edit-key-name" value={keyName} onChange={(event) => setKeyName(event.target.value)} maxLength={120} placeholder="例如：WorkBuddy" /></div>
           <div className="field"><label htmlFor="edit-base-url">Base URL</label><input id="edit-base-url" type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} required /></div>
+          <div className="field"><label htmlFor="edit-favicon-url">自定义渠道图标 <small>留空则自动获取</small></label><input id="edit-favicon-url" type="url" value={faviconUrl} onChange={(event) => setFaviconUrl(event.target.value)} placeholder="https://example.com/icon.png" /></div>
           <div className="field"><label htmlFor="edit-api-key">API Key</label><input id="edit-api-key" type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" placeholder="留空表示保留当前密钥" /></div>
           <div className="field"><label htmlFor="edit-protocol">协议类型</label><select id="edit-protocol" value={protocol} onChange={(event) => setProtocol(event.target.value as Channel["protocol"])}><option value="auto">自动识别</option><option value="openai">OpenAI 兼容</option><option value="claude">Claude 兼容</option><option value="gemini">Gemini 兼容</option><option value="new-api">New API</option><option value="sub2api">Sub2API</option></select></div>
           <div className="field"><label htmlFor="edit-models">已知模型</label><div className="model-input-row"><input id="edit-models" value={models} onChange={(event) => setModels(event.target.value)} placeholder="gpt-5-codex, gpt-5" /><button type="button" className="button secondary" onClick={() => void discoverModels()} disabled={discovering}><RefreshCw size={14} className={discovering ? "spin" : ""} /> {discovering ? "获取中…" : "获取模型列表"}</button></div><span>可读取当前渠道模型；点击模型即可加入或移除，保存后才会更新模型池</span>{discoveredModels.length > 0 ? <div className="model-picker" aria-label="可选模型">{discoveredModels.map((model) => <button type="button" className={splitList(models).includes(model) ? "model-chip selected" : "model-chip"} key={model} onClick={() => toggleModel(model)}>{model}</button>)}</div> : null}</div>
@@ -112,8 +122,8 @@ export function ChannelEditor({ channel, onClose, onSaved }: { channel: Channel 
             <div className="field"><label htmlFor="edit-weight">权重</label><input id="edit-weight" type="number" value={weight} onChange={(event) => setWeight(event.target.value)} min="1" max="10000" /></div>
           </div>
           <div className="field-row">
-            <div className="field"><label htmlFor="edit-min-balance">最低余额</label><input id="edit-min-balance" type="number" value={minBalance} onChange={(event) => setMinBalance(event.target.value)} min="0" step="0.01" placeholder="不限制" /></div>
-            <div className="field"><label htmlFor="edit-balance">当前余额</label><input id="edit-balance" type="number" value={balance} onChange={(event) => setBalance(event.target.value)} min="0" step="0.01" placeholder="未知" /></div>
+            <div className="field"><label htmlFor="edit-min-balance">最低余额</label><input id="edit-min-balance" type="number" value={minBalance} onChange={(event) => setMinBalance(event.target.value)} min="0" step="any" placeholder="不限制" /></div>
+            <div className="field"><label htmlFor="edit-balance">当前余额</label><input id="edit-balance" type="number" value={balance} onChange={(event) => setBalance(event.target.value)} min="0" step="any" placeholder="未知" /></div>
           </div>
           <div className="field-row">
             <div className="field"><label htmlFor="edit-balance-currency">余额币种</label><input id="edit-balance-currency" value={balanceCurrency} onChange={(event) => setBalanceCurrency(event.target.value)} maxLength={12} placeholder="USD" /></div>

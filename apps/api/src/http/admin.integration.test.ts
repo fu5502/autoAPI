@@ -26,6 +26,8 @@ describe("admin channel management", () => {
       ADMIN_PASSWORD: "AutoAPI@123456",
       GATEWAY_API_KEY: "gateway-auth-test",
       CREDENTIAL_ENCRYPTION_KEY: "auth-encryption-test",
+      TRUST_PROXY: "true",
+      ADMIN_LOGIN_RATE_LIMIT_MAX: "100",
     });
     const app = await buildApp({ config, runtime: new MemoryRuntimeState(), startAgent: false });
     resources.push(app.app);
@@ -55,6 +57,8 @@ describe("admin channel management", () => {
       payload: { currentPassword: "AutoAPI@123456", newPassword: "NewAutoAPI@654321" },
     });
     expect(changed.statusCode).toBe(200);
+    expect((await app.app.inject({ method: "GET", url: "/admin/auth/me", headers: sessionHeaders })).statusCode).toBe(401);
+    const rotatedHeaders = { authorization: `Bearer ${changed.json().token}` };
     expect((await app.app.inject({
       method: "POST",
       url: "/admin/auth/login",
@@ -63,11 +67,11 @@ describe("admin channel management", () => {
     expect((await app.app.inject({
       method: "POST",
       url: "/admin/auth/login",
-      headers: { "x-real-ip": "198.51.100.22" },
+      headers: { "x-forwarded-for": "198.51.100.22" },
       payload: { username: "admin", password: "NewAutoAPI@654321" },
     })).statusCode).toBe(200);
 
-    const history = await app.app.inject({ method: "GET", url: "/admin/security/login-history", headers: sessionHeaders });
+    const history = await app.app.inject({ method: "GET", url: "/admin/security/login-history", headers: rotatedHeaders });
     expect(history.statusCode).toBe(200);
     expect(history.json()).toHaveLength(4);
     expect(history.json()[0]).toMatchObject({ success: true, ip: "198.51.100.22" });
@@ -83,6 +87,8 @@ describe("admin channel management", () => {
       ADMIN_PASSWORD: "AutoAPI@123456",
       GATEWAY_API_KEY: "gateway-history-test",
       CREDENTIAL_ENCRYPTION_KEY: "history-encryption-test",
+      TRUST_PROXY: "true",
+      ADMIN_LOGIN_RATE_LIMIT_MAX: "100",
     });
     const app = await buildApp({ config, runtime: new MemoryRuntimeState(), startAgent: false });
     resources.push(app.app);
@@ -94,6 +100,47 @@ describe("admin channel management", () => {
     expect(history.json()).toHaveLength(10);
     expect(history.json()[0].ip).toBe("192.0.2.12");
     expect(history.json().at(-1).ip).toBe("192.0.2.3");
+  });
+
+  it("ignores forwarded IP headers by default and rate limits repeated login attempts", async () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-rate-limit-legacy",
+      ADMIN_PASSWORD: "AutoAPI@123456",
+      GATEWAY_API_KEY: "gateway-rate-limit-test",
+      CREDENTIAL_ENCRYPTION_KEY: "rate-limit-encryption-test",
+      ADMIN_LOGIN_RATE_LIMIT_MAX: "2",
+      ADMIN_LOGIN_RATE_LIMIT_WINDOW_MS: "60000",
+    });
+    const app = await buildApp({ config, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(app.app);
+
+    for (let index = 0; index < 2; index += 1) {
+      const response = await app.app.inject({
+        method: "POST",
+        url: "/admin/auth/login",
+        headers: { "x-forwarded-for": "203.0.113.50" },
+        payload: { username: "admin", password: "wrong-password" },
+      });
+      expect(response.statusCode).toBe(401);
+    }
+    const limited = await app.app.inject({
+      method: "POST",
+      url: "/admin/auth/login",
+      headers: { "x-forwarded-for": "203.0.113.50" },
+      payload: { username: "admin", password: "wrong-password" },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ error: { type: "rate_limited" } });
+
+    const history = await app.app.inject({
+      method: "GET",
+      url: "/admin/security/login-history",
+      headers: { authorization: "Bearer admin-rate-limit-legacy" },
+    });
+    expect(history.json()).toHaveLength(2);
+    expect(history.json()[0].ip).not.toBe("203.0.113.50");
   });
 
   it("starts a demo-mode memory control plane without demo channels or usage", async () => {
@@ -110,6 +157,51 @@ describe("admin channel management", () => {
     expect(await app.store.listChannels()).toEqual([]);
     expect(await app.store.getPools()).toEqual([]);
     expect((await app.store.getUsage("24h")).totalRequests).toBe(0);
+  });
+
+  it("reports one-hour request health separately from the twenty-four-hour overview", async () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-hourly-status-test",
+      GATEWAY_API_KEY: "gateway-hourly-status-test",
+      CREDENTIAL_ENCRYPTION_KEY: "hourly-status-encryption-test",
+    });
+    const store = new MemoryStore();
+    const secrets = createSecretBox(config.credentialEncryptionKey);
+    const imported = await store.importProvider(
+      { name: "Hourly relay", baseUrl: "https://hourly.example/v1", apiKey: "sk-hourly-status", protocol: "openai", models: ["hourly-model"], priority: 0, weight: 100, tags: [] },
+      secrets.encrypt("sk-hourly-status"),
+      "atus",
+    );
+    await store.recordUsage({
+      requestId: "hourly-status-request",
+      channelId: imported.channel.id,
+      modelAlias: "hourly-model",
+      upstreamModel: "hourly-model",
+      clientName: "test",
+      requestKind: "chat",
+      statusCode: 500,
+      promptTokens: 0,
+      completionTokens: 0,
+      latencyMs: 42,
+      errorType: "upstream_5xx",
+      retryCount: 0,
+      streamed: false,
+    });
+    const app = await buildApp({ config, store, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(app.app);
+
+    const response = await app.app.inject({ method: "GET", url: "/admin/status", headers: { authorization: "Bearer admin-hourly-status-test" } });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      requests1h: 1,
+      errorRate1h: 1,
+      averageLatencyMs1h: 42,
+      requests24h: 1,
+      errorRate24h: 1,
+    });
   });
 
   it("discovers models without creating a channel, then edits, disables, and deletes one", async () => {
@@ -204,6 +296,46 @@ describe("admin channel management", () => {
     const pools = await app.app.inject({ method: "GET", url: "/admin/pools", headers });
     expect(pools.statusCode).toBe(200);
     expect(pools.json()).toEqual([]);
+  });
+
+  it("reorders channels through the admin API without resetting channel health", async () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-reorder-test",
+      GATEWAY_API_KEY: "gateway-reorder-test",
+      CREDENTIAL_ENCRYPTION_KEY: "reorder-encryption-test",
+    });
+    const store = new MemoryStore();
+    const secrets = createSecretBox(config.credentialEncryptionKey);
+    const first = await store.importProvider(
+      { name: "Relay A", baseUrl: "https://relay-a.example", apiKey: "sk-admin-reorder-a", protocol: "openai", models: ["gpt-reorder"], priority: 1, weight: 11, tags: [] },
+      secrets.encrypt("sk-admin-reorder-a"),
+      "-a",
+    );
+    const second = await store.importProvider(
+      { name: "Relay B", baseUrl: "https://relay-b.example", apiKey: "sk-admin-reorder-b", protocol: "openai", models: ["gpt-reorder"], priority: 2, weight: 22, tags: [] },
+      secrets.encrypt("sk-admin-reorder-b"),
+      "-b",
+    );
+    const app = await buildApp({ config, store, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(app.app);
+
+    const response = await app.app.inject({
+      method: "POST",
+      url: "/admin/channels/reorder",
+      headers: { authorization: "Bearer admin-reorder-test" },
+      payload: { channelIds: [first.channel.id, second.channel.id] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().channels.map((channel: { id: string }) => channel.id)).toEqual([first.channel.id, second.channel.id]);
+    expect(response.json().channels.map((channel: { priority: number }) => channel.priority)).toEqual([2, 1]);
+    expect(await store.getChannel(second.channel.id)).toMatchObject({
+      status: "pending",
+      weight: 22,
+      models: ["gpt-reorder"],
+    });
   });
 
   it("creates, lists, authenticates, and safely deletes gateway keys", async () => {
@@ -415,6 +547,60 @@ describe("admin channel management", () => {
     expect((await store.getUsage("24h")).totalRequests).toBe(1);
     const session = await store.getPlaygroundSession(result.sessionId);
     expect(session?.messages.at(-1)).toMatchObject({ content: "stream reply" });
+  });
+
+  it("streams playground deltas to an event-stream client and persists the completed message", async () => {
+    const upstream = await startMockUpstream((app) => {
+      app.post("/v1/chat/completions", async (_request, reply) => {
+        reply.hijack();
+        reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+        reply.raw.write('data: {"choices":[{"delta":{"content":"实时"}}]}\n\n');
+        reply.raw.end('data: {"choices":[{"delta":{"content":"回复"}}]}\n\ndata: [DONE]\n\n');
+        return reply;
+      });
+    });
+    resources.push(upstream.app);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-live-playground",
+      GATEWAY_API_KEY: "gateway-live-playground",
+      CREDENTIAL_ENCRYPTION_KEY: "live-playground-encryption-key",
+    });
+    const store = new MemoryStore();
+    const secrets = createSecretBox(config.credentialEncryptionKey);
+    const imported = await store.importProvider(
+      { name: "Live relay", baseUrl: upstream.baseUrl, apiKey: "sk-live-playground", protocol: "openai", models: ["live-model"], priority: 0, weight: 100, tags: [] },
+      secrets.encrypt("sk-live-playground"),
+      "ound",
+    );
+    const app = await buildApp({ config, store, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(app.app);
+
+    const response = await app.app.inject({
+      method: "POST",
+      url: "/admin/playground/chat",
+      headers: { authorization: "Bearer admin-live-playground", accept: "text/event-stream" },
+      payload: {
+        sessionId: crypto.randomUUID(),
+        channelId: imported.channel.id,
+        model: "live-model",
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/event-stream");
+    expect(response.body).toContain("event: delta");
+    expect(response.body).toContain("实时");
+    expect(response.body).toContain("回复");
+    expect(response.body).toContain("event: done");
+    const doneData = response.body.split("event: done\ndata: ")[1]?.split("\n\n")[0];
+    expect(doneData).toBeTruthy();
+    const result = JSON.parse(doneData!) as { sessionId: string };
+    const session = await store.getPlaygroundSession(result.sessionId);
+    expect(session?.messages.at(-1)).toMatchObject({ role: "assistant", content: "实时回复" });
   });
 
   it("records a playground upstream failure as an error usage event", async () => {

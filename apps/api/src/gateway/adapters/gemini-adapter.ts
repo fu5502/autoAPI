@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Channel, GatewayRequest, ProbeResult } from "../../domain/types.js";
-import type { AdapterAttempt, UpstreamAdapter } from "../adapter.js";
+import type { AdapterAttempt, AdapterUsage, UpstreamAdapter } from "../adapter.js";
 import { fetchUpstream, parseJson, responseHeaders } from "../http.js";
 import { errorMessage, optionalBalance, probeJson, probeStream } from "../probe-utils.js";
-import { mapSseStream } from "../streaming.js";
+import { mapSseStream, observeSseUsage } from "../streaming.js";
 import { apiUrl } from "../url.js";
 
 export class GeminiAdapter implements UpstreamAdapter {
@@ -33,23 +33,28 @@ export class GeminiAdapter implements UpstreamAdapter {
   ): Promise<AdapterAttempt> {
     const method = request.stream ? "streamGenerateContent?alt=sse" : "generateContent";
     const path = `/v1beta/models/${encodeURIComponent(upstreamModel)}:${method}`;
-    const { response, body } = await fetchUpstream(
+    const { response, body, firstByteLatencyMs, streamError } = await fetchUpstream(
       apiUrl(channel.baseUrl, path),
       { method: "POST", headers: geminiHeaders(apiKey), body: JSON.stringify(toGeminiBody(request.body)) },
       timeoutMs,
       request.stream,
     );
     if (!(body instanceof Uint8Array)) {
+      const observed = observeSseUsage(body, readStreamUsage);
       return {
         result: {
           channelId: channel.id,
           status: response.status,
           headers: { ...responseHeaders(response, true), "content-type": "text/event-stream" },
-          body: mapSseStream(body, (event) => toOpenAiChunk(event, request.model)),
+          body: mapSseStream(observed.stream, (event) => toOpenAiChunk(event, request.model)),
           streaming: true,
         },
         promptTokens: 0,
         completionTokens: 0,
+        cachedTokens: null,
+        firstByteLatencyMs,
+        streamUsage: observed.usage,
+        ...(streamError ? { streamError } : {}),
       };
     }
     const gemini = parseJson(body);
@@ -67,6 +72,8 @@ export class GeminiAdapter implements UpstreamAdapter {
       },
       promptTokens: Number(usage.promptTokenCount ?? 0),
       completionTokens: Number(usage.candidatesTokenCount ?? 0),
+      cachedTokens: typeof usage.cachedContentTokenCount === "number" ? usage.cachedContentTokenCount : null,
+      firstByteLatencyMs,
     };
   }
 
@@ -194,5 +201,16 @@ function toOpenAiChunk(event: unknown, model: string) {
     created: Math.floor(Date.now() / 1000),
     model,
     choices: [{ index: 0, delta: { content: candidateText(event as Record<string, unknown>) }, finish_reason: null }],
+  };
+}
+
+function readStreamUsage(payload: Record<string, unknown>): Partial<AdapterUsage> | null {
+  const raw = payload.usageMetadata;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const usage = raw as Record<string, unknown>;
+  return {
+    promptTokens: Number(usage.promptTokenCount ?? 0),
+    completionTokens: Number(usage.candidatesTokenCount ?? 0),
+    cachedTokens: typeof usage.cachedContentTokenCount === "number" ? usage.cachedContentTokenCount : null,
   };
 }

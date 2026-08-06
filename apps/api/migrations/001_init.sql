@@ -49,12 +49,15 @@ CREATE TABLE IF NOT EXISTS provider_credentials (
   rotated_at timestamptz
 );
 
+ALTER TABLE provider_credentials ADD COLUMN IF NOT EXISTS key_name text NOT NULL DEFAULT 'API Key';
+
 CREATE TABLE IF NOT EXISTS channels (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   provider_id uuid NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
   credential_id uuid NOT NULL REFERENCES provider_credentials(id) ON DELETE RESTRICT,
   name text NOT NULL,
   base_url text NOT NULL,
+  favicon_url text,
   protocol text NOT NULL CHECK (protocol IN ('auto', 'openai', 'claude', 'gemini', 'new-api', 'sub2api')),
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'healthy', 'degraded', 'isolated', 'disabled')),
   enabled boolean NOT NULL DEFAULT true,
@@ -74,6 +77,8 @@ CREATE TABLE IF NOT EXISTS channels (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS favicon_url text;
 
 CREATE TABLE IF NOT EXISTS model_aliases (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -114,6 +119,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
   streamed boolean NOT NULL DEFAULT false,
   endpoint text,
   source_ip inet,
+  gateway_key_name text,
+  reasoning_effort text,
   cached_tokens integer,
   cost_usd numeric(18, 8),
   first_byte_latency_ms integer,
@@ -122,6 +129,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
 
 ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS endpoint text;
 ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS source_ip inet;
+ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS gateway_key_name text;
+ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS reasoning_effort text;
 ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cached_tokens integer;
 ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cost_usd numeric(18, 8);
 ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS first_byte_latency_ms integer;

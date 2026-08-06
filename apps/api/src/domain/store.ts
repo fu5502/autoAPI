@@ -23,10 +23,12 @@ export interface ImportedProvider {
 }
 
 export interface GatewayStore {
-  importProvider(input: ProviderImportInput, encryptedKey: string, keyLast4: string): Promise<ImportedProvider>;
+  importProvider(input: ProviderImportInput, encryptedKey: string, keyLast4: string, keyName?: string): Promise<ImportedProvider>;
   getChannel(id: string): Promise<Channel | null>;
   listChannels(): Promise<Channel[]>;
-  updateChannel(id: string, input: ChannelUpdateInput, encryptedKey?: string, keyLast4?: string): Promise<Channel | null>;
+  reorderChannels(channelIds: string[]): Promise<Channel[]>;
+  updateChannel(id: string, input: ChannelUpdateInput, encryptedKey?: string, keyLast4?: string, keyName?: string): Promise<Channel | null>;
+  updateChannelBalance(id: string, balance: number, balanceCurrency: string | null): Promise<Channel | null>;
   deleteChannel(id: string): Promise<boolean>;
   setChannelEnabled(id: string, enabled: boolean): Promise<Channel | null>;
   listRoutingCandidates(modelAlias: string): Promise<RoutingCandidate[]>;
@@ -45,6 +47,7 @@ export interface GatewayStore {
   getBalances(): Promise<Channel[]>;
   listHealthCheckChannels(): Promise<Channel[]>;
   listGatewayKeys(): Promise<GatewayKeySummary[]>;
+  findGatewayKey(keyHash: string): Promise<GatewayKeySummary | null>;
   createGatewayKey(name: string, keyHash: string, keyLast4: string): Promise<GatewayKey>;
   deleteGatewayKey(id: string): Promise<boolean>;
   hasGatewayKey(keyHash: string): Promise<boolean>;

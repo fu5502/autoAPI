@@ -5,3 +5,15 @@ dist
 .git
 .env
 coverage
+.autoapi-data
+**/.autoapi-data
+.playwright-cli
+**/.playwright-cli
+playwright-report
+**/playwright-report
+test-results
+**/test-results
+*.log
+**/*.sqlite
+**/*.sqlite-*
+**/browser-profile

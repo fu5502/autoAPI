@@ -54,8 +54,10 @@ export interface Channel {
   providerName: string;
   name: string;
   baseUrl: string;
+  faviconUrl: string | null;
   protocol: Protocol;
   keyCiphertext: string;
+  keyName?: string;
   keyLast4: string;
   status: ChannelStatus;
   enabled: boolean;
@@ -70,6 +72,7 @@ export interface Channel {
   isolationReason: string | null;
   lastCheckedAt: string | null;
   lastLatencyMs: number | null;
+  recentRequestCount: number;
   recentErrorRate: number;
   models: string[];
   tags: string[];
@@ -127,6 +130,10 @@ export interface GatewayRequest {
   clientName: string;
   endpoint?: string;
   sourceIp?: string | null;
+  /** Name of the autoAPI gateway key used by the client. */
+  gatewayKeyName?: string | null;
+  /** Requested reasoning level, when supplied by an OpenAI-compatible client. */
+  reasoningEffort?: string | null;
   /** Selected client/protocol headers that are safe to forward upstream. */
   protocolHeaders?: Record<string, string>;
 }
@@ -155,6 +162,8 @@ export interface UsageEventInput {
   streamed: boolean;
   endpoint?: string | null;
   sourceIp?: string | null;
+  gatewayKeyName?: string | null;
+  reasoningEffort?: string | null;
   cachedTokens?: number | null;
   costUsd?: number | null;
   firstByteLatencyMs?: number | null;
@@ -167,6 +176,9 @@ export interface RequestLogEntry {
   channelId: string | null;
   channelName: string | null;
   providerName: string | null;
+  keyName: string | null;
+  gatewayKeyName: string | null;
+  reasoningEffort: string | null;
   modelAlias: string;
   upstreamModel: string | null;
   clientName: string;
@@ -202,6 +214,12 @@ export interface RequestLogPage {
   limit: number;
   offset: number;
   hasMore: boolean;
+  filterOptions: {
+    clients: string[];
+    channels: string[];
+    models: string[];
+    sourceIps: string[];
+  };
 }
 
 export interface ProbeResult {
@@ -215,6 +233,7 @@ export interface ProbeResult {
   balanceCurrency: string | null;
   balanceStatus: BalanceStatus;
   error: string | null;
+  errorType?: string | null;
 }
 
 export interface PoolSummary {
@@ -308,8 +327,10 @@ export interface PlaygroundSession {
 export interface ProviderImportInput {
   name: string;
   channelName?: string | undefined;
+  keyName?: string | undefined;
   website?: string | undefined;
   baseUrl: string;
+  faviconUrl?: string | null | undefined;
   apiKey: string;
   protocol: Protocol;
   models?: string[] | undefined;
@@ -322,6 +343,8 @@ export interface ProviderImportInput {
 export interface ChannelUpdateInput {
   name: string;
   baseUrl: string;
+  faviconUrl?: string | null | undefined;
+  keyName?: string | undefined;
   apiKey?: string | undefined;
   protocol: Protocol;
   models: string[];

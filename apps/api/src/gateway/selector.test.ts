@@ -53,6 +53,24 @@ describe("routing selector", () => {
 
     expect(eligibleCandidates(candidates, request, registry).map((item) => item.channel.id)).toEqual(["enabled"]);
   });
+
+  it("keeps pending channels in the routing pool", () => {
+    const pending = candidate(channel({ id: "pending", status: "pending" }));
+    expect(eligibleCandidates([pending], request, registry).map((item) => item.channel.id)).toEqual(["pending"]);
+  });
+
+  it("prefers the last successful channel and postpones temporarily penalized channels", () => {
+    const candidates = [
+      candidate(channel({ id: "primary-a", priority: 30, weight: 100 })),
+      candidate(channel({ id: "fallback-b", priority: 20, weight: 100 })),
+      candidate(channel({ id: "reserve-c", priority: 10, weight: 100 })),
+    ];
+
+    expect(orderCandidates(candidates, 0, {
+      preferredChannelId: "fallback-b",
+      channelPenalties: { "primary-a": 1 },
+    }).map((item) => item.channel.id)).toEqual(["fallback-b", "reserve-c", "primary-a"]);
+  });
 });
 
 function candidate(value: Channel): RoutingCandidate {
@@ -66,6 +84,7 @@ function channel(overrides: Partial<Channel>): Channel {
     providerName: "Provider",
     name: "Channel",
     baseUrl: "https://example.test",
+    faviconUrl: null,
     protocol: "openai",
     keyCiphertext: "ciphertext",
     keyLast4: "test",
@@ -82,6 +101,7 @@ function channel(overrides: Partial<Channel>): Channel {
     isolationReason: null,
     lastCheckedAt: new Date().toISOString(),
     lastLatencyMs: 100,
+    recentRequestCount: 0,
     recentErrorRate: 0,
     models: ["gpt-upstream"],
     tags: [],

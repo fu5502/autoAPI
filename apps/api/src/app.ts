@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 import { OpsAgent } from "./agent/ops-agent.js";
@@ -20,12 +21,14 @@ import { MemoryRuntimeState, RedisRuntimeState, type RuntimeState } from "./runt
 import { createSecretBox } from "./security/secret-box.js";
 import { hashGatewayKey } from "./security/gateway-key.js";
 import { AdminAuthService } from "./security/admin-auth.js";
+import { createCheckinModule, registerCheckinRoutes, type CheckinModule } from "./checkin/module.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
   store?: GatewayStore;
   runtime?: RuntimeState;
   startAgent?: boolean;
+  startCheckin?: boolean;
 }
 
 export async function buildApp(options: BuildAppOptions = {}) {
@@ -35,11 +38,16 @@ export async function buildApp(options: BuildAppOptions = {}) {
       level: config.nodeEnv === "production" ? "info" : "warn",
       redact: ["req.headers.authorization", "req.headers.x-api-key", "req.headers.x-admin-token", "body.apiKey"],
     },
-    requestTimeout: config.upstreamTimeoutMs + 10_000,
+    // Streaming requests are governed by the upstream connection/idle timeout
+    // in fetchUpstream. A fixed Fastify request timeout would cut long Codex
+    // responses even while upstream data is still arriving.
+    requestTimeout: 0,
     bodyLimit: 10 * 1024 * 1024,
+    trustProxy: config.trustProxy,
   });
   app.setErrorHandler(gatewayErrorHandler);
   await app.register(cors, { origin: config.nodeEnv === "production" ? false : true });
+  await app.register(rateLimit, { global: false });
 
   const secrets = createSecretBox(config.credentialEncryptionKey);
   const projectRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -59,6 +67,8 @@ export async function buildApp(options: BuildAppOptions = {}) {
   }
   const adminAuth = new AdminAuthService(store, config.adminToken);
   await adminAuth.ensureAccount(config.adminUsername, config.adminPassword);
+  const startCheckin = options.startCheckin ?? config.nodeEnv !== "test";
+  const checkin = startCheckin ? createCheckinModule(store) : null;
   const runtime = options.runtime ?? (config.appMode === "demo"
     ? new MemoryRuntimeState()
     : await RedisRuntimeState.connect(config.redisUrl));
@@ -80,8 +90,32 @@ export async function buildApp(options: BuildAppOptions = {}) {
     intervalMs: config.healthCheckIntervalMs,
   });
 
+  if (checkin) void checkin.balanceSync.syncAll().catch(() => undefined);
+
   app.get("/healthz", async () => ({ status: "ok", mode: config.appMode, timestamp: new Date().toISOString() }));
-  await registerAdminRoutes(app, { store, agent, router, adminAuth, gatewayBaseUrl: config.gatewayBaseUrl });
+  await registerAdminRoutes(app, {
+    store,
+    agent,
+    router,
+    adminAuth,
+    gatewayBaseUrl: config.gatewayBaseUrl,
+    loginRateLimitMax: config.adminLoginRateLimitMax,
+    loginRateLimitWindowMs: config.adminLoginRateLimitWindowMs,
+    checkinDb: checkin?.db,
+    siteIcons: checkin?.siteIcons,
+  });
+  if (checkin) {
+    await registerCheckinRoutes(app, checkin, async (request, reply) => {
+      const authorization = request.headers.authorization;
+      const bearer = typeof authorization === "string" && /^Bearer\s+/i.test(authorization)
+        ? authorization.replace(/^Bearer\s+/i, "").trim()
+        : typeof request.headers["x-admin-token"] === "string" ? request.headers["x-admin-token"].trim() : "";
+      if (!adminAuth.isValidToken(bearer)) {
+        await reply.code(401).send({ error: { message: "登录已失效，请重新登录", type: "authentication_error" } });
+        return;
+      }
+    }, { agent });
+  }
   await registerProxyRoutes(app, { router, store });
 
   const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
@@ -91,11 +125,11 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   app.addHook("onClose", async () => {
     agent.stop();
-    await Promise.all([store.close(), runtime.close()]);
+    await Promise.all([store.close(), runtime.close(), checkin?.close()]);
   });
   if (options.startAgent !== false && config.appMode === "production") agent.start();
 
-  return { app, store, runtime, router, agent, config };
+  return { app, store, runtime, router, agent, checkin, config };
 }
 
 async function connectProductionStore(connectionString: string): Promise<PostgresStore> {

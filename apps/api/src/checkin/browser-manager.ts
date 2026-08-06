@@ -1,0 +1,302 @@
+import { spawn, type ChildProcess } from 'node:child_process'
+import fs from 'node:fs/promises'
+import { createServer } from 'node:net'
+import path from 'node:path'
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core'
+import { browserProfileDir, findChromeExecutable } from './config.js'
+
+const debugPortFile = path.join(browserProfileDir, 'DebugPort')
+
+export class BrowserManager {
+  private queue: Promise<void> = Promise.resolve()
+  private activeBrowser: Browser | null = null
+  private activeContext: BrowserContext | null = null
+  private activePage: Page | null = null
+  private contextPromise: Promise<BrowserContext> | null = null
+  private chromeProcess: ChildProcess | null = null
+  private chromeProcessId: number | null = null
+  private busy = false
+
+  isBusy() {
+    return this.busy
+  }
+
+  async run<T>(options: { interactive: boolean; closeBrowserWhenDone?: boolean }, task: (context: BrowserContext, page: Page) => Promise<T>): Promise<T> {
+    let release!: () => void
+    const slot = new Promise<void>((resolve) => { release = resolve })
+    const previous = this.queue
+    this.queue = previous.then(() => slot)
+    await previous
+    this.busy = true
+
+    try {
+      const context = await this.ensureContext()
+      const page = await context.newPage()
+      this.activePage = page
+      page.setDefaultTimeout(30_000)
+      page.setDefaultNavigationTimeout(45_000)
+      await setWindowState(context, page, options.interactive ? 'normal' : 'minimized')
+      if (options.interactive) await page.bringToFront()
+      return await task(context, page)
+    } finally {
+      const page = this.activePage
+      this.activePage = null
+      if (page && !page.isClosed()) await page.close().catch(() => undefined)
+      if (options.closeBrowserWhenDone) await this.shutdown()
+      this.busy = false
+      release()
+    }
+  }
+
+  async runContext<T>(task: (context: BrowserContext) => Promise<T>): Promise<T> {
+    let release!: () => void
+    const slot = new Promise<void>((resolve) => { release = resolve })
+    const previous = this.queue
+    this.queue = previous.then(() => slot)
+    await previous
+    this.busy = true
+
+    try {
+      return await task(await this.ensureContext())
+    } finally {
+      this.busy = false
+      release()
+    }
+  }
+
+  async cancelActive() {
+    await this.activePage?.close().catch(() => undefined)
+  }
+
+  async shutdown() {
+    const browser = this.activeBrowser
+    const chromeProcess = this.chromeProcess
+    const chromeProcessId = this.chromeProcessId ?? chromeProcess?.pid ?? null
+    this.activeBrowser = null
+    this.activeContext = null
+    this.contextPromise = null
+    this.chromeProcess = null
+    this.chromeProcessId = null
+    // Chrome 只有正常退出时才会把最新的 Cookie 和会话刷写到磁盘。connectOverCDP 的
+    // browser.close() 只断开调试连接、不会让 Chrome 退出，所以先通过 CDP 的 Browser.close
+    // 请求 Chrome 自行优雅退出，确认进程结束后再断开；只有优雅退出失败时才强制结束进程树。
+    const closedGracefully = await this.closeChromeGracefully(browser, chromeProcessId)
+    await browser?.close().catch(() => undefined)
+    if (!closedGracefully) {
+      if (chromeProcessId) await terminateProcessTree(chromeProcessId, chromeProcess)
+      else if (chromeProcess && !chromeProcess.killed) chromeProcess.kill()
+    }
+    await fs.rm(debugPortFile, { force: true }).catch(() => undefined)
+  }
+
+  private async closeChromeGracefully(browser: Browser | null, processId: number | null): Promise<boolean> {
+    if (!browser) return false
+    try {
+      const session = await browser.newBrowserCDPSession()
+      await session.send('Browser.close')
+      // Browser.close 会在 Chrome 开始关闭时返回；等待操作系统进程真正退出，
+      // 以保证 Cookie 已经落盘。无法拿到进程号时视为已成功请求关闭。
+      if (processId === null) return true
+      return await waitForProcessExit(processId, 6_000)
+    } catch {
+      return false
+    }
+  }
+
+  private async ensureContext(): Promise<BrowserContext> {
+    if (this.activeContext) return this.activeContext
+    if (!this.contextPromise) {
+      this.contextPromise = this.connectOrLaunchChrome().catch((error) => {
+        this.contextPromise = null
+        throw error
+      })
+    }
+    return this.contextPromise
+  }
+
+  private async connectOrLaunchChrome(): Promise<BrowserContext> {
+    const existingEndpoint = await readDebugEndpoint()
+    if (existingEndpoint) {
+      try {
+        const context = await this.connectToChrome(existingEndpoint.port, 1_000)
+        this.chromeProcessId = existingEndpoint.pid
+        return context
+      } catch {
+        this.chromeProcessId = null
+        await fs.rm(debugPortFile, { force: true }).catch(() => undefined)
+      }
+    }
+
+    const debugPort = await findAvailablePort()
+    const chromeProcess = spawn(findChromeExecutable(), [
+      `--remote-debugging-port=${debugPort}`,
+      '--remote-debugging-address=127.0.0.1',
+      `--user-data-dir=${browserProfileDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-background-mode',
+      '--disable-extensions',
+      '--disable-features=Translate',
+      ...(process.platform === 'linux' ? ['--no-sandbox', '--disable-dev-shm-usage'] : []),
+      'about:blank',
+    ], {
+      detached: false,
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    this.chromeProcess = chromeProcess
+    this.chromeProcessId = chromeProcess.pid ?? null
+    chromeProcess.unref()
+
+    try {
+      const context = await this.waitForChrome(debugPort, chromeProcess)
+      await fs.writeFile(debugPortFile, JSON.stringify({ port: debugPort, pid: chromeProcess.pid ?? null }), 'utf8')
+      return context
+    } catch (error) {
+      if (!chromeProcess.killed) chromeProcess.kill()
+      if (this.chromeProcess === chromeProcess) this.chromeProcess = null
+      if (this.chromeProcessId === chromeProcess.pid) this.chromeProcessId = null
+      throw error
+    }
+  }
+
+  private async waitForChrome(port: number, chromeProcess: ChildProcess): Promise<BrowserContext> {
+    let launchError: Error | null = null
+    chromeProcess.once('error', (error) => { launchError = error })
+    const deadline = Date.now() + 15_000
+    while (Date.now() < deadline) {
+      if (launchError) throw launchError
+      if (chromeProcess.exitCode !== null) throw new Error('Chrome 启动后立即退出')
+      try {
+        return await this.connectToChrome(port, 500)
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    }
+    throw new Error('等待 Chrome 启动超时')
+  }
+
+  private async connectToChrome(port: number, timeout: number = 15_000): Promise<BrowserContext> {
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout })
+    const context = browser.contexts()[0]
+    if (!context) {
+      await browser.close().catch(() => undefined)
+      throw new Error('无法连接 Chrome 默认浏览器上下文')
+    }
+
+    this.activeBrowser = browser
+    this.activeContext = context
+    browser.on('disconnected', () => {
+      if (this.activeBrowser !== browser) return
+      this.activeBrowser = null
+      this.activeContext = null
+      this.contextPromise = null
+      this.chromeProcess = null
+      this.chromeProcessId = null
+      void fs.rm(debugPortFile, { force: true }).catch(() => undefined)
+    })
+    return context
+  }
+}
+
+async function terminateProcessTree(processId: number, child: ChildProcess | null) {
+  if (process.platform === 'win32') {
+    const exitCode = await new Promise<number | null>((resolve) => {
+      const killer = spawn('taskkill.exe', ['/PID', String(processId), '/T', '/F'], {
+        detached: false,
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      killer.once('error', () => resolve(null))
+      killer.once('exit', (code) => resolve(code))
+    })
+    if (exitCode === 0) return
+  }
+  if (child && !child.killed && child.exitCode === null) child.kill()
+}
+
+function isProcessAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0)
+    return true
+  } catch (error) {
+    // ESRCH 表示进程已退出；EPERM 表示进程仍在但无权限，视为存活。
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM'
+  }
+}
+
+async function waitForProcessExit(processId: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(processId)) return true
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
+  return !isProcessAlive(processId)
+}
+
+async function readDebugEndpoint(): Promise<{ port: number; pid: number | null } | null> {
+  try {
+    const content = await fs.readFile(debugPortFile, 'utf8')
+    try {
+      const parsed = JSON.parse(content) as { port?: unknown; pid?: unknown }
+      const port = Number(parsed.port)
+      const pid = Number(parsed.pid)
+      return Number.isInteger(port) && port > 0
+        ? { port, pid: Number.isInteger(pid) && pid > 0 ? pid : null }
+        : null
+    } catch {
+      const port = Number(content.trim())
+      return Number.isInteger(port) && port > 0 ? { port, pid: null } : null
+    }
+  } catch {
+    return null
+  }
+}
+
+async function findAvailablePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.unref()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address ? address.port : 0
+      server.close((error) => error ? reject(error) : resolve(port))
+    })
+  })
+}
+
+async function setWindowState(context: BrowserContext, page: Page, windowState: 'normal' | 'minimized') {
+  try {
+    const session = await context.newCDPSession(page)
+    const { windowId } = await session.send('Browser.getWindowForTarget') as { windowId: number }
+    if (windowState === 'normal') {
+      const screen = await page.evaluate(() => ({
+        left: Number.isFinite((window.screen as Screen & { availLeft?: number }).availLeft)
+          ? (window.screen as Screen & { availLeft?: number }).availLeft ?? 0
+          : 0,
+        top: Number.isFinite((window.screen as Screen & { availTop?: number }).availTop)
+          ? (window.screen as Screen & { availTop?: number }).availTop ?? 0
+          : 0,
+        width: Math.max(window.screen.availWidth || window.innerWidth, 1024),
+        height: Math.max(window.screen.availHeight || window.innerHeight, 700),
+      })).catch(() => ({ left: 0, top: 0, width: 1920, height: 1080 }))
+      const width = Math.min(1280, Math.max(960, screen.width - 120))
+      const height = Math.min(900, Math.max(680, screen.height - 120))
+      const x = Math.round(screen.left + Math.max(0, (screen.width - width) / 2))
+      const y = Math.round(screen.top + Math.max(0, (screen.height - height) / 2))
+      // Restore the normal state before applying coordinates. Chrome may ignore
+      // left/top while the target is still minimized or maximized.
+      await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } })
+      await session.send('Browser.setWindowBounds', {
+        windowId,
+        bounds: { width, height, left: x, top: y },
+      })
+    } else {
+      await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState } })
+    }
+    await session.detach()
+  } catch {
+    // Window management is best-effort; authentication still works without it.
+  }
+}

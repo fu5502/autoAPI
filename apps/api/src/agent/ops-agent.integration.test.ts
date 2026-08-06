@@ -7,7 +7,7 @@ import { GeminiAdapter } from "../gateway/adapters/gemini-adapter.js";
 import { OpenAiAdapter } from "../gateway/adapters/openai-adapter.js";
 import { createSecretBox } from "../security/secret-box.js";
 import { startMockUpstream } from "../test/test-helpers.js";
-import { OpsAgent } from "./ops-agent.js";
+import { ChannelImportError, isOfficialApiKey, OpsAgent } from "./ops-agent.js";
 
 let server: FastifyInstance | null = null;
 
@@ -17,6 +17,206 @@ afterEach(async () => {
 });
 
 describe("operations agent", () => {
+  it("only accepts official-looking keys and imports a candidate without probing", async () => {
+    let modelsChecks = 0;
+    let chatChecks = 0;
+    const mock = await startMockUpstream((app) => {
+      app.get("/v1/models", async () => {
+        modelsChecks += 1;
+        return { object: "list", data: [{ id: "gpt-import-test" }] };
+      });
+      app.post("/v1/chat/completions", async (request, reply) => {
+        chatChecks += 1;
+        const body = request.body as { stream?: boolean };
+        if (body.stream) {
+          reply.hijack();
+          reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+          reply.raw.end("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n");
+          return reply;
+        }
+        return reply.send({ choices: [{ message: { content: "ok" } }], usage: {} });
+      });
+    });
+    server = mock.app;
+    const store = new MemoryStore();
+    const secrets = createSecretBox("channel-import-test-key");
+    const agent = new OpsAgent({
+      store,
+      secrets,
+      registry: new AdapterRegistry([new OpenAiAdapter(), new ClaudeAdapter(), new GeminiAdapter()]),
+      timeoutMs: 1_000,
+      failureThreshold: 3,
+      intervalMs: 60_000,
+    });
+
+    expect(isOfficialApiKey("sk-valid-import-key")).toBe(true);
+    expect(isOfficialApiKey("eyJhbGciOiJIUzI1NiJ9.payload.signature")).toBe(false);
+    expect(isOfficialApiKey("access_token_value")).toBe(false);
+
+    const preview = await agent.prepareChannelImport({
+      siteId: 7,
+      siteName: "Import site",
+      baseUrl: `${mock.baseUrl}/`,
+      apiKey: "sk-valid-import-key",
+      protocol: "openai",
+    });
+    expect(preview).toMatchObject({ siteName: "Import site", baseUrl: mock.baseUrl, models: [], keyLast4: "-key", validation: { status: "not_probed" } });
+    expect(JSON.stringify(preview)).not.toContain("sk-valid-import-key");
+
+    const imported = await agent.confirmChannelImport({
+      siteId: 7,
+      candidateId: preview.candidateId,
+      name: "Imported site",
+      models: ["gpt-import-test"],
+      priority: 5,
+      weight: 100,
+      tags: ["签到站点"],
+    });
+    expect(imported.channel.status).toBe("pending");
+    expect(imported.channel.keyCiphertext).not.toContain("sk-valid-import-key");
+    expect(imported.channel.models).toEqual([]);
+    expect(await store.listRoutingCandidates("gpt-import-test")).toHaveLength(0);
+    expect(modelsChecks).toBe(0);
+    expect(chatChecks).toBe(0);
+
+    await expect(agent.prepareChannelImport({
+      siteId: 7,
+      siteName: "Import site",
+      baseUrl: mock.baseUrl,
+      apiKey: "sk-valid-import-key",
+      protocol: "openai",
+    })).rejects.toBeInstanceOf(ChannelImportError);
+  });
+
+  it("accepts a complete non-sk key returned by an official provider API", async () => {
+    const store = new MemoryStore();
+    const secrets = createSecretBox("channel-import-custom-prefix-test");
+    const agent = new OpsAgent({
+      store,
+      secrets,
+      registry: new AdapterRegistry([new OpenAiAdapter(), new ClaudeAdapter(), new GeminiAdapter()]),
+      timeoutMs: 1_000,
+      failureThreshold: 3,
+      intervalMs: 60_000,
+    });
+
+    const preview = await agent.prepareChannelImport({
+      siteId: 12,
+      siteName: "Custom prefix site",
+      keyName: "Official key",
+      baseUrl: "https://custom-prefix.example",
+      apiKey: "ak_live_complete_provider_key_12345",
+      protocol: "new-api",
+    });
+
+    expect(preview.keyName).toBe("Official key");
+    const imported = await agent.confirmChannelImport({
+      siteId: 12,
+      candidateId: preview.candidateId,
+      name: "Custom prefix site",
+      models: [],
+      priority: 0,
+      weight: 100,
+      tags: [],
+    });
+    expect(secrets.decrypt(imported.channel.keyCiphertext)).toBe("ak_live_complete_provider_key_12345");
+  });
+
+  it("keeps multiple validated keys selectable and imports only the selected key", async () => {
+    const mock = await startMockUpstream((app) => {
+      app.get("/v1/models", async () => ({ object: "list", data: [{ id: "gpt-multi-key-test" }] }));
+      app.post("/v1/chat/completions", async (request, reply) => {
+        const body = request.body as { stream?: boolean };
+        if (body.stream) {
+          reply.hijack();
+          reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+          reply.raw.end("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n");
+          return reply;
+        }
+        return reply.send({ choices: [{ message: { content: "ok" } }], usage: {} });
+      });
+    });
+    server = mock.app;
+    const store = new MemoryStore();
+    const secrets = createSecretBox("multi-key-import-test-key");
+    const agent = new OpsAgent({
+      store,
+      secrets,
+      registry: new AdapterRegistry([new OpenAiAdapter(), new ClaudeAdapter(), new GeminiAdapter()]),
+      timeoutMs: 1_000,
+      failureThreshold: 3,
+      intervalMs: 60_000,
+    });
+
+    const first = await agent.prepareChannelImport({
+      siteId: 8,
+      siteName: "Multi-key site",
+      keyName: "Primary",
+      baseUrl: mock.baseUrl,
+      apiKey: "sk-primary-one",
+      protocol: "openai",
+    });
+    const second = await agent.prepareChannelImport({
+      siteId: 8,
+      siteName: "Multi-key site",
+      keyName: "Backup",
+      baseUrl: mock.baseUrl,
+      apiKey: "sk-backup-two",
+      protocol: "openai",
+    });
+
+    expect(first.candidateId).not.toBe(second.candidateId);
+    expect(first.keyName).toBe("Primary");
+    expect(second.keyName).toBe("Backup");
+    expect(first.keyLast4).toBe("-one");
+    expect(second.keyLast4).toBe("-two");
+    expect(JSON.stringify({ first, second })).not.toContain("sk-primary-one");
+    expect(JSON.stringify({ first, second })).not.toContain("sk-backup-two");
+
+    const imported = await agent.confirmChannelImport({
+      siteId: 8,
+      candidateId: second.candidateId,
+      name: "Selected backup",
+      models: second.models,
+      priority: 0,
+      weight: 100,
+      tags: [],
+    });
+    expect(secrets.decrypt(imported.channel.keyCiphertext)).toBe("sk-backup-two");
+    expect(await store.listChannels()).toHaveLength(1);
+    expect(imported.channel.status).toBe("pending");
+    expect(imported.channel.models).toEqual([]);
+  });
+
+  it("imports successfully when the upstream would reject probe requests", async () => {
+    let requestCount = 0;
+    const mock = await startMockUpstream((app) => {
+      app.all("/v1/*", async (_request, reply) => {
+        requestCount += 1;
+        return reply.code(503).send({ error: { message: "system cpu overloaded (current: 91.1%, threshold: 90%)" } });
+      });
+    });
+    server = mock.app;
+    const agent = new OpsAgent({
+      store: new MemoryStore(),
+      secrets: createSecretBox("overload-import-test-key"),
+      registry: new AdapterRegistry([new OpenAiAdapter(), new ClaudeAdapter(), new GeminiAdapter()]),
+      timeoutMs: 1_000,
+      failureThreshold: 3,
+      intervalMs: 60_000,
+    });
+
+    const preview = await agent.prepareChannelImport({
+      siteId: 9,
+      siteName: "Overloaded site",
+      baseUrl: mock.baseUrl,
+      apiKey: "sk-overload-test",
+      protocol: "openai",
+    });
+    expect(preview.validation.status).toBe("not_probed");
+    expect(requestCount).toBe(0);
+  });
+
   it("adds a channel without probing, then keeps manual probes from changing selected models", async () => {
     let chatChecks = 0;
     let streamChecks = 0;

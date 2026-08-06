@@ -22,7 +22,7 @@ import type {
   RequestLogPage,
   RequestLogEntry,
 } from "../domain/types.js";
-import { buildPoolHealth } from "../domain/pool-health.js";
+import { buildPoolHealth, isHealthRelevantEvent } from "../domain/pool-health.js";
 
 export class MemoryStore implements GatewayStore {
   readonly channels = new Map<string, Channel>();
@@ -37,6 +37,7 @@ export class MemoryStore implements GatewayStore {
     input: ProviderImportInput,
     encryptedKey: string,
     keyLast4: string,
+    keyName?: string,
   ): Promise<ImportedProvider> {
     const providerId = randomUUID();
     const id = randomUUID();
@@ -46,8 +47,10 @@ export class MemoryStore implements GatewayStore {
       providerName: input.name,
       name: input.channelName ?? input.name,
       baseUrl: input.baseUrl.replace(/\/+$/, ""),
+      faviconUrl: input.faviconUrl ?? null,
       protocol: input.protocol,
       keyCiphertext: encryptedKey,
+      keyName: input.keyName?.trim() || keyName?.trim() || "API Key",
       keyLast4,
       status: "pending",
       enabled: true,
@@ -62,6 +65,7 @@ export class MemoryStore implements GatewayStore {
       isolationReason: null,
       lastCheckedAt: null,
       lastLatencyMs: null,
+      recentRequestCount: 0,
       recentErrorRate: 0,
       models: input.models ?? [],
       tags: input.tags,
@@ -79,14 +83,28 @@ export class MemoryStore implements GatewayStore {
   }
 
   async listChannels(): Promise<Channel[]> {
-    return [...this.channels.values()].sort((a, b) => b.priority - a.priority);
+    return [...this.channels.values()].sort(compareChannelsByHealth);
   }
 
-  async updateChannel(id: string, input: ChannelUpdateInput, encryptedKey?: string, keyLast4?: string): Promise<Channel | null> {
+  async reorderChannels(channelIds: string[]): Promise<Channel[]> {
+    const requested = new Set(channelIds);
+    if (requested.size !== this.channels.size || [...this.channels.keys()].some((id) => !requested.has(id))) {
+      throw new Error("Channel reorder must include every channel exactly once");
+    }
+    channelIds.forEach((id, index) => {
+      const channel = this.channels.get(id);
+      if (channel) channel.priority = channelIds.length - index;
+    });
+    return this.listChannels();
+  }
+
+  async updateChannel(id: string, input: ChannelUpdateInput, encryptedKey?: string, keyLast4?: string, keyName?: string): Promise<Channel | null> {
     const channel = this.channels.get(id);
     if (!channel) return null;
     channel.name = input.name;
+    if (input.keyName !== undefined || keyName !== undefined) channel.keyName = input.keyName?.trim() || keyName?.trim() || "API Key";
     channel.baseUrl = input.baseUrl.replace(/\/+$/, "");
+    if (input.faviconUrl !== undefined) channel.faviconUrl = input.faviconUrl;
     channel.protocol = input.protocol;
     channel.priority = input.priority;
     channel.weight = input.weight;
@@ -111,6 +129,15 @@ export class MemoryStore implements GatewayStore {
     for (const model of input.models) {
       await this.saveModelAlias({ alias: model, channelId: id, upstreamModel: model, enabled: true });
     }
+    return channel;
+  }
+
+  async updateChannelBalance(id: string, balance: number, balanceCurrency: string | null): Promise<Channel | null> {
+    const channel = this.channels.get(id);
+    if (!channel) return null;
+    channel.balance = balance;
+    channel.balanceCurrency = balanceCurrency;
+    channel.balanceStatus = getBalanceStatus(balance, channel.minBalance);
     return channel;
   }
 
@@ -178,8 +205,9 @@ export class MemoryStore implements GatewayStore {
     if (event.channelId) {
       const channel = this.channels.get(event.channelId);
       if (channel) {
-        const recent = this.usage.filter((item) => item.channelId === channel.id).slice(-100);
-        channel.recentErrorRate = recent.filter((item) => item.statusCode >= 400).length / recent.length;
+        const recent = this.usage.filter((item) => item.channelId === channel.id && isHealthRelevantEvent(item)).slice(-100);
+        channel.recentRequestCount = recent.length;
+        channel.recentErrorRate = recent.length ? recent.filter((item) => item.statusCode >= 400).length / recent.length : 0;
       }
     }
   }
@@ -190,8 +218,14 @@ export class MemoryStore implements GatewayStore {
     const channelFilter = filters.channel?.trim().toLowerCase();
     const modelFilter = filters.model?.trim().toLowerCase();
     const sourceIpFilter = filters.sourceIp?.trim().toLowerCase();
-    const matched = this.usage
-      .filter((event) => Date.parse(event.createdAt) >= Date.now() - duration)
+    const recentEvents = this.usage.filter((event) => Date.parse(event.createdAt) >= Date.now() - duration);
+    const filterOptions = {
+      clients: uniqueSorted(recentEvents.map((event) => event.clientName)),
+      channels: uniqueSorted(recentEvents.map((event) => this.channels.get(event.channelId ?? "")?.name ?? "unrouted")),
+      models: uniqueSorted(recentEvents.map((event) => event.modelAlias)),
+      sourceIps: uniqueSorted(recentEvents.map((event) => event.sourceIp).filter((value): value is string => Boolean(value?.trim()))),
+    };
+    const matched = recentEvents
       .filter((event) => !clientFilter || event.clientName.toLowerCase().includes(clientFilter))
       .filter((event) => !modelFilter || event.modelAlias.toLowerCase().includes(modelFilter) || (event.upstreamModel ?? "").toLowerCase().includes(modelFilter))
       .filter((event) => !sourceIpFilter || (event.sourceIp ?? "").toLowerCase().includes(sourceIpFilter))
@@ -210,6 +244,7 @@ export class MemoryStore implements GatewayStore {
       limit: filters.limit,
       offset: filters.offset,
       hasMore: filters.offset + items.length < matched.length,
+      filterOptions,
     };
   }
 
@@ -222,6 +257,9 @@ export class MemoryStore implements GatewayStore {
       channelId: event.channelId,
       channelName: channel?.name ?? null,
       providerName: channel?.providerName ?? null,
+      keyName: channel?.keyName ?? "API Key",
+      gatewayKeyName: event.gatewayKeyName ?? null,
+      reasoningEffort: event.reasoningEffort ?? null,
       modelAlias: event.modelAlias,
       upstreamModel: event.upstreamModel,
       clientName: event.clientName,
@@ -281,13 +319,21 @@ export class MemoryStore implements GatewayStore {
 
   async getPools(): Promise<PoolSummary[]> {
     const grouped = new Map<string, PoolSummary>();
+    const latestRequestByAlias = new Map<string, number>();
+    for (const event of this.usage) {
+      const timestamp = Date.parse(event.createdAt);
+      if (!Number.isFinite(timestamp)) continue;
+      latestRequestByAlias.set(event.modelAlias, Math.max(latestRequestByAlias.get(event.modelAlias) ?? 0, timestamp));
+    }
     for (const route of this.routes.filter((item) => item.enabled)) {
       const channel = this.channels.get(route.channelId);
       if (!channel) continue;
       const routeEvents = this.usage.filter((event) => event.modelAlias === route.alias && event.channelId === channel.id);
       const routeHealth = buildPoolHealth(routeEvents);
       const health = buildPoolHealth(this.usage.filter((event) => event.modelAlias === route.alias));
-      const events = this.usage.filter((event) => event.modelAlias === route.alias && Date.parse(event.createdAt) >= Date.now() - 3_600_000);
+      const events = this.usage.filter((event) => event.modelAlias === route.alias
+        && isHealthRelevantEvent(event)
+        && Date.parse(event.createdAt) >= Date.now() - 3_600_000);
       const pool = grouped.get(route.alias) ?? {
         alias: route.alias,
         channels: 0,
@@ -316,7 +362,10 @@ export class MemoryStore implements GatewayStore {
       });
       grouped.set(route.alias, pool);
     }
-    return [...grouped.values()];
+    return [...grouped.values()].sort((a, b) => {
+      const latestDifference = (latestRequestByAlias.get(b.alias) ?? 0) - (latestRequestByAlias.get(a.alias) ?? 0);
+      return latestDifference || a.alias.localeCompare(b.alias, "zh-CN");
+    });
   }
 
   async getUsage(window: "1h" | "24h" | "7d"): Promise<UsageSummary> {
@@ -377,6 +426,14 @@ export class MemoryStore implements GatewayStore {
     return [...this.gatewayKeys.values()].some((key) => key.enabled && key.keyHash === keyHash);
   }
 
+  async findGatewayKey(keyHash: string): Promise<GatewayKeySummary | null> {
+    const key = [...this.gatewayKeys.values()].find((item) => item.enabled && item.keyHash === keyHash);
+    if (!key) return null;
+    key.lastUsedAt = new Date().toISOString();
+    const { keyHash: _keyHash, ...summary } = key;
+    return summary;
+  }
+
   async getAdminAccount(): Promise<AdminAccount | null> {
     return this.adminAccount;
   }
@@ -433,6 +490,18 @@ export class PersistentMemoryStore extends MemoryStore {
 
   override async updateChannel(...args: Parameters<MemoryStore["updateChannel"]>) {
     const result = await super.updateChannel(...args);
+    await this.persist();
+    return result;
+  }
+
+  override async updateChannelBalance(...args: Parameters<MemoryStore["updateChannelBalance"]>) {
+    const result = await super.updateChannelBalance(...args);
+    await this.persist();
+    return result;
+  }
+
+  override async reorderChannels(...args: Parameters<MemoryStore["reorderChannels"]>) {
+    const result = await super.reorderChannels(...args);
     await this.persist();
     return result;
   }
@@ -524,10 +593,11 @@ export class PersistentMemoryStore extends MemoryStore {
         throw new Error("Unsupported autoAPI local state format");
       }
       for (const channel of state.channels) {
-        if (channel && typeof channel.id === "string") this.channels.set(channel.id, channel);
+        if (channel && typeof channel.id === "string") this.channels.set(channel.id, { ...channel, faviconUrl: channel.faviconUrl ?? null });
       }
       this.routes.push(...state.routes.filter((route) => route && typeof route.id === "string"));
       this.usage.push(...state.usage.filter((event) => event && typeof event.createdAt === "string"));
+      for (const channel of this.channels.values()) this.refreshRecentChannelStats(channel);
       for (const key of state.gatewayKeys ?? []) {
         if (key && typeof key.id === "string" && typeof key.keyHash === "string") this.gatewayKeys.set(key.id, key);
       }
@@ -547,10 +617,11 @@ export class PersistentMemoryStore extends MemoryStore {
             throw new Error("Unsupported autoAPI local state format");
           }
           for (const channel of state.channels) {
-            if (channel && typeof channel.id === "string") this.channels.set(channel.id, channel);
+            if (channel && typeof channel.id === "string") this.channels.set(channel.id, { ...channel, faviconUrl: channel.faviconUrl ?? null });
           }
           this.routes.push(...state.routes.filter((route) => route && typeof route.id === "string"));
           this.usage.push(...state.usage.filter((event) => event && typeof event.createdAt === "string"));
+          for (const channel of this.channels.values()) this.refreshRecentChannelStats(channel);
           for (const key of state.gatewayKeys ?? []) {
             if (key && typeof key.id === "string" && typeof key.keyHash === "string") this.gatewayKeys.set(key.id, key);
           }
@@ -590,6 +661,12 @@ export class PersistentMemoryStore extends MemoryStore {
     this.writeQueue = this.writeQueue.catch(() => undefined).then(write);
     return this.writeQueue;
   }
+
+  private refreshRecentChannelStats(channel: Channel): void {
+    const recent = this.usage.filter((item) => item.channelId === channel.id && isHealthRelevantEvent(item)).slice(-100);
+    channel.recentRequestCount = recent.length;
+    channel.recentErrorRate = recent.length ? recent.filter((item) => item.statusCode >= 400).length / recent.length : 0;
+  }
 }
 
 function resetChannelHealth(channel: Channel) {
@@ -606,6 +683,35 @@ function getBalanceStatus(balance: number | null, minBalance: number | null): Ch
   if (balance <= 0) return "exhausted";
   if (minBalance !== null && balance < minBalance) return "low";
   return "ok";
+}
+
+function compareChannelsByHealth(a: Channel, b: Channel): number {
+  const availabilityDifference = channelAvailabilityRank(a) - channelAvailabilityRank(b);
+  if (availabilityDifference !== 0) return availabilityDifference;
+
+  const aHasRequests = a.recentRequestCount > 0;
+  const bHasRequests = b.recentRequestCount > 0;
+  if (aHasRequests !== bHasRequests) return aHasRequests ? -1 : 1;
+
+  if (aHasRequests && bHasRequests) {
+    const healthDifference = channelHealthPercent(b) - channelHealthPercent(a);
+    if (healthDifference !== 0) return healthDifference;
+    if (a.recentRequestCount !== b.recentRequestCount) return b.recentRequestCount - a.recentRequestCount;
+  }
+
+  const latencyDifference = (a.lastLatencyMs ?? Number.MAX_SAFE_INTEGER) - (b.lastLatencyMs ?? Number.MAX_SAFE_INTEGER);
+  if (latencyDifference !== 0) return latencyDifference;
+  if (a.priority !== b.priority) return b.priority - a.priority;
+  return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+}
+
+function channelAvailabilityRank(channel: Channel): number {
+  if (!channel.enabled || channel.status === "disabled" || channel.status === "isolated") return 2;
+  return channel.status === "degraded" ? 1 : 0;
+}
+
+function channelHealthPercent(channel: Channel): number {
+  return 1 - Math.min(1, Math.max(0, Number.isFinite(channel.recentErrorRate) ? channel.recentErrorRate : 1));
 }
 
 function sum(values: number[]): number {
@@ -654,4 +760,8 @@ function endpointForKind(kind: UsageEventInput["requestKind"]): string {
 
 function isLocalSourceIp(sourceIp: string | null | undefined): boolean {
   return sourceIp === "127.0.0.1" || sourceIp === "::1" || sourceIp === "::ffff:127.0.0.1";
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
 }

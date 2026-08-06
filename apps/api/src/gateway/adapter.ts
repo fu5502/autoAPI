@@ -1,9 +1,20 @@
 import type { Channel, GatewayRequest, ProbeResult, Protocol, UpstreamResult } from "../domain/types.js";
+import type { UpstreamError } from "./errors.js";
+
+export interface AdapterUsage {
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number | null;
+}
 
 export interface AdapterAttempt {
   result: UpstreamResult;
   promptTokens: number;
   completionTokens: number;
+  cachedTokens?: number | null;
+  firstByteLatencyMs?: number | null;
+  streamUsage?: Promise<AdapterUsage>;
+  streamError?: Promise<UpstreamError | null>;
 }
 
 export interface UpstreamAdapter {

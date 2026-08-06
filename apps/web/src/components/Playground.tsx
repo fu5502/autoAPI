@@ -19,10 +19,24 @@ interface PlaygroundMessage {
   streaming?: boolean;
 }
 
+function createClientId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const values = new Uint32Array(4);
+    globalThis.crypto.getRandomValues(values);
+    return Array.from(values).map((value) => value.toString(16)).join("-");
+  }
+
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpdated: () => void }) {
   const [channelId, setChannelId] = useState(channels[0]?.id ?? "");
   const [model, setModel] = useState(channels[0]?.models[0] ?? "");
-  const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID());
+  const [sessionId, setSessionId] = useState<string>(() => createClientId());
   const [messages, setMessages] = useState<PlaygroundMessage[]>([]);
   const [input, setInput] = useState("");
   const [temperature, setTemperature] = useState(0.7);
@@ -42,7 +56,7 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
 
   const send = useMutation({
     mutationFn: (variables: { content: string; history: PlaygroundMessage[]; model: string; channelId: string; stream: boolean; requestId: string; assistantMessageId: string; requestSessionId: string }) => {
-      const nextMessages = [...variables.history, { id: crypto.randomUUID(), role: "user" as const, content: variables.content }];
+      const nextMessages = [...variables.history, { id: createClientId(), role: "user" as const, content: variables.content }];
       return api.playgroundChat({
         sessionId: variables.requestSessionId,
         channelId: variables.channelId,
@@ -61,10 +75,14 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
         frequencyPenalty,
         presencePenalty,
         stream: variables.stream,
-      });
+      }, variables.stream ? (delta) => {
+        setMessages((current) => current.map((message) => message.id === variables.assistantMessageId
+          ? { ...message, content: `${message.content}${delta}` }
+          : message));
+      } : undefined);
     },
     onMutate: (variables) => {
-      const userId = crypto.randomUUID();
+      const userId = createClientId();
       setMessages((current) => [...current, { id: userId, role: "user", content: variables.content }, ...(variables.stream ? [{ id: variables.assistantMessageId, role: "assistant" as const, content: "", streaming: true }] : [])]);
       activeRequestIdRef.current = variables.requestId;
       setInput("");
@@ -73,7 +91,7 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
       if (activeRequestIdRef.current !== variables.requestId) return;
       setMessages((current) => {
         const assistant = {
-          id: variables.stream ? variables.assistantMessageId : crypto.randomUUID(),
+          id: variables.stream ? variables.assistantMessageId : createClientId(),
           role: "assistant" as const,
           content: result.message,
           latencyMs: result.latencyMs,
@@ -96,7 +114,7 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
       const requestChannel = channels.find((channel) => channel.id === variables.channelId);
       setMessages((current) => {
         const failed = {
-          id: variables.stream ? variables.assistantMessageId : crypto.randomUUID(),
+          id: variables.stream ? variables.assistantMessageId : createClientId(),
           role: "assistant" as const,
           content: reason instanceof Error ? reason.message : "测试请求失败。",
           model: variables.model,
@@ -131,7 +149,7 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
 
   function clearConversation() {
     setMessages([]);
-    setSessionId(crypto.randomUUID());
+    setSessionId(createClientId());
     activeRequestIdRef.current = null;
     send.reset();
   }
@@ -155,7 +173,7 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
     const userMessage = messages[userIndex];
     if (!userMessage || userMessage.role !== "user" || !selectedChannel || !model) return;
     setMessages((current) => current.slice(0, userIndex));
-    send.mutate({ content: userMessage.content, history: messages.slice(0, userIndex), model, channelId: selectedChannel.id, stream, requestId: crypto.randomUUID(), assistantMessageId: crypto.randomUUID(), requestSessionId: sessionId });
+    send.mutate({ content: userMessage.content, history: messages.slice(0, userIndex), model, channelId: selectedChannel.id, stream, requestId: createClientId(), assistantMessageId: createClientId(), requestSessionId: sessionId });
   }
 
   function quoteMessage(message: PlaygroundMessage) {
@@ -194,7 +212,7 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
   async function removeSession(id: string) {
     await api.deletePlaygroundSession(id);
     if (id === sessionId) {
-      setSessionId(crypto.randomUUID());
+      setSessionId(createClientId());
       setMessages([]);
       activeRequestIdRef.current = null;
     }
@@ -216,7 +234,7 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
   function sendCurrentMessage() {
     const content = input.trim();
     if (!selectedChannel || !model || !content || send.isPending) return;
-    send.mutate({ content, history: messages, model, channelId: selectedChannel.id, stream, requestId: crypto.randomUUID(), assistantMessageId: crypto.randomUUID(), requestSessionId: sessionId });
+    send.mutate({ content, history: messages, model, channelId: selectedChannel.id, stream, requestId: createClientId(), assistantMessageId: createClientId(), requestSessionId: sessionId });
   }
 
   async function copyMessage(message: PlaygroundMessage) {

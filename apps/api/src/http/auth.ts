@@ -15,9 +15,11 @@ export function requireToken(expected: string, kind: "admin" | "gateway") {
 export function requireGatewayToken(store: GatewayStore) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const actual = readAccessToken(request, "gateway");
-    if (!actual || !(await store.hasGatewayKey(hashGatewayKey(actual)))) {
+    const key = actual ? await store.findGatewayKey(hashGatewayKey(actual)) : null;
+    if (!key) {
       return reply.code(401).send(authErrorPayload(request, "Invalid or missing access token"));
     }
+    (request as FastifyRequest & { gatewayKeyName?: string }).gatewayKeyName = key.name;
   };
 }
 

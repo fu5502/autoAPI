@@ -57,6 +57,47 @@ async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function adminStream<T>(path: string, body: Record<string, unknown>, onDelta?: (delta: string) => void): Promise<T> {
+  const response = await fetch(`/admin${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${getAdminToken()}`,
+      "content-type": "application/json",
+      accept: "text/event-stream",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+    throw new ApiError(translateApiError(payload?.error?.message, response.status), response.status);
+  }
+  if (!response.headers.get("content-type")?.includes("text/event-stream")) return response.json() as Promise<T>;
+  if (!response.body) throw new ApiError("流式响应不可读取", 502);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: T | undefined;
+  while (true) {
+    const part = await reader.read();
+    buffer += decoder.decode(part.value ?? new Uint8Array(), { stream: !part.done });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = blocks.pop() ?? "";
+    for (const block of blocks) {
+      const event = block.split(/\r?\n/).find((line) => line.startsWith("event:"))?.slice(6).trim();
+      const data = block.split(/\r?\n/).find((line) => line.startsWith("data:"))?.slice(5).trim();
+      if (!data) continue;
+      const payload = JSON.parse(data) as Record<string, unknown>;
+      if (event === "delta" && typeof payload.delta === "string") onDelta?.(payload.delta);
+      if (event === "done") result = payload as T;
+      if (event === "error") throw new ApiError(typeof payload.message === "string" ? payload.message : "流式测试失败", 502);
+    }
+    if (part.done) break;
+  }
+  if (!result) throw new ApiError("流式响应未正常结束", 502);
+  return result;
+}
+
 function translateApiError(message: string | undefined, status: number) {
   if (!message) return `请求失败（HTTP ${status}）`;
   const labels: Record<string, string> = {
@@ -85,9 +126,12 @@ export const api = {
   }),
   me: () => adminFetch<{ username: string }>("/auth/me"),
   loginHistory: () => adminFetch<AdminLoginRecord[]>("/security/login-history"),
-  changePassword: (body: { currentPassword: string; newPassword: string }) => adminFetch<{ ok: true }>("/security/password", {
+  changePassword: (body: { currentPassword: string; newPassword: string }) => adminFetch<{ ok: true; token: string; username: string; expiresAt: string }>("/security/password", {
     method: "POST",
     body: JSON.stringify(body),
+  }).then((result) => {
+    setAdminToken(result.token);
+    return result;
   }),
   gatewayKeys: () => adminFetch<GatewayKeySummary[]>("/gateway-keys"),
   createGatewayKey: (body: { name: string; key?: string }) => adminFetch<CreatedGatewayKey>("/gateway-keys", {
@@ -96,6 +140,10 @@ export const api = {
   }),
   deleteGatewayKey: (id: string) => adminFetch<void>(`/gateway-keys/${id}`, { method: "DELETE" }),
   channels: () => adminFetch<Channel[]>("/channels"),
+  reorderChannels: (channelIds: string[]) => adminFetch<{ channels: Channel[] }>("/channels/reorder", {
+    method: "POST",
+    body: JSON.stringify({ channelIds }),
+  }),
   updateChannel: (id: string, body: Record<string, unknown>) => adminFetch<{ channel: Channel }>(`/channels/${id}`, {
     method: "PUT",
     body: JSON.stringify(body),
@@ -116,10 +164,12 @@ export const api = {
     if (params.localOnly) query.set("localOnly", "true");
     return adminFetch<RequestLogPage>(`/requests?${query.toString()}`);
   },
-  playgroundChat: (body: Record<string, unknown>) => adminFetch<PlaygroundResponse>("/playground/chat", {
-    method: "POST",
-    body: JSON.stringify(body),
-  }),
+  playgroundChat: (body: Record<string, unknown>, onDelta?: (delta: string) => void) => body.stream === true
+    ? adminStream<PlaygroundResponse>("/playground/chat", body, onDelta)
+    : adminFetch<PlaygroundResponse>("/playground/chat", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   playgroundSessions: () => adminFetch<PlaygroundSession[]>("/playground/sessions?limit=50"),
   deletePlaygroundSession: (id: string) => adminFetch<void>(`/playground/sessions/${id}`, { method: "DELETE" }),
   probe: (channelId: string) => adminFetch<ProbeResponse>(`/channels/${channelId}/probe`, { method: "POST" }),
@@ -127,7 +177,7 @@ export const api = {
     method: "POST",
     body: JSON.stringify(body),
   }),
-  importProvider: (body: Record<string, unknown>) => adminFetch("/providers/import", {
+  importProvider: (body: Record<string, unknown>) => adminFetch<{ providerId: string; channel: Channel }>("/providers/import", {
     method: "POST",
     body: JSON.stringify(body),
   }),

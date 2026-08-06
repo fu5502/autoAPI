@@ -1,5 +1,7 @@
-import { Pause, Pencil, Play, RefreshCw, Trash2 } from "lucide-react";
+import { Fragment, useEffect, useState } from "react";
+import { Check, ChevronDown, ChevronRight, Copy, GripVertical, Pause, Pencil, Play, RefreshCw, Trash2 } from "lucide-react";
 import type { Channel } from "../types";
+import { getAdminToken } from "../api";
 import { StatusDot } from "./StatusDot";
 
 export function ChannelTable({
@@ -11,6 +13,7 @@ export function ChannelTable({
   onToggle,
   togglingId,
   deletingId,
+  onReorder,
 }: {
   channels: Channel[];
   probingId: string | null;
@@ -20,53 +23,247 @@ export function ChannelTable({
   onToggle: (channel: Channel) => void;
   togglingId: string | null;
   deletingId: string | null;
+  onReorder: (channelIds: string[]) => Promise<void>;
 }) {
+  const [orderedChannels, setOrderedChannels] = useState(channels);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [savingOrder, setSavingOrder] = useState(false);
+  const [expandedChannelIds, setExpandedChannelIds] = useState<Set<string>>(() => new Set());
+  const [copiedBaseUrlId, setCopiedBaseUrlId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!draggingId && !savingOrder) setOrderedChannels(channels);
+  }, [channels, draggingId, savingOrder]);
+
+  async function dropChannel(targetId: string) {
+    if (!draggingId || draggingId === targetId || savingOrder) return;
+    const fromIndex = orderedChannels.findIndex((channel) => channel.id === draggingId);
+    const targetIndex = orderedChannels.findIndex((channel) => channel.id === targetId);
+    if (fromIndex < 0 || targetIndex < 0) return;
+    const next = [...orderedChannels];
+    const [moved] = next.splice(fromIndex, 1);
+    if (!moved) return;
+    next.splice(targetIndex, 0, moved);
+    setDraggingId(null);
+    setDropTargetId(null);
+    setOrderedChannels(next);
+    setSavingOrder(true);
+    try {
+      await onReorder(next.map((channel) => channel.id));
+    } catch {
+      setOrderedChannels(channels);
+    } finally {
+      setSavingOrder(false);
+    }
+  }
+
+  function toggleExpanded(channelId: string) {
+    setExpandedChannelIds((current) => {
+      const next = new Set(current);
+      if (next.has(channelId)) next.delete(channelId);
+      else next.add(channelId);
+      return next;
+    });
+  }
+
+  async function copyBaseUrl(channel: Channel) {
+    try {
+      await copyText(channel.baseUrl);
+      setCopiedBaseUrlId(channel.id);
+      window.setTimeout(() => setCopiedBaseUrlId((current) => current === channel.id ? null : current), 1800);
+    } catch {
+      setCopiedBaseUrlId(null);
+    }
+  }
+
   return (
     <div className="table-scroll">
-      <table>
-        <thead><tr><th>渠道</th><th>状态</th><th>协议</th><th>余额</th><th>延迟</th><th>错误率</th><th><span className="sr-only">操作</span></th></tr></thead>
+      <table className="channel-table">
+        <thead><tr><th>渠道名称</th><th>密钥名称</th><th>Base URL</th><th>模型数</th><th>优先级</th><th>权重</th><th>状态</th><th>协议</th><th>余额</th><th>延迟</th><th>健康百分比</th><th><span className="sr-only">操作</span></th></tr></thead>
         <tbody>
-          {channels.length === 0 ? <tr><td className="empty-table-cell" colSpan={7}>暂无渠道，请先添加一个渠道。</td></tr> : channels.map((channel) => (
-            <tr key={channel.id}>
-              <td>
-                <div className="channel-name"><strong>{channel.name}</strong><span>{channel.baseUrl.replace(/^https?:\/\//, "")}</span></div>
-              </td>
-              <td><StatusDot status={channel.status} /></td>
-              <td><span className="mono subtle">{channel.protocol}</span></td>
-              <td>{formatBalance(channel)}</td>
-              <td>{channel.lastLatencyMs === null ? "—" : `${channel.lastLatencyMs} ms`}</td>
-              <td className={channel.recentErrorRate > 0.1 ? "danger-text" : ""}>{formatPercent(channel.recentErrorRate)}</td>
-              <td>
-                <div className="table-actions">
-                <button className="icon-button" title="探测渠道" aria-label={`探测${channel.name}`} disabled={probingId === channel.id} onClick={() => onProbe(channel.id)}>
-                  <RefreshCw size={15} className={probingId === channel.id ? "spin" : ""} />
-                </button>
-                <button className="icon-button" title="编辑渠道" aria-label={`编辑${channel.name}`} onClick={() => onEdit(channel)}>
-                  <Pencil size={15} />
-                </button>
-                <button className="icon-button" title={channel.enabled ? "停用渠道" : "启用渠道"} aria-label={`${channel.enabled ? "停用" : "启用"}${channel.name}`} disabled={togglingId === channel.id} onClick={() => onToggle(channel)}>
-                  {channel.enabled ? <Pause size={15} /> : <Play size={15} />}
-                </button>
-                <button className="icon-button danger-button" title="删除渠道" aria-label={`删除${channel.name}`} disabled={deletingId !== null} onClick={() => onDelete(channel)}>
-                  <Trash2 size={15} />
-                </button>
+          {orderedChannels.length === 0 ? <tr><td className="empty-table-cell" colSpan={12}>暂无渠道，请先添加一个渠道。</td></tr> : orderedChannels.map((channel) => {
+            const expanded = expandedChannelIds.has(channel.id);
+            return <Fragment key={channel.id}>
+              <tr
+                className={`channel-row ${draggingId === channel.id ? "channel-row-dragging " : ""}${dropTargetId === channel.id ? "channel-row-drop-target" : ""}`}
+                onDragOver={(event) => {
+                  if (!draggingId || draggingId === channel.id || savingOrder) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDropTargetId(channel.id);
+                }}
+                onDrop={(event) => {
+                  if (!draggingId || savingOrder) return;
+                  event.preventDefault();
+                  void dropChannel(channel.id);
+                }}
+              >
+                <td>
+                  <div className="channel-name">
+                    <span
+                      className="channel-drag-handle"
+                      title="拖拽调整渠道优先级"
+                      aria-label="拖拽调整渠道优先级"
+                      draggable={!savingOrder}
+                      onDragStart={(event) => {
+                        setDraggingId(channel.id);
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", channel.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggingId(null);
+                        setDropTargetId(null);
+                      }}
+                    ><GripVertical size={15} /></span>
+                    <button
+                      className="channel-expand-button"
+                      type="button"
+                      title={expanded ? "收起模型列表" : "展开模型列表"}
+                      aria-label={`${expanded ? "收起" : "展开"}${channel.name}的模型列表`}
+                      aria-expanded={expanded}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleExpanded(channel.id);
+                      }}
+                    >
+                      {expanded ? <ChevronDown className="channel-expand-icon" size={14} aria-hidden="true" /> : <ChevronRight className="channel-expand-icon" size={14} aria-hidden="true" />}
+                    </button>
+                    <ChannelSiteIcon channel={channel} />
+                    <div><strong>{channel.name}</strong></div>
+                  </div>
+                </td>
+                <td><span className="channel-key-name">{channel.keyName ?? "API Key"}</span></td>
+                <td>
+                  <div className="channel-base-url-cell">
+                    <button
+                      className="icon-button channel-base-url-copy"
+                      type="button"
+                      title={copiedBaseUrlId === channel.id ? "已复制 Base URL" : "复制 Base URL"}
+                      aria-label={copiedBaseUrlId === channel.id ? "已复制 Base URL" : `复制${channel.name}的 Base URL`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void copyBaseUrl(channel);
+                      }}
+                    >
+                      {copiedBaseUrlId === channel.id ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
+                    <span className="channel-base-url" title={channel.baseUrl}>{channel.baseUrl}</span>
+                  </div>
+                </td>
+                <td><span className="channel-model-count">{channel.models.length}</span></td>
+                <td><strong className="channel-routing-number">{channel.priority}</strong></td>
+                <td><span className="channel-routing-number">{channel.weight}</span></td>
+                <td><StatusDot status={channel.status} /></td>
+                <td><span className="mono subtle">{channel.protocol}</span></td>
+                <td>{formatBalance(channel)}</td>
+                <td>{channel.lastLatencyMs === null ? "—" : `${channel.lastLatencyMs} ms`}</td>
+                <td className={channel.recentRequestCount === 0 ? "subtle" : channel.recentErrorRate > 0.2 ? "danger-text" : channel.recentErrorRate > 0.05 ? "warning-text" : "success-text"}>{channel.recentRequestCount === 0 ? "—" : formatPercent(1 - channel.recentErrorRate)}</td>
+                <td>
+                  <div className="table-actions">
+                    <button className="icon-button" type="button" title="探测渠道" aria-label={`探测${channel.name}`} disabled={probingId === channel.id} onClick={() => onProbe(channel.id)}>
+                      <RefreshCw size={15} className={probingId === channel.id ? "spin" : ""} />
+                    </button>
+                    <button className="icon-button" type="button" title="编辑渠道" aria-label={`编辑${channel.name}`} onClick={() => onEdit(channel)}>
+                      <Pencil size={15} />
+                    </button>
+                    <button className="icon-button" type="button" title={channel.enabled ? "停用渠道" : "启用渠道"} aria-label={`${channel.enabled ? "停用" : "启用"}${channel.name}`} disabled={togglingId === channel.id} onClick={() => onToggle(channel)}>
+                      {channel.enabled ? <Pause size={15} /> : <Play size={15} />}
+                    </button>
+                    <button className="icon-button danger-button" type="button" title="删除渠道" aria-label={`删除${channel.name}`} disabled={deletingId !== null} onClick={() => onDelete(channel)}>
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+              {expanded ? <tr className="channel-models-row"><td colSpan={12}>
+                <div className="channel-models-detail">
+                  <div className="channel-models-head"><strong>模型列表</strong><span>{channel.models.length} 个模型</span></div>
+                  {channel.models.length > 0 ? <div className="channel-model-list">{channel.models.map((model, index) => <span className="channel-model-chip" key={`${model}-${index}`}>{model}</span>)}</div> : <span className="subtle">未配置模型</span>}
                 </div>
-              </td>
-            </tr>
-          ))}
+              </td></tr> : null}
+            </Fragment>;
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
+function ChannelSiteIcon({ channel }: { channel: Channel }) {
+  const site = channel.checkinSite;
+  const iconUrl = `/admin/channels/${encodeURIComponent(channel.id)}/favicon`;
+  const [iconSrc, setIconSrc] = useState<string | null>(null);
+  const [iconUnavailable, setIconUnavailable] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    const controller = new AbortController();
+    setIconSrc(null);
+    setIconUnavailable(false);
+
+    void fetch(iconUrl, { cache: "no-store", headers: { Authorization: `Bearer ${getAdminToken()}` }, signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error("Site icon is unavailable");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (!blob.size) throw new Error("Site icon is empty");
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setIconSrc(objectUrl);
+      })
+      .catch(() => {
+        if (!active) return;
+        setIconUnavailable(true);
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [channel.baseUrl, channel.faviconUrl, iconUrl, site?.updatedAt]);
+
+  const label = site?.name ?? channel.name;
+  const fallback = iconUnavailable || !iconSrc;
+  return (
+    <span className="channel-site-icon" title={site ? `关联签到站：${site.name}` : "渠道站点图标"} aria-label={site ? `关联签到站：${site.name}` : "渠道站点图标"}>
+      {fallback ? <span className="channel-site-icon-fallback" aria-hidden="true">{label.slice(0, 1).toUpperCase()}</span> : <img src={iconSrc} alt="" loading="lazy" decoding="async" onError={() => { setIconSrc(null); setIconUnavailable(true); }} />}
+    </span>
+  );
+}
+
 function formatBalance(channel: Channel) {
-  if (channel.balance === null) return <span className="subtle">未知</span>;
-  return <span className={channel.balanceStatus === "low" || channel.balanceStatus === "exhausted" ? "danger-text" : ""}>
-    {channel.balanceCurrency === "USD" ? "$" : `${channel.balanceCurrency ?? ""} `}{channel.balance.toFixed(2)}
-  </span>;
+  if (channel.balance === null) {
+    return <span className="channel-balance channel-balance-unknown" title="当前余额未知"><span className="channel-balance-mark" aria-hidden="true" />未知</span>;
+  }
+  const value = `${channel.balanceCurrency === "USD" ? "$" : `${channel.balanceCurrency ?? ""} `}${formatBalanceValue(channel.balance)}`;
+  return <span className={`channel-balance channel-balance-${channel.balanceStatus}`} title={`当前余额 ${value}`}><span className="channel-balance-mark" aria-hidden="true" /><strong>{value}</strong></span>;
+}
+
+function formatBalanceValue(value: number) {
+  return value.toLocaleString("zh-CN", { maximumFractionDigits: 8 });
 }
 
 function formatPercent(value: number) {
   return new Intl.NumberFormat("zh-CN", { style: "percent", maximumFractionDigits: 1 }).format(value);
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "true");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) throw new Error("copy failed");
 }

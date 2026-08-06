@@ -6,7 +6,9 @@ export interface Channel {
   providerName: string;
   name: string;
   baseUrl: string;
+  faviconUrl: string | null;
   protocol: string;
+  keyName?: string;
   maskedKey: string;
   keyLast4: string;
   status: ChannelStatus;
@@ -22,10 +24,18 @@ export interface Channel {
   isolationReason: string | null;
   lastCheckedAt: string | null;
   lastLatencyMs: number | null;
+  recentRequestCount: number;
   recentErrorRate: number;
   models: string[];
   tags: string[];
   createdAt: string;
+  checkinSite: {
+    id: number;
+    name: string;
+    baseUrl: string;
+    faviconUrl: string | null;
+    updatedAt: string;
+  } | null;
 }
 
 export interface Pool {
@@ -103,6 +113,9 @@ export interface RequestLogEntry {
   channelId: string | null;
   channelName: string | null;
   providerName: string | null;
+  keyName?: string | null;
+  gatewayKeyName?: string | null;
+  reasoningEffort?: string | null;
   modelAlias: string;
   upstreamModel: string | null;
   clientName: string;
@@ -127,6 +140,12 @@ export interface RequestLogPage {
   limit: number;
   offset: number;
   hasMore: boolean;
+  filterOptions: {
+    clients: string[];
+    channels: string[];
+    models: string[];
+    sourceIps: string[];
+  };
 }
 
 export interface GatewayStatus {
@@ -135,6 +154,9 @@ export interface GatewayStatus {
   healthyChannels: number;
   isolatedChannels: number;
   modelPools: number;
+  requests1h: number;
+  errorRate1h: number;
+  averageLatencyMs1h: number;
   requests24h: number;
   errorRate24h: number;
   averageLatencyMs24h: number;
@@ -226,7 +248,7 @@ export interface ProbeResponse {
   probe: ProbeResult;
 }
 
-export type View = "overview" | "channels" | "pools" | "usage" | "requests" | "playground" | "security";
+export type View = "overview" | "channels" | "pools" | "usage" | "requests" | "playground" | "checkin" | "security";
 
 export interface AdminLoginRecord {
   id: string;

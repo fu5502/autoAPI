@@ -1,7 +1,8 @@
 import type { Channel, GatewayRequest, ProbeResult, Protocol } from "../../domain/types.js";
-import type { AdapterAttempt, UpstreamAdapter } from "../adapter.js";
+import type { AdapterAttempt, AdapterUsage, UpstreamAdapter } from "../adapter.js";
 import { UpstreamError } from "../errors.js";
 import { fetchUpstream, jsonHeaders, parseJson, responseHeaders } from "../http.js";
+import { observeSseUsage } from "../streaming.js";
 import { errorMessage, optionalBalance, probeJson, probeStream } from "../probe-utils.js";
 import { apiUrl } from "../url.js";
 
@@ -92,23 +93,34 @@ async function executeOpenAiPath(
   path: "/v1/chat/completions" | "/v1/responses",
   body: Record<string, unknown>,
 ): Promise<AdapterAttempt> {
-  const payload = { ...body, model: upstreamModel, stream: request.stream };
-  const { response, body: responseBody } = await fetchUpstream(
+  const payload = {
+    ...body,
+    model: upstreamModel,
+    stream: request.stream,
+    ...(request.stream && path === "/v1/chat/completions"
+      ? { stream_options: { ...(isRecord(body.stream_options) ? body.stream_options : {}), include_usage: true } }
+      : {}),
+  };
+  const { response, body: responseBody, firstByteLatencyMs, streamError } = await fetchUpstream(
     apiUrl(channel.baseUrl, path),
     { method: "POST", headers: jsonHeaders(apiKey, request.protocolHeaders), body: JSON.stringify(payload) },
     timeoutMs,
     request.stream,
   );
-  const usage = responseBody instanceof Uint8Array ? readUsage(responseBody) : { promptTokens: 0, completionTokens: 0 };
+  const usage = responseBody instanceof Uint8Array ? readUsage(responseBody) : { promptTokens: 0, completionTokens: 0, cachedTokens: null };
+  const observed = responseBody instanceof Uint8Array ? null : observeSseUsage(responseBody, readStreamUsage);
   return {
     result: {
       channelId: channel.id,
       status: response.status,
       headers: responseHeaders(response, request.stream),
-      body: responseBody,
+      body: observed?.stream ?? responseBody,
       streaming: request.stream,
     },
     ...usage,
+    firstByteLatencyMs,
+    ...(observed ? { streamUsage: observed.usage } : {}),
+    ...(streamError ? { streamError } : {}),
   };
 }
 
@@ -143,14 +155,32 @@ function responsesToChatBody(body: Record<string, unknown>): Record<string, unkn
   if (messages.length === 0 && Array.isArray(body.messages)) messages.push(...body.messages.filter(isRecord));
 
   const output: Record<string, unknown> = { messages };
-  for (const key of ["temperature", "top_p", "max_tokens", "max_completion_tokens", "tools", "tool_choice", "parallel_tool_calls", "frequency_penalty", "presence_penalty"]) {
+  for (const key of ["temperature", "top_p", "max_tokens", "max_completion_tokens", "parallel_tool_calls", "frequency_penalty", "presence_penalty"]) {
     if (key in body) output[key] = body[key];
   }
+  if (typeof body.max_output_tokens === "number") output.max_completion_tokens = body.max_output_tokens;
+  if (Array.isArray(body.tools)) output.tools = body.tools.map(responsesToolToChatTool).filter(Boolean);
+  if (body.tool_choice !== undefined) output.tool_choice = responsesToolChoiceToChat(body.tool_choice);
   return output;
 }
 
 function toChatMessages(value: unknown): Record<string, unknown>[] {
   if (!isRecord(value)) return [];
+  if (value.type === "function_call_output") {
+    const callId = typeof value.call_id === "string" ? value.call_id : typeof value.id === "string" ? value.id : "";
+    if (!callId) return [];
+    return [{ role: "tool", tool_call_id: callId, content: responseInputText(value.output) }];
+  }
+  if (value.type === "function_call") {
+    const callId = typeof value.call_id === "string" ? value.call_id : typeof value.id === "string" ? value.id : `call_${Date.now()}`;
+    const name = typeof value.name === "string" ? value.name : "";
+    if (!name) return [];
+    return [{
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: callId, type: "function", function: { name, arguments: typeof value.arguments === "string" ? value.arguments : "{}" } }],
+    }];
+  }
   const role = value.role === "assistant" || value.role === "developer" || value.role === "system" ? value.role : "user";
   if (typeof value.content === "string") return [{ role, content: value.content }];
   if (!Array.isArray(value.content)) return [];
@@ -163,19 +193,59 @@ function toChatMessages(value: unknown): Record<string, unknown>[] {
   return text ? [{ role, content: text }] : [];
 }
 
+function responsesToolToChatTool(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  if (value.type !== "function") return value;
+  if (isRecord(value.function)) return value;
+  if (typeof value.name !== "string" || !value.name) return null;
+  return {
+    type: "function",
+    function: {
+      name: value.name,
+      ...(typeof value.description === "string" ? { description: value.description } : {}),
+      ...(isRecord(value.parameters) ? { parameters: value.parameters } : {}),
+      ...(typeof value.strict === "boolean" ? { strict: value.strict } : {}),
+    },
+  };
+}
+
+function responsesToolChoiceToChat(value: unknown): unknown {
+  if (!isRecord(value) || value.type !== "function" || typeof value.name !== "string") return value;
+  return { type: "function", function: { name: value.name } };
+}
+
+function responseInputText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return value === undefined ? "" : JSON.stringify(value);
+  return value.flatMap((part) => {
+    if (typeof part === "string") return [part];
+    if (!isRecord(part)) return [];
+    if (typeof part.text === "string") return [part.text];
+    if (typeof part.content === "string") return [part.content];
+    return [];
+  }).join("\n");
+}
+
 function chatToResponses(payload: Record<string, unknown>, model: string): Record<string, unknown> {
   const choice = Array.isArray(payload.choices) && isRecord(payload.choices[0]) ? payload.choices[0] : {};
   const message = isRecord(choice.message) ? choice.message : {};
   const text = typeof message.content === "string" ? message.content : contentText(message.content);
   const id = typeof payload.id === "string" ? payload.id.replace(/^chatcmpl-/, "resp_") : `resp_${Date.now()}`;
   const usage = isRecord(payload.usage) ? payload.usage : {};
+  const output: Record<string, unknown>[] = [];
+  if (text) {
+    output.push({ type: "message", id: `${id}_msg`, status: "completed", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] });
+  }
+  for (const [index, toolCall] of chatToolCalls(message).entries()) {
+    output.push(toolCallOutputItem(toolCall, index));
+  }
   return {
     id,
     object: "response",
     created_at: typeof payload.created === "number" ? payload.created : Math.floor(Date.now() / 1000),
     model,
     status: "completed",
-    output: [{ type: "message", id: `${id}_msg`, status: "completed", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] }],
+    output,
     output_text: text,
     usage: {
       input_tokens: Number(usage.prompt_tokens ?? 0),
@@ -193,6 +263,9 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
       let buffer = "";
       const responseId = `resp_${Date.now()}`;
       const messageId = `${responseId}_msg`;
+      const toolCalls = new Map<number, { index: number; itemId: string; callId: string; name: string; arguments: string }>();
+      let outputText = "";
+      let failed = false;
       yield sseEvent(encoder, "response.created", {
         type: "response.created",
         response: { id: responseId, object: "response", model, status: "in_progress", output: [] },
@@ -202,6 +275,7 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
         const blocks = buffer.split("\n\n");
         buffer = blocks.pop() ?? "";
         for (const block of blocks) {
+          const eventName = block.split(/\r?\n/).find((item) => item.startsWith("event:"))?.slice(6).trim();
           const line = block.split("\n").find((item) => item.startsWith("data:"));
           if (!line) continue;
           const raw = line.slice(5).trim();
@@ -209,28 +283,117 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
           try {
             const event = JSON.parse(raw) as unknown;
             if (!isRecord(event)) continue;
+            if (eventName === "error" || isRecord(event.error)) {
+              failed = true;
+              yield sseEvent(encoder, "response.failed", {
+                type: "response.failed",
+                response: { id: responseId, object: "response", model, status: "failed", error: event.error ?? event },
+              });
+              continue;
+            }
             const choices = Array.isArray(event.choices) ? event.choices : [];
             const choice = isRecord(choices[0]) ? choices[0] : {};
             const delta = isRecord(choice.delta) ? choice.delta : {};
             const text = typeof delta.content === "string" ? delta.content : "";
-            if (!text) continue;
-            yield sseEvent(encoder, "response.output_text.delta", {
-              type: "response.output_text.delta",
-              item_id: messageId,
-              output_index: 0,
-              content_index: 0,
-              delta: text,
-            });
+            if (text) {
+              outputText += text;
+              yield sseEvent(encoder, "response.output_text.delta", {
+                type: "response.output_text.delta",
+                item_id: messageId,
+                output_index: 0,
+                content_index: 0,
+                delta: text,
+              });
+            }
+            const deltas = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+            for (const rawToolCall of deltas) {
+              if (!isRecord(rawToolCall)) continue;
+              const index = typeof rawToolCall.index === "number" ? rawToolCall.index : toolCalls.size;
+              const fn = isRecord(rawToolCall.function) ? rawToolCall.function : {};
+              let state = toolCalls.get(index);
+              if (!state) {
+                const callId = typeof rawToolCall.id === "string" ? rawToolCall.id : `call_${responseId}_${index}`;
+                state = {
+                  index,
+                  itemId: `fc_${callId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
+                  callId,
+                  name: typeof fn.name === "string" ? fn.name : "",
+                  arguments: "",
+                };
+                toolCalls.set(index, state);
+                yield sseEvent(encoder, "response.output_item.added", {
+                  type: "response.output_item.added",
+                  output_index: outputText ? index + 1 : index,
+                  item: { type: "function_call", id: state.itemId, call_id: state.callId, name: state.name, arguments: "", status: "in_progress" },
+                });
+              } else if (typeof fn.name === "string" && fn.name) {
+                state.name += fn.name;
+              }
+              if (typeof fn.arguments === "string" && fn.arguments) {
+                state.arguments += fn.arguments;
+                yield sseEvent(encoder, "response.function_call_arguments.delta", {
+                  type: "response.function_call_arguments.delta",
+                  item_id: state.itemId,
+                  output_index: outputText ? index + 1 : index,
+                  delta: fn.arguments,
+                });
+              }
+            }
           } catch {
             // Ignore malformed upstream chunks; the stream remains valid for the client.
           }
         }
       }
+      if (failed) return;
+      for (const state of [...toolCalls.values()].sort((a, b) => a.index - b.index)) {
+        const outputIndex = outputText ? state.index + 1 : state.index;
+        yield sseEvent(encoder, "response.function_call_arguments.done", {
+          type: "response.function_call_arguments.done",
+          item_id: state.itemId,
+          output_index: outputIndex,
+          arguments: state.arguments,
+        });
+        yield sseEvent(encoder, "response.output_item.done", {
+          type: "response.output_item.done",
+          output_index: outputIndex,
+          item: { type: "function_call", id: state.itemId, call_id: state.callId, name: state.name, arguments: state.arguments, status: "completed" },
+        });
+      }
+      const output: Record<string, unknown>[] = [];
+      if (outputText) output.push({ type: "message", id: messageId, role: "assistant", status: "completed", content: [{ type: "output_text", text: outputText, annotations: [] }] });
+      output.push(...[...toolCalls.values()].sort((a, b) => a.index - b.index).map((state) => ({
+        type: "function_call",
+        id: state.itemId,
+        call_id: state.callId,
+        name: state.name,
+        arguments: state.arguments,
+        status: "completed",
+      })));
       yield sseEvent(encoder, "response.completed", {
         type: "response.completed",
-        response: { id: responseId, object: "response", model, status: "completed" },
+        response: { id: responseId, object: "response", model, status: "completed", output, output_text: outputText },
       });
     },
+  };
+}
+
+function chatToolCalls(message: Record<string, unknown>): Array<Record<string, unknown>> {
+  const calls = Array.isArray(message.tool_calls) ? message.tool_calls.filter(isRecord) : [];
+  if (calls.length > 0) return calls;
+  if (!isRecord(message.function_call)) return [];
+  return [{ id: `call_${Date.now()}`, type: "function", function: message.function_call }];
+}
+
+function toolCallOutputItem(toolCall: Record<string, unknown>, index: number): Record<string, unknown> {
+  const fn = isRecord(toolCall.function) ? toolCall.function : {};
+  const callId = typeof toolCall.id === "string" ? toolCall.id : `call_${Date.now()}_${index}`;
+  return {
+    type: "function_call",
+    id: `fc_${callId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
+    call_id: callId,
+    name: typeof fn.name === "string" ? fn.name : "",
+    arguments: typeof fn.arguments === "string" ? fn.arguments : "{}",
+    status: "completed",
   };
 }
 
@@ -298,17 +461,43 @@ function parseModels(body: Record<string, unknown>): string[] {
     .slice(0, 500);
 }
 
-function readUsage(body: Uint8Array): { promptTokens: number; completionTokens: number } {
+function readUsage(body: Uint8Array): { promptTokens: number; completionTokens: number; cachedTokens: number | null } {
   try {
     const payload = parseJson(body);
     const usage = payload.usage && typeof payload.usage === "object" ? (payload.usage as Record<string, unknown>) : {};
     return {
       promptTokens: Number(usage.prompt_tokens ?? usage.input_tokens ?? 0),
       completionTokens: Number(usage.completion_tokens ?? usage.output_tokens ?? 0),
+      cachedTokens: readCachedTokens(usage),
     };
   } catch {
-    return { promptTokens: 0, completionTokens: 0 };
+    return { promptTokens: 0, completionTokens: 0, cachedTokens: null };
   }
+}
+
+function readStreamUsage(payload: Record<string, unknown>): Partial<AdapterUsage> | null {
+  const direct = isRecord(payload.usage) ? payload.usage : null;
+  const response = isRecord(payload.response) && isRecord(payload.response.usage) ? payload.response.usage : null;
+  const usage = direct ?? response;
+  if (!usage) return null;
+  return {
+    promptTokens: Number(usage.prompt_tokens ?? usage.input_tokens ?? 0),
+    completionTokens: Number(usage.completion_tokens ?? usage.output_tokens ?? 0),
+    cachedTokens: readCachedTokens(usage),
+  };
+}
+
+function readCachedTokens(usage: Record<string, unknown>): number | null {
+  const direct = usage.cached_tokens;
+  if (typeof direct === "number") return direct;
+  for (const key of ["prompt_tokens_details", "input_tokens_details"]) {
+    const details = usage[key];
+    if (details && typeof details === "object" && !Array.isArray(details)) {
+      const cached = (details as Record<string, unknown>).cached_tokens;
+      if (typeof cached === "number") return cached;
+    }
+  }
+  return null;
 }
 
 function detectFlavor(channel: Channel): Protocol {

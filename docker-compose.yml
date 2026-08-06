@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: autoapi
       POSTGRES_USER: autoapi
-      POSTGRES_PASSWORD: autoapi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - autoapi-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -28,6 +28,7 @@ services:
     build: .
     ports:
       - "8080:8080"
+      - "${CHECKIN_VNC_BIND_ADDRESS:-127.0.0.1}:${CHECKIN_VNC_PORT:-6080}:6080"
     env_file:
       - .env
     environment:
@@ -35,8 +36,12 @@ services:
       APP_MODE: production
       HOST: 0.0.0.0
       PORT: 8080
-      DATABASE_URL: postgres://autoapi:autoapi@postgres:5432/autoapi
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       REDIS_URL: redis://redis:6379
+      TZ: ${TZ:-Asia/Shanghai}
+      AUTOAPI_CHECKIN_DATA_DIR: /data/checkin
+      CHECKIN_VNC_PASSWORD: ${CHECKIN_VNC_PASSWORD:?Set CHECKIN_VNC_PASSWORD in .env}
+      CHECKIN_BROWSER_URL: ${CHECKIN_BROWSER_URL:-http://localhost:6080/vnc.html?autoconnect=true}
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,7 +53,10 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    volumes:
+      - autoapi-checkin:/data/checkin
 
 volumes:
   autoapi-postgres:
   autoapi-redis:
+  autoapi-checkin:

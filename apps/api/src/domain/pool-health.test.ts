@@ -49,6 +49,24 @@ describe("pool health metrics", () => {
     expect(metrics.successRate6h).toBe(0.5);
     expect(metrics.recentHealth.find((point) => point.requests === 2)).toMatchObject({ successfulRequests: 1, status: "abnormal" });
   });
+
+  it("excludes client-cancelled requests from health metrics", () => {
+    const cancelled = event("2026-08-04T12:31:10.000Z", 499, 150);
+    cancelled.errorType = "client_closed_request";
+    const metrics = buildPoolHealth([
+      event("2026-08-04T12:30:10.000Z", 200, 100),
+      cancelled,
+    ], now);
+
+    expect(metrics.requests24h).toBe(1);
+    expect(metrics.successfulRequests24h).toBe(1);
+    expect(metrics.successRate24h).toBe(1);
+    expect(metrics.health12h.at(-1)).toMatchObject({
+      requests: 1,
+      successfulRequests: 1,
+      successRate: 1,
+    });
+  });
 });
 
 function event(createdAt: string, statusCode: number, latencyMs: number): UsageEventInput & { createdAt: string } {

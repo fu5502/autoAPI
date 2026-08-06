@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Copy, Filter, GitBranch, KeyRound, LogOut, RefreshCw, Route, Search, ShieldAlert } from "lucide-react";
+import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Copy, GitBranch, KeyRound, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun } from "lucide-react";
 import { ApiError, api, clearAdminSession, hasAdminSession } from "./api";
 import { ChannelTable } from "./components/ChannelTable";
 import { ChannelEditor } from "./components/ChannelEditor";
@@ -12,7 +12,8 @@ import { ProbeResultDialog } from "./components/ProbeResultDialog";
 import { GatewayKeyDialog } from "./components/GatewayKeyDialog";
 import { Sidebar } from "./components/Sidebar";
 import { StatusDot } from "./components/StatusDot";
-import type { AdminLoginRecord, Channel, Pool, ProbeResponse, RequestLogEntry, RequestLogPage, Usage, View } from "./types";
+import type { AdminLoginRecord, Channel, GatewayStatus, Pool, ProbeResponse, RequestLogEntry, RequestLogPage, Usage, View } from "./types";
+import CheckinModule, { CheckinTabs, type CheckinView } from "./checkin/CheckinModule";
 
 const UsageChart = lazy(() => import("./components/UsageChart"));
 
@@ -21,12 +22,36 @@ type HealthGroup = "default" | "status" | "requests";
 type HealthScope = "all" | "available" | "abnormal" | "no-data";
 type HealthSort = "available" | "requests";
 type HealthTone = "available" | "degraded" | "abnormal" | "no-data";
+type ColorTheme = "light" | "dark";
+
+const colorThemeStorageKey = "autoapi-color-theme";
+const activeViewStorageKey = "autoapi-active-view";
+const activeCheckinViewStorageKey = "autoapi-active-checkin-view";
+
+const appViews: View[] = ["overview", "channels", "pools", "usage", "requests", "playground", "checkin", "security"];
+const checkinViews: CheckinView[] = ["dashboard", "history", "settings"];
+
+function initialColorTheme(): ColorTheme {
+  return localStorage.getItem(colorThemeStorageKey) === "dark" ? "dark" : "light";
+}
+
+function initialView(): View {
+  const saved = localStorage.getItem(activeViewStorageKey);
+  return saved && appViews.includes(saved as View) ? saved as View : "overview";
+}
+
+function initialCheckinView(): CheckinView {
+  const saved = localStorage.getItem(activeCheckinViewStorageKey);
+  return saved && checkinViews.includes(saved as CheckinView) ? saved as CheckinView : "dashboard";
+}
 
 export default function App() {
   const queryClient = useQueryClient();
   const [authenticated, setAuthenticated] = useState(() => hasAdminSession());
+  const [colorTheme, setColorTheme] = useState<ColorTheme>(initialColorTheme);
   const [adminUsername, setAdminUsername] = useState("管理员");
-  const [view, setView] = useState<View>("overview");
+  const [view, setView] = useState<View>(initialView);
+  const [checkinView, setCheckinView] = useState<CheckinView>(initialCheckinView);
   const [usageWindow, setUsageWindow] = useState<Usage["window"]>("24h");
   const [providerOpen, setProviderOpen] = useState(false);
   const [aliasOpen, setAliasOpen] = useState(false);
@@ -35,14 +60,20 @@ export default function App() {
   const [baseUrlCopied, setBaseUrlCopied] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [probeResult, setProbeResult] = useState<ProbeResponse | null>(null);
-  const [requestFilters, setRequestFilters] = useState({ window: "24h" as Usage["window"], limit: 20, offset: 0, client: "", channel: "", model: "", sourceIp: "", localOnly: false });
-  const [requestDraft, setRequestDraft] = useState(requestFilters);
+  const [requestFilters, setRequestFilters] = useState<RequestFilters>({ window: "24h", limit: 20, offset: 0, client: "", channel: "", model: "", sourceIp: "" });
+  const [requestRefreshInterval, setRequestRefreshInterval] = useState<number | false>(30_000);
 
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, enabled: authenticated, refetchInterval: 30_000 });
   const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels, enabled: authenticated, refetchInterval: 30_000 });
   const pools = useQuery({ queryKey: ["pools"], queryFn: api.pools, enabled: authenticated, refetchInterval: 30_000 });
   const usage = useQuery({ queryKey: ["usage", usageWindow], queryFn: () => api.usage(usageWindow), enabled: authenticated, refetchInterval: 30_000 });
-  const requests = useQuery({ queryKey: ["requests", requestFilters], queryFn: () => api.requests(requestFilters), enabled: authenticated && view === "requests", refetchInterval: 30_000 });
+  const requests = useQuery({
+    queryKey: ["requests", requestFilters],
+    queryFn: () => api.requests(requestFilters),
+    enabled: authenticated && view === "requests",
+    refetchInterval: requestRefreshInterval,
+    refetchIntervalInBackground: false,
+  });
   const probe = useMutation({
     mutationFn: api.probe,
     onSuccess: (result) => {
@@ -62,6 +93,11 @@ export default function App() {
   const toggleChannel = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.setChannelEnabled(id, enabled),
     onSuccess: () => void refreshAll(queryClient),
+  });
+  const reorderChannels = useMutation({
+    mutationFn: (channelIds: string[]) => api.reorderChannels(channelIds),
+    onSuccess: () => refreshAll(queryClient),
+    onError: (error) => setActionError(error instanceof Error ? error.message : "渠道排序保存失败，请重试。"),
   });
 
   const authError = [status.error, channels.error, pools.error, usage.error, ...(view === "requests" ? [requests.error] : [])].find(
@@ -84,6 +120,27 @@ export default function App() {
     });
     return () => { active = false; };
   }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated || !authError) return;
+    clearAdminSession();
+    queryClient.clear();
+    setAuthenticated(false);
+    setAdminUsername("管理员");
+  }, [authenticated, authError, queryClient]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = colorTheme;
+    localStorage.setItem(colorThemeStorageKey, colorTheme);
+  }, [colorTheme]);
+
+  useEffect(() => {
+    localStorage.setItem(activeViewStorageKey, view);
+  }, [view]);
+
+  useEffect(() => {
+    localStorage.setItem(activeCheckinViewStorageKey, checkinView);
+  }, [checkinView]);
 
   if (showLogin) return <LoginPage onAuthenticated={authenticatedSuccessfully} />;
 
@@ -130,34 +187,38 @@ export default function App() {
     <div className="app-shell">
       <Sidebar view={view} onChange={setView} />
       <main className="workspace">
-        <header className="topbar">
-          <div>
-            <span className="context-label">控制面板</span>
-            <h1>{pageTitle(view)}</h1>
+        <header className={`topbar${view === "checkin" ? " topbar-checkin" : ""}`}>
+          <div className="topbar-heading">
+            {view !== "checkin" ? <div className="topbar-title">
+              <span className="context-label">控制面板</span>
+              <h1>{pageTitle(view)}</h1>
+            </div> : null}
+            {view === "checkin" ? <CheckinTabs view={checkinView} onChange={setCheckinView} /> : null}
           </div>
           <div className="top-actions">
             <div className="gateway-endpoint">
+              <GatewayStatusIndicator status={status.data} isLoading={status.isLoading} error={status.error} />
               <span>网关 Base URL</span>
               <code className="mono">{status.data?.gatewayBaseUrl ?? "加载中…"}</code>
               <button className="icon-button" title={baseUrlCopied ? "已复制" : "复制 Base URL"} aria-label={baseUrlCopied ? "已复制" : "复制 Base URL"} onClick={() => void copyBaseUrl()} disabled={!status.data?.gatewayBaseUrl}>{baseUrlCopied ? <Check size={15} /> : <Copy size={15} />}</button>
             </div>
-            <span className="gateway-live"><span className="live-dot" /> 网关运行中</span>
-            <button className="icon-button" title="刷新数据" aria-label="刷新数据" onClick={refreshed}><RefreshCw size={16} /></button>
+            <button className="icon-button theme-toggle" title={colorTheme === "light" ? "切换至深色模式" : "切换至浅色模式"} aria-label={colorTheme === "light" ? "切换至深色模式" : "切换至浅色模式"} onClick={() => setColorTheme((theme) => theme === "light" ? "dark" : "light")}>{colorTheme === "light" ? <Moon size={16} /> : <Sun size={16} />}</button>
             <button className="button secondary key-button" onClick={() => setGatewayKeysOpen(true)}><KeyRound size={15} /> 访问密钥</button>
             <button className="button secondary security-button" onClick={() => setView("security")}><ShieldAlert size={15} /> {adminUsername}</button>
-            <button className="button primary" onClick={() => setProviderOpen(true)}><CirclePlus size={16} /> 添加渠道</button>
           </div>
         </header>
         {actionError ? <div className="action-error" role="alert">{actionError}</div> : null}
 
-        {loading ? <LoadingState /> : failed && !authError ? <ErrorState error={failed} onRetry={refreshed} /> : null}
-        {!loading && !failed && status.data && channels.data && pools.data && usage.data ? (
+        {view === "checkin" ? <CheckinModule view={checkinView} /> : null}
+        {view !== "checkin" && loading ? <LoadingState /> : null}
+        {view !== "checkin" && failed && !authError ? <ErrorState error={failed} onRetry={refreshed} /> : null}
+        {view !== "checkin" && !loading && !failed && status.data && channels.data && pools.data && usage.data ? (
           <>
-            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} /> : null}
-            {view === "channels" ? <ChannelsView channels={channels.data} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} /> : null}
+            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} /> : null}
+            {view === "channels" ? <ChannelsView channels={channels.data} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} onAddChannel={() => setProviderOpen(true)} /> : null}
             {view === "pools" ? <PoolsView pools={pools.data} onAddRoute={() => setAliasOpen(true)} /> : null}
             {view === "usage" ? <UsageView usage={usage.data} window={usageWindow} onWindowChange={setUsageWindow} /> : null}
-            {view === "requests" ? <RequestsView page={requests.data} filters={requestFilters} draft={requestDraft} onDraftChange={setRequestDraft} onApply={() => setRequestFilters({ ...requestDraft, offset: 0 })} onRefresh={() => void requests.refetch()} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} /> : null}
+            {view === "requests" ? <RequestsView page={requests.data} filters={requestFilters} refreshInterval={requestRefreshInterval} onRefreshIntervalChange={setRequestRefreshInterval} onFilterChange={(next) => setRequestFilters({ ...next, offset: 0 })} onRefresh={() => void requests.refetch()} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} /> : null}
             {view === "playground" ? <Playground channels={channels.data} onUpdated={refreshed} /> : null}
             {view === "security" ? <SecurityView username={adminUsername} onLogout={logout} /> : null}
           </>
@@ -172,6 +233,46 @@ export default function App() {
   );
 }
 
+type GatewayIndicatorTone = "healthy" | "warning" | "error";
+
+function GatewayStatusIndicator({ status, isLoading, error }: { status: GatewayStatus | undefined; isLoading: boolean; error: unknown }) {
+  const indicator = getGatewayIndicator(status, isLoading, error);
+  const channelSummary = status ? `${status.healthyChannels} / ${status.channels}` : "-";
+
+  return (
+    <span className={`gateway-status-indicator gateway-status-${indicator.tone}`} tabIndex={0} aria-label={`${indicator.label}，${indicator.description}`}>
+      <span className="gateway-status-dot" aria-hidden="true" />
+      <span className="gateway-status-tooltip" role="tooltip">
+        <strong>{indicator.label}</strong>
+        <span className="gateway-status-description">{indicator.description}</span>
+        <span className="gateway-status-details">
+          <span>可用渠道 <b>{channelSummary}</b></span>
+          <span>模型池 <b>{status?.modelPools ?? "-"}</b></span>
+          <span>近 1 小时错误率 <b>{status ? formatPercent(status.errorRate1h) : "-"}</b></span>
+        </span>
+      </span>
+    </span>
+  );
+}
+
+function getGatewayIndicator(status: GatewayStatus | undefined, isLoading: boolean, error: unknown): { tone: GatewayIndicatorTone; label: string; description: string } {
+  if (error) {
+    const message = error instanceof Error ? error.message : "无法连接管理状态接口";
+    return { tone: "error", label: "网关异常", description: message };
+  }
+  if (isLoading || !status) return { tone: "warning", label: "正在检查", description: "正在获取网关运行状态" };
+  if (status.status !== "ok") return { tone: "error", label: "网关异常", description: `服务返回状态：${status.status}` };
+  if (status.channels === 0) return { tone: "warning", label: "尚未配置渠道", description: "网关服务正常，但还没有可路由渠道" };
+  if (status.healthyChannels === 0) return { tone: "error", label: "网关异常", description: "网关服务正常，但当前没有健康渠道可供路由" };
+  if (status.requests1h > 0 && status.errorRate1h >= 0.5) return { tone: "error", label: "请求异常", description: "近 1 小时请求错误率过高" };
+  if (status.healthyChannels < status.channels) {
+    const description = `网关服务正常，${status.isolatedChannels > 0 ? `${status.isolatedChannels} 个渠道已隔离` : "部分渠道正在检测或降级"}`;
+    return { tone: "warning", label: "部分渠道异常", description };
+  }
+  if (status.requests1h > 0 && status.errorRate1h >= 0.1) return { tone: "warning", label: "请求异常偏高", description: "近 1 小时请求错误率偏高" };
+  return { tone: "healthy", label: "网关正常", description: "网关服务和全部渠道运行正常" };
+}
+
 function Overview({
   status,
   channels,
@@ -184,6 +285,7 @@ function Overview({
   onToggle,
   togglingId,
   deletingId,
+  onReorder,
 }: {
   status: NonNullable<ReturnType<typeof api.status> extends Promise<infer T> ? T : never>;
   channels: Channel[];
@@ -196,11 +298,12 @@ function Overview({
   onToggle: (channel: Channel) => void;
   togglingId: string | null;
   deletingId: string | null;
+  onReorder: (channelIds: string[]) => Promise<void>;
 }) {
   const [healthWindow, setHealthWindow] = useState<HealthWindow>("6h");
   const [healthGroup, setHealthGroup] = useState<HealthGroup>("default");
   const [healthScope, setHealthScope] = useState<HealthScope>("all");
-  const [healthSort, setHealthSort] = useState<HealthSort>("available");
+  const [healthSort, setHealthSort] = useState<HealthSort>("requests");
   const visiblePools = pools.filter((pool) => healthScope === "all" || getPoolAvailability(pool, healthWindow).tone === healthScope);
   const sortedPools = sortPoolsForHealth(visiblePools, healthWindow, healthSort, healthGroup);
   const totalRequests = pools.reduce((sum, pool) => sum + getPoolHealthMetrics(pool, healthWindow).requests, 0);
@@ -265,7 +368,7 @@ function Overview({
       </section>
       <section className="surface">
         <SectionHead title="渠道运行情况" meta={`${channels.filter((channel) => channel.status === "isolated").length} 个已隔离`} />
-        <ChannelTable channels={channels} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} />
+        <ChannelTable channels={channels} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
       </section>
     </div>
   );
@@ -275,7 +378,7 @@ function PoolHealthCard({ pool, window }: { pool: Pool; window: HealthWindow }) 
   const availability = getPoolAvailability(pool, window);
   const metrics = getPoolHealthMetrics(pool, window);
   const config = getHealthWindowConfig(window);
-  const successLabel = metrics.successRate === null ? "暂无请求" : `${formatPercent(metrics.successRate, 2)} 成功率`;
+  const successLabel = metrics.successRate === null ? "暂无请求" : `${formatPercent(metrics.successRate, 2)} 健康百分比`;
   return (
     <article className="pool-health-card">
       <div className="pool-health-head">
@@ -312,7 +415,7 @@ function HealthStrip({ points, durationMinutes, label }: { points: Pool["recentH
           <strong>{formatHealthRange(point.bucket, durationMinutes)}</strong>
           <span>总请求 <b>{point.requests}</b></span>
           <span>成功数 <b>{point.successfulRequests}</b></span>
-          <span>成功率 <b>{point.successRate === null ? "—" : formatPercent(point.successRate, 2)}</b></span>
+          <span>健康百分比 <b>{point.successRate === null ? "—" : formatPercent(point.successRate, 2)}</b></span>
         </span>
       </span>;
     })}
@@ -330,7 +433,7 @@ function PoolHealthLegend() {
   );
 }
 
-function ChannelsView({ channels, probingId, onProbe, onEdit, onDelete, onToggle, togglingId, deletingId }: { channels: Channel[]; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel) => void; togglingId: string | null; deletingId: string | null }) {
+function ChannelsView({ channels, probingId, onProbe, onEdit, onDelete, onToggle, togglingId, deletingId, onReorder, onAddChannel }: { channels: Channel[]; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel) => void; togglingId: string | null; deletingId: string | null; onReorder: (channelIds: string[]) => Promise<void>; onAddChannel: () => void }) {
   return (
     <div className="view-stack">
       <section className="channel-summary">
@@ -340,8 +443,8 @@ function ChannelsView({ channels, probingId, onProbe, onEdit, onDelete, onToggle
         <div><span>可用权重</span><strong>{channels.filter((item) => item.status === "healthy").reduce((sum, item) => sum + item.weight, 0)}</strong></div>
       </section>
       <section className="surface">
-        <SectionHead title="全部渠道" meta="实时健康状态与余额" />
-        <ChannelTable channels={channels} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} />
+        <SectionHead title="全部渠道" meta="实时健康状态与余额" action={<button className="button primary" onClick={onAddChannel}><CirclePlus size={15} /> 添加渠道</button>} />
+        <ChannelTable channels={channels} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
       </section>
       <section className="surface detail-list">
         <SectionHead title="隔离详情" meta="自动熔断状态" />
@@ -380,7 +483,7 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                 <th>模型</th>
                 <th>可用渠道</th>
                 <th>最近 1 小时</th>
-                <th>错误率</th>
+                <th>健康百分比</th>
                 <th>平均延迟</th>
                 <th>上游路由</th>
               </tr>
@@ -401,7 +504,7 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                     <strong className="pool-health-count">{pool.healthyChannels}/{pool.channels}</strong>
                   </td>
                   <td>{pool.totalRequests1h.toLocaleString("zh-CN")} 次</td>
-                  <td className={pool.errorRate1h > 0 ? "danger-text" : "subtle"}>{pool.errorRate1h.toFixed(1)}%</td>
+                  <td className={pool.totalRequests1h === 0 ? "subtle" : pool.errorRate1h > 0.2 ? "danger-text" : pool.errorRate1h > 0.05 ? "warning-text" : "success-text"}>{pool.totalRequests1h === 0 ? "—" : formatPercent(1 - pool.errorRate1h)}</td>
                   <td>{pool.averageLatencyMs1h} ms</td>
                   <td>
                     <div className="pool-route-cell">
@@ -464,9 +567,9 @@ function UsageView({ usage, window, onWindowChange }: { usage: Usage; window: Us
   );
 }
 
-type RequestFilters = { window: Usage["window"]; limit: number; offset: number; client: string; channel: string; model: string; sourceIp: string; localOnly: boolean };
+type RequestFilters = { window: Usage["window"]; limit: number; offset: number; client: string; channel: string; model: string; sourceIp: string };
 
-function RequestsView({ page, filters, draft, onDraftChange, onApply, onRefresh, onPageChange }: { page: RequestLogPage | undefined; filters: RequestFilters; draft: RequestFilters; onDraftChange: (filters: RequestFilters) => void; onApply: () => void; onRefresh: () => void; onPageChange: (offset: number) => void }) {
+function RequestsView({ page, filters, refreshInterval, onRefreshIntervalChange, onFilterChange, onRefresh, onPageChange }: { page: RequestLogPage | undefined; filters: RequestFilters; refreshInterval: number | false; onRefreshIntervalChange: (interval: number | false) => void; onFilterChange: (filters: RequestFilters) => void; onRefresh: () => void; onPageChange: (offset: number) => void }) {
   const items = page?.items ?? [];
   const total = page?.total ?? 0;
   const from = total === 0 ? 0 : filters.offset + 1;
@@ -475,35 +578,36 @@ function RequestsView({ page, filters, draft, onDraftChange, onApply, onRefresh,
   const canNext = Boolean(page?.hasMore);
 
   function update<K extends keyof RequestFilters>(key: K, value: RequestFilters[K]) {
-    onDraftChange({ ...draft, [key]: value });
+    onFilterChange({ ...filters, [key]: value, offset: 0 });
   }
+
+  const options = page?.filterOptions ?? { clients: [], channels: [], models: [], sourceIps: [] };
+  const selectOptions = (values: string[], allLabel: string) => <><option value="">{allLabel}</option>{values.map((value) => <option value={value} key={value}>{value}</option>)}</>;
 
   return (
     <div className="view-stack requests-view">
       <section className="surface requests-surface">
-        <div className="requests-heading">
-          <div>
-            <h2>最新请求</h2>
-            <p>按时间倒序查看网关实际转发记录，包含失败重试渠道。</p>
-          </div>
-          <div className="requests-heading-actions">
-            <span className="request-count"><span className="live-dot" /> 已加载 {items.length} 条</span>
+        <form className="requests-filters">
+          <label>时间范围<select aria-label="时间范围" value={filters.window} onChange={(event) => update("window", event.target.value as Usage["window"])}><option value="1h">最近 1 小时</option><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option></select></label>
+          <label>每页条数<select aria-label="每页条数" value={filters.limit} onChange={(event) => update("limit", Number(event.target.value))}><option value={20}>20 条</option><option value={50}>50 条</option><option value={100}>100 条</option></select></label>
+          <label>客户端<select aria-label="客户端" value={filters.client} onChange={(event) => update("client", event.target.value)}>{selectOptions(options.clients, "全部客户端")}</select></label>
+          <label>渠道<select aria-label="渠道" value={filters.channel} onChange={(event) => update("channel", event.target.value)}>{selectOptions(options.channels, "全部渠道")}</select></label>
+          <label>模型<select aria-label="模型" value={filters.model} onChange={(event) => update("model", event.target.value)}>{selectOptions(options.models, "全部模型")}</select></label>
+          <label>来源 IP<select aria-label="来源 IP" value={filters.sourceIp} onChange={(event) => update("sourceIp", event.target.value)}>{selectOptions(options.sourceIps, "全部来源 IP")}</select></label>
+          <span className="request-range">{total ? `${from}-${to} / 共 ${total} 条` : "暂无请求记录"}</span>
+          <div className="request-auto-refresh">
+            <label className="request-refresh-control">自动刷新
+              <select aria-label="调用请求自动刷新间隔" value={refreshInterval === false ? "off" : String(refreshInterval / 1000)} onChange={(event) => onRefreshIntervalChange(event.target.value === "off" ? false : Number(event.target.value) * 1000)}>
+                <option value="off">关闭</option>
+                <option value="5">5 秒</option>
+                <option value="10">10 秒</option>
+                <option value="20">20 秒</option>
+                <option value="30">30 秒</option>
+              </select>
+            </label>
             <button className="icon-button" type="button" title="刷新请求" aria-label="刷新请求" onClick={onRefresh}><RefreshCw size={16} /></button>
           </div>
-        </div>
-        <form className="requests-filters" onSubmit={(event) => { event.preventDefault(); onApply(); }}>
-          <label className="request-local-toggle"><input type="checkbox" checked={draft.localOnly} onChange={(event) => update("localOnly", event.target.checked)} /> 仅看本机</label>
-          <label>时间范围<select value={draft.window} onChange={(event) => update("window", event.target.value as Usage["window"])}><option value="1h">最近 1 小时</option><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option></select></label>
-          <label>每页条数<select value={draft.limit} onChange={(event) => update("limit", Number(event.target.value))}><option value={20}>20 条</option><option value={50}>50 条</option><option value={100}>100 条</option></select></label>
-          <label className="request-filter-search"><span>客户端 / 渠道 / 模型</span><div className="request-search-input"><Search size={14} /><input value={draft.client} onChange={(event) => update("client", event.target.value)} placeholder="搜索客户端" /></div></label>
-          <label>来源 IP<input value={draft.sourceIp} onChange={(event) => update("sourceIp", event.target.value)} placeholder="可选" /></label>
-          <button className="button secondary request-filter-button" type="submit"><Filter size={15} /> 应用筛选</button>
         </form>
-        <div className="request-filter-secondary">
-          <label>渠道<input value={draft.channel} onChange={(event) => update("channel", event.target.value)} placeholder="渠道名称" /></label>
-          <label>模型<input value={draft.model} onChange={(event) => update("model", event.target.value)} placeholder="模型别名或上游模型" /></label>
-          <span className="request-range">{total ? `${from}-${to} / 共 ${total} 条` : "暂无请求记录"}</span>
-        </div>
         <RequestTable items={items} />
         <footer className="request-pagination">
           <span>{page?.hasMore ? "还有更多请求" : total ? "已到列表末尾" : "调整筛选条件后重试"}</span>
@@ -519,7 +623,7 @@ function RequestTable({ items }: { items: RequestLogEntry[] }) {
   return (
     <div className="request-table-scroll">
       <table className="request-table">
-        <thead><tr><th>时间</th><th>客户端</th><th>同来源 / 渠道</th><th>流式</th><th>请求模型 → 转发模型</th><th>端点</th><th>输入</th><th>输出</th><th>缓存</th><th>费用</th><th>耗时</th><th>首字节</th></tr></thead>
+        <thead><tr><th>时间</th><th>客户端</th><th>来源 IP</th><th>渠道</th><th>密钥</th><th>流式</th><th>请求模型</th><th>推理强度</th><th>端点</th><th>输入</th><th>输出</th><th>缓存</th><th>耗时</th><th>首字节</th></tr></thead>
         <tbody>{items.map((item) => <RequestRow item={item} key={item.id} />)}</tbody>
       </table>
     </div>
@@ -531,19 +635,33 @@ function RequestRow({ item }: { item: RequestLogEntry }) {
   const date = new Date(item.createdAt);
   const clientLabel = item.clientName === "unknown" ? "未知客户端" : item.clientName;
   return <tr className={success ? "" : "request-row-error"}>
-    <td className="request-time">{formatRequestTime(date)}</td>
-    <td><span className={`request-client request-client-${clientLabel.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`}>{clientLabel}</span></td>
-    <td><div className="request-source"><strong>{item.channelName ?? "未路由"}</strong><span>{item.sourceIp ?? item.providerName ?? "—"}</span></div></td>
-    <td><span className={item.streamed ? "request-pill stream" : "request-pill non-stream"}>{item.streamed ? "流式" : "非流式"}</span></td>
-    <td><div className="request-model"><strong>{item.modelAlias}</strong><span>→ <code>{item.upstreamModel ?? "—"}</code></span></div></td>
-    <td><code className="request-endpoint">{item.endpoint}</code></td>
-    <td className="request-number">{formatTokens(item.promptTokens)}</td>
-    <td className="request-number">{formatTokens(item.completionTokens)}</td>
-    <td className="request-number request-cache">{item.cachedTokens === null ? "—" : formatTokens(item.cachedTokens)}</td>
-    <td className="request-number">{item.costUsd === null ? "—" : `$${item.costUsd.toFixed(4)}`}</td>
-    <td><span className={success ? "request-metric good" : "request-metric bad"}>{formatDuration(item.latencyMs)}</span></td>
-    <td><span className="request-metric good">{item.firstByteLatencyMs === null ? "—" : formatDuration(item.firstByteLatencyMs)}</span></td>
+    <td data-label="时间" className="request-time">{formatRequestTime(date)}</td>
+    <td data-label="客户端"><span className={`request-client request-client-${clientLabel.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`} title={clientLabel}>{clientLabel}</span></td>
+    <td data-label="来源 IP" title={item.sourceIp ?? "—"}><span className="request-source-ip">{item.sourceIp ?? "—"}</span></td>
+    <td data-label="渠道" title={item.channelName ?? item.providerName ?? "未路由"}><span className="request-channel">{item.channelName ?? item.providerName ?? "未路由"}</span></td>
+    <td data-label="密钥" title={item.gatewayKeyName ?? item.keyName ?? "未记录"}><span className="request-key-name">{item.gatewayKeyName ?? item.keyName ?? "未记录"}</span></td>
+    <td data-label="流式"><span className={item.streamed ? "request-pill stream" : "request-pill non-stream"}>{item.streamed ? "流式" : "非流式"}</span></td>
+    <td data-label="请求模型" title={item.modelAlias}><strong className="request-model-name">{item.modelAlias}</strong></td>
+    <td data-label="推理强度"><span className={`request-reasoning${item.reasoningEffort ? " configured" : ""}`} title={item.reasoningEffort ?? ""}>{formatReasoningEffort(item.reasoningEffort)}</span></td>
+    <td data-label="端点" title={item.endpoint}><code className="request-endpoint">{item.endpoint}</code></td>
+    <td data-label="输入" className="request-number">{formatTokens(item.promptTokens)}</td>
+    <td data-label="输出" className="request-number">{formatTokens(item.completionTokens)}</td>
+    <td data-label="缓存" className="request-number request-cache">{item.cachedTokens === null ? "—" : formatTokens(item.cachedTokens)}</td>
+    <td data-label="耗时"><span className={success ? "request-metric good" : "request-metric bad"}>{formatDuration(item.latencyMs)}</span></td>
+    <td data-label="首字节"><span className="request-metric good">{item.firstByteLatencyMs === null ? "—" : formatDuration(item.firstByteLatencyMs)}</span></td>
   </tr>;
+}
+
+function formatReasoningEffort(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    minimal: "最小",
+    low: "低",
+    medium: "中",
+    high: "高",
+    xhigh: "极高",
+  };
+  if (!value) return "—";
+  return labels[value.toLowerCase()] ?? value;
 }
 
 function UsageBreakdown({ title, rows }: { title: string; rows: Usage["byModel"] }) {
@@ -657,7 +775,7 @@ function refreshAll(client: ReturnType<typeof useQueryClient>) {
 }
 
 function pageTitle(view: View) {
-  return { overview: "网关概览", channels: "渠道管理", pools: "模型路由", usage: "用量分析", requests: "调用请求", playground: "模型测试", security: "安全设置" }[view];
+  return { overview: "网关概览", channels: "渠道管理", pools: "模型路由", usage: "用量分析", requests: "调用请求", playground: "模型测试", checkin: "公益站签到", security: "安全设置" }[view];
 }
 
 function formatDateTime(value: string) {
@@ -722,7 +840,7 @@ function getPoolAvailability(pool: Pool, window: HealthWindow): { label: string;
 function formatHealthTooltip(point: Pool["hourlyHealth"][number]) {
   const time = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit" }).format(new Date(point.bucket));
   const status = point.status === "available" ? "可用" : point.status === "degraded" ? "降级" : point.status === "abnormal" ? "异常" : "无请求";
-  const success = point.successRate === null ? "无请求" : `成功率 ${formatPercent(point.successRate, 1)}`;
+  const success = point.successRate === null ? "无请求" : `健康百分比 ${formatPercent(point.successRate, 1)}`;
   return `${time} · ${status} · 请求 ${point.requests} · 成功 ${point.successfulRequests} · ${success}`;
 }
 
@@ -739,7 +857,7 @@ function formatRecentHealthTime(value: Date) {
 }
 
 function formatHealthPointTooltip(point: Pool["recentHealth"][number], durationMinutes: number) {
-  return `${formatHealthRange(point.bucket, durationMinutes)} · 总请求 ${point.requests} · 成功数 ${point.successfulRequests} · 成功率 ${point.successRate === null ? "—" : formatHealthPercent(point.successRate)}`;
+  return `${formatHealthRange(point.bucket, durationMinutes)} · 总请求 ${point.requests} · 成功数 ${point.successfulRequests} · 健康百分比 ${point.successRate === null ? "—" : formatHealthPercent(point.successRate)}`;
 }
 
 function formatHealthPercent(value: number) {
@@ -785,7 +903,12 @@ function formatLatency(value: number) {
 }
 
 function formatKnownBalance(channels: Channel[]) {
-  return `$${channels.reduce((sum, channel) => sum + (channel.balanceCurrency === "USD" ? channel.balance ?? 0 : 0), 0).toFixed(2)}`;
+  const knownBalances = channels
+    .map((channel) => channel.balance)
+    .filter((balance): balance is number => balance !== null && Number.isFinite(balance));
+  if (knownBalances.length === 0) return "—";
+  const total = knownBalances.reduce((sum, balance) => sum + balance, 0);
+  return `$${total.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 8 })}`;
 }
 
 function translateReason(reason: string | null) {

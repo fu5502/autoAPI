@@ -81,6 +81,8 @@ function Show-Menu {
   Write-Host "[8]" -ForegroundColor Yellow -NoNewline; Write-Host " 停止服务        停止本地 API、前端和 Docker 服务"
   Write-Host "[9]" -ForegroundColor Yellow -NoNewline; Write-Host " 数据目录        在资源管理器中打开项目目录"
   Write-Host "[B]" -ForegroundColor Yellow -NoNewline; Write-Host " 备份配置        备份 .env、迁移文件和文档"
+  Write-Host "[M]" -ForegroundColor Yellow -NoNewline; Write-Host " 迁移签到数据    从 zhongzhuanzhan 导入站点和签到历史"
+  Write-Host "[K]" -ForegroundColor Yellow -NoNewline; Write-Host " 备份签到数据    备份签到 SQLite 与浏览器配置"
   Write-Host "[V]" -ForegroundColor Yellow -NoNewline; Write-Host " 版本信息        查看 Node、pnpm 和项目版本"
   Write-Host ""
   Write-Host "------------------------------------------------------------" -ForegroundColor DarkCyan
@@ -115,6 +117,26 @@ function Start-ProductionMode {
     Write-MenuText "未找到 .env，先执行环境配置。" Yellow
     Initialize-Environment
     if (-not (Test-Path (Join-Path $Root ".env"))) { return }
+  }
+  $envContent = Get-Content (Join-Path $Root ".env") -Raw
+  $requiredValues = @{}
+  foreach ($required in @("POSTGRES_PASSWORD", "DATABASE_URL", "CHECKIN_VNC_PASSWORD", "CREDENTIAL_ENCRYPTION_KEY", "ADMIN_TOKEN", "ADMIN_PASSWORD", "GATEWAY_API_KEY")) {
+    $match = [regex]::Match($envContent, "(?m)^$required=([^\r\n]+)")
+    if (-not $match.Success -or [string]::IsNullOrWhiteSpace($match.Groups[1].Value)) {
+      Write-MenuText ".env 缺少 $required，无法启动正式模式。" Red
+      return
+    }
+    $requiredValues[$required] = $match.Groups[1].Value.Trim()
+  }
+  foreach ($entry in $requiredValues.GetEnumerator()) {
+    if ($entry.Value -match "(?i)^(change[-_ ]?me|replace(?:[-_ ]?with)?|your[-_ ])" -or $entry.Value -in @("AutoAPI@123456", "autoapi", "replace8")) {
+      Write-MenuText ".env 中的 $($entry.Key) 仍是示例占位值，请先修改。" Red
+      return
+    }
+  }
+  if ($requiredValues["CHECKIN_VNC_PASSWORD"].Length -ne 8) {
+    Write-MenuText "CHECKIN_VNC_PASSWORD 必须正好为 8 个字符。" Red
+    return
   }
   Start-Process -FilePath $env:ComSpec -ArgumentList @("/k", "cd /d `"$Root`" && title autoAPI Docker && docker compose up --build") -WorkingDirectory $Root | Out-Null
   Write-MenuText "Docker 正式模式已启动，网关地址: $ApiUrl" Green
@@ -195,6 +217,19 @@ function Backup-Configuration {
   Write-MenuText "配置备份已生成: $zipPath" Green
 }
 
+function Migrate-CheckinData {
+  if (-not (Ensure-Dependencies)) { return }
+  Write-MenuText "开始迁移公益站签到数据，源目录不会被删除或修改..." Cyan
+  & pnpm.cmd --filter @autoapi/api migrate:checkin
+  if ($LASTEXITCODE -eq 0) { Write-MenuText "签到数据迁移完成。" Green } else { Write-MenuText "签到数据迁移失败。" Red }
+}
+
+function Backup-CheckinData {
+  if (-not (Ensure-Dependencies)) { return }
+  & pnpm.cmd --filter @autoapi/api backup:checkin
+  if ($LASTEXITCODE -eq 0) { Write-MenuText "签到数据备份完成。" Green } else { Write-MenuText "签到数据备份失败。" Red }
+}
+
 function Show-Version {
   $package = Get-Content (Join-Path $Root "package.json") -Raw | ConvertFrom-Json
   Write-Host "autoAPI: $($package.version)"
@@ -216,6 +251,8 @@ while ($true) {
     "8" { Stop-Services }
     "9" { Start-Process explorer.exe $Root }
     "B" { Backup-Configuration }
+    "M" { Migrate-CheckinData }
+    "K" { Backup-CheckinData }
     "V" { Show-Version }
     "0" { exit 0 }
     default { Write-MenuText "无效选项，请重新选择。" Yellow }

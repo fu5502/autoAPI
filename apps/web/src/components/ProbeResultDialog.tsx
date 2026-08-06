@@ -31,7 +31,7 @@ export function ProbeResultDialog({ result, onClose }: { result: ProbeResponse |
 }
 
 function formatBalance(balance: number | null, currency: string | null, status: string): string {
-  if (balance !== null) return `${currency ?? ""} ${balance.toFixed(2)}`.trim();
+  if (balance !== null) return `${currency ?? ""} ${balance.toLocaleString("zh-CN", { maximumFractionDigits: 8 })}`.trim();
   if (status === "unknown") return "未知";
   return status;
 }
