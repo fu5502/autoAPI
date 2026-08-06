@@ -180,11 +180,20 @@ export class SiteIconService {
       clearIconAssetCache?: (key: string) => void
     }
     if (typeof database.getIconAssetCache !== 'function') return null
-    const stored = database.getIconAssetCache(cacheKey)
+    let stored: StoredIconAsset | null
+    try {
+      stored = database.getIconAssetCache(cacheKey)
+    } catch {
+      return null
+    }
     if (!stored) return null
     const updatedAt = Date.parse(stored.updatedAt)
     if (!Number.isFinite(updatedAt) || updatedAt < Date.now() - persistentIconMaxAgeMs) {
-      database.clearIconAssetCache?.(cacheKey)
+      try {
+        database.clearIconAssetCache?.(cacheKey)
+      } catch {
+        // Cache cleanup is best-effort; an expired entry is still ignored.
+      }
       return null
     }
     return {
@@ -197,7 +206,11 @@ export class SiteIconService {
     const database = this.db as AppDatabase & {
       saveIconAssetCache?: (key: string, value: { url: string; body: Uint8Array; contentType: string }) => void
     }
-    database.saveIconAssetCache?.(cacheKey, { url, body: asset.body, contentType: asset.contentType })
+    try {
+      database.saveIconAssetCache?.(cacheKey, { url, body: asset.body, contentType: asset.contentType })
+    } catch {
+      // Serving the fetched icon is more important than persisting its cache entry.
+    }
   }
 
   async getIconAsset(siteId: number, refresh = false): Promise<IconAsset | null> {
