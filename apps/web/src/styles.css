@@ -2120,6 +2120,122 @@ th:last-child {
   height: 12px;
 }
 
+.pool-route-hour-wrap {
+  position: relative;
+  z-index: 0;
+  display: block;
+  min-width: 0;
+  height: 12px;
+  outline: none;
+}
+
+.pool-route-hour-wrap:hover,
+.pool-route-hour-wrap:focus-visible {
+  z-index: 8;
+}
+
+.pool-route-hour-wrap:hover .pool-hour-cell,
+.pool-route-hour-wrap:focus-visible .pool-hour-cell {
+  position: relative;
+  z-index: 2;
+  transform: scale(1.45);
+  box-shadow: 0 0 0 2px var(--surface), 0 3px 8px rgba(26, 48, 65, 0.24);
+}
+
+.pool-route-health-tooltip {
+  position: absolute;
+  z-index: 10;
+  bottom: calc(100% + 9px);
+  left: 50%;
+  display: grid;
+  min-width: 132px;
+  gap: 3px;
+  padding: 7px 9px;
+  color: #d5e2dc;
+  background: #183027;
+  border: 1px solid #3c6657;
+  border-radius: 5px;
+  box-shadow: 0 8px 18px rgba(18, 35, 29, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 4px) scale(0.98);
+  transform-origin: bottom center;
+  transition: opacity 120ms ease, transform 120ms ease;
+  font-size: 10px;
+  white-space: nowrap;
+  visibility: hidden;
+}
+
+.pool-route-hour-wrap:hover .pool-route-health-tooltip,
+.pool-route-hour-wrap:focus-visible .pool-route-health-tooltip {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+  visibility: visible;
+}
+
+.pool-route-health-tooltip::after {
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  width: 0;
+  height: 0;
+  content: "";
+  border-top: 6px solid #3c6657;
+  border-right: 6px solid transparent;
+  border-left: 6px solid transparent;
+  transform: translateX(-50%);
+}
+
+.pool-route-health-tooltip strong {
+  color: #edf7f1;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.pool-route-health-tooltip span {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  color: #b8cec3;
+}
+
+.pool-route-health-tooltip b {
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.pool-route-hour-wrap:first-child .pool-route-health-tooltip {
+  left: 0;
+  transform-origin: bottom left;
+}
+
+.pool-route-hour-wrap:first-child .pool-route-health-tooltip::after {
+  left: 8px;
+  transform: none;
+}
+
+.pool-route-hour-wrap:first-child:hover .pool-route-health-tooltip,
+.pool-route-hour-wrap:first-child:focus-visible .pool-route-health-tooltip {
+  transform: translate(0, 0) scale(1);
+}
+
+.pool-route-hour-wrap:last-child .pool-route-health-tooltip {
+  right: 0;
+  left: auto;
+  transform-origin: bottom right;
+}
+
+.pool-route-hour-wrap:last-child .pool-route-health-tooltip::after {
+  right: 8px;
+  left: auto;
+  transform: none;
+}
+
+.pool-route-hour-wrap:last-child:hover .pool-route-health-tooltip,
+.pool-route-hour-wrap:last-child:focus-visible .pool-route-health-tooltip {
+  transform: translate(0, 0) scale(1);
+}
+
 .usage-toolbar {
   display: flex;
   align-items: center;

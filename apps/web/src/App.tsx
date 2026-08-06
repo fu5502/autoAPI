@@ -531,7 +531,16 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                               <span className="pool-route-health-label">近 24h</span>
                               <div className="pool-route-hour-grid">
                                 {route.hourlyHealth.map((point) => (
-                                  <span className={`pool-hour-cell hour-${point.status}`} key={point.bucket} title={formatHealthTooltip(point)} aria-label={formatHealthTooltip(point)} />
+                                  <span className="pool-route-hour-wrap" key={point.bucket} tabIndex={0} aria-label={formatHealthTooltip(point)}>
+                                    <span className={`pool-hour-cell hour-${point.status}`} aria-hidden="true" />
+                                    <span className="pool-route-health-tooltip" role="tooltip">
+                                      <strong>{formatHealthRange(point.bucket, 60)}</strong>
+                                      <span>状态 <b>{formatHealthStatus(point.status)}</b></span>
+                                      <span>请求数 <b>{point.requests}</b></span>
+                                      <span>成功数 <b>{point.successfulRequests}</b></span>
+                                      <span>健康百分比 <b>{point.successRate === null ? "—" : formatPercent(point.successRate, 1)}</b></span>
+                                    </span>
+                                  </span>
                                 ))}
                               </div>
                             </div>
@@ -844,9 +853,13 @@ function getPoolAvailability(pool: Pool, window: HealthWindow): { label: string;
 
 function formatHealthTooltip(point: Pool["hourlyHealth"][number]) {
   const time = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit" }).format(new Date(point.bucket));
-  const status = point.status === "available" ? "可用" : point.status === "degraded" ? "降级" : point.status === "abnormal" ? "异常" : "无请求";
+  const status = formatHealthStatus(point.status);
   const success = point.successRate === null ? "无请求" : `健康百分比 ${formatPercent(point.successRate, 1)}`;
   return `${time} · ${status} · 请求 ${point.requests} · 成功 ${point.successfulRequests} · ${success}`;
+}
+
+function formatHealthStatus(status: Pool["hourlyHealth"][number]["status"]) {
+  return status === "available" ? "可用" : status === "degraded" ? "降级" : status === "abnormal" ? "异常" : "无请求";
 }
 
 function formatHealthRange(value: string, durationMinutes: number) {
