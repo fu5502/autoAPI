@@ -84,9 +84,19 @@ export function prepareState(
     targetCredentialKey?: string | undefined;
     gatewayApiKey?: string | undefined;
   },
-): { state: PersistedMemoryState; changes: { credentialsReencrypted: number; developmentGatewayKeysRotated: number } } {
+): {
+  state: PersistedMemoryState;
+  changes: {
+    credentialsReencrypted: number;
+    developmentGatewayKeysRotated: number;
+    orphanedUsageChannelRefsCleared: number;
+    orphanedSessionChannelRefsCleared: number;
+  };
+} {
   let credentialsReencrypted = 0;
   let developmentGatewayKeysRotated = 0;
+  let orphanedUsageChannelRefsCleared = 0;
+  let orphanedSessionChannelRefsCleared = 0;
   let channels = state.channels;
   let gatewayKeys = state.gatewayKeys;
 
@@ -117,9 +127,26 @@ export function prepareState(
     });
   }
 
+  const channelIds = new Set(channels.map((channel) => channel.id));
+  const usage = state.usage.map((event) => {
+    if (!event.channelId || channelIds.has(event.channelId)) return event;
+    orphanedUsageChannelRefsCleared += 1;
+    return { ...event, channelId: null };
+  });
+  const playgroundSessions = state.playgroundSessions.map((session) => {
+    if (!session.channelId || channelIds.has(session.channelId)) return session;
+    orphanedSessionChannelRefsCleared += 1;
+    return { ...session, channelId: null };
+  });
+
   return {
-    state: { ...state, channels, gatewayKeys },
-    changes: { credentialsReencrypted, developmentGatewayKeysRotated },
+    state: { ...state, channels, usage, gatewayKeys, playgroundSessions },
+    changes: {
+      credentialsReencrypted,
+      developmentGatewayKeysRotated,
+      orphanedUsageChannelRefsCleared,
+      orphanedSessionChannelRefsCleared,
+    },
   };
 }
 

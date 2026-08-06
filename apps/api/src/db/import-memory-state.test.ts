@@ -53,7 +53,22 @@ describe("memory state production preparation", () => {
       version: 1,
       channels: [channel],
       routes: [],
-      usage: [],
+      usage: [{
+        requestId: "c5991f8e-c155-4c39-ac6d-e83f09262f40",
+        channelId: "84a730af-2c63-4e25-b5c1-f63311bf8a90",
+        modelAlias: "model",
+        upstreamModel: "model",
+        clientName: "test",
+        requestKind: "chat",
+        statusCode: 200,
+        promptTokens: 1,
+        completionTokens: 1,
+        latencyMs: 100,
+        errorType: null,
+        retryCount: 0,
+        streamed: false,
+        createdAt: "2026-08-06T00:00:00.000Z",
+      }],
       gatewayKeys: [gatewayKey],
       playgroundSessions: [],
       adminAccount: undefined,
@@ -65,6 +80,12 @@ describe("memory state production preparation", () => {
       keyHash: hashGatewayKey(gatewayApiKey),
       keyLast4: "-key",
     });
-    expect(result.changes).toEqual({ credentialsReencrypted: 1, developmentGatewayKeysRotated: 1 });
+    expect(result.state.usage[0]!.channelId).toBeNull();
+    expect(result.changes).toEqual({
+      credentialsReencrypted: 1,
+      developmentGatewayKeysRotated: 1,
+      orphanedUsageChannelRefsCleared: 1,
+      orphanedSessionChannelRefsCleared: 0,
+    });
   });
 });
