@@ -2094,6 +2094,10 @@ th:last-child {
   font-weight: 600;
 }
 
+.pool-route-ping {
+  margin-left: 8px;
+}
+
 .pool-route-health {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr);
@@ -3138,6 +3142,7 @@ th:last-child {
   .pool-table { min-width: 900px; }
   .pool-table td { padding-top: 12px; padding-bottom: 12px; }
   .pool-route-list { gap: 7px; }
+  .pool-route-ping { margin-left: 3px; }
   .usage-chart-large .chart-frame { height: 270px; }
   .section-head { min-height: 56px; padding-left: 14px; padding-right: 14px; }
   .detail-row { grid-template-columns: 22px minmax(0, 1fr); }
