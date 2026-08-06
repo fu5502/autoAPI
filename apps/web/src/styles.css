@@ -2006,6 +2006,7 @@ th:last-child {
   background: var(--canvas);
   border: 1px solid var(--line-soft);
   border-radius: 4px;
+  text-align: left;
 }
 
 .pool-routes-expanded-row td {
