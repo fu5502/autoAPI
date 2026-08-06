@@ -329,6 +329,7 @@ export class MemoryStore implements GatewayStore {
       const channel = this.channels.get(route.channelId);
       if (!channel) continue;
       const routeEvents = this.usage.filter((event) => event.modelAlias === route.alias && event.channelId === channel.id);
+      const routeEvents1h = routeEvents.filter((event) => isHealthRelevantEvent(event) && Date.parse(event.createdAt) >= Date.now() - 3_600_000);
       const routeHealth = buildPoolHealth(routeEvents);
       const health = buildPoolHealth(this.usage.filter((event) => event.modelAlias === route.alias));
       const events = this.usage.filter((event) => event.modelAlias === route.alias
@@ -354,6 +355,8 @@ export class MemoryStore implements GatewayStore {
         status: channel.status,
         priority: channel.priority,
         weight: channel.weight,
+        conversationLatencyMs: routeEvents1h.length ? average(routeEvents1h.map((event) => event.latencyMs)) : null,
+        endpointPingMs: channel.lastLatencyMs,
         health1h: routeHealth.health1h,
         hourlyHealth: routeHealth.hourlyHealth,
         recentHealth: routeHealth.recentHealth,

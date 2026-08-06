@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
+import { Fragment, lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Copy, GitBranch, KeyRound, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun } from "lucide-react";
 import { ApiError, api, clearAdminSession, hasAdminSession } from "./api";
@@ -493,37 +493,49 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                 const expanded = expandedAliases.has(pool.alias);
                 const hasMultipleChannels = pool.routes.length > 1;
                 return (
-                <tr key={pool.alias}>
-                  <td>
-                    <div className="pool-model-name">
-                      <Route size={16} />
-                      <span className="mono">{pool.alias}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <strong className="pool-health-count">{pool.healthyChannels}/{pool.channels}</strong>
-                  </td>
-                  <td>{pool.totalRequests1h.toLocaleString("zh-CN")} 次</td>
-                  <td className={pool.totalRequests1h === 0 ? "subtle" : pool.errorRate1h > 0.2 ? "danger-text" : pool.errorRate1h > 0.05 ? "warning-text" : "success-text"}>{pool.totalRequests1h === 0 ? "—" : formatPercent(1 - pool.errorRate1h)}</td>
-                  <td>{pool.averageLatencyMs1h} ms</td>
-                  <td>
-                    <div className="pool-route-cell">
-                      <button className="pool-expand-button" type="button" onClick={() => toggleExpanded(pool.alias)} aria-expanded={expanded} disabled={!hasMultipleChannels}>
-                        <span className="pool-expand-icon" aria-hidden="true">{hasMultipleChannels ? (expanded ? "−" : "+") : "·"}</span>
-                        <span>{hasMultipleChannels ? (expanded ? `收起 ${pool.routes.length} 个渠道` : `${pool.routes.length} 个渠道`) : "1 个渠道"}</span>
-                      </button>
-                      {expanded ? <div className="pool-route-list">
+                <Fragment key={pool.alias}>
+                  <tr>
+                    <td>
+                      <div className="pool-model-name">
+                        <Route size={16} />
+                        <span className="mono">{pool.alias}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <strong className="pool-health-count">{pool.healthyChannels}/{pool.channels}</strong>
+                    </td>
+                    <td>{pool.totalRequests1h.toLocaleString("zh-CN")} 次</td>
+                    <td className={pool.totalRequests1h === 0 ? "subtle" : pool.errorRate1h > 0.2 ? "danger-text" : pool.errorRate1h > 0.05 ? "warning-text" : "success-text"}>{pool.totalRequests1h === 0 ? "—" : formatPercent(1 - pool.errorRate1h)}</td>
+                    <td>{pool.averageLatencyMs1h} ms</td>
+                    <td>
+                      <div className="pool-route-cell">
+                        <button className="pool-expand-button" type="button" onClick={() => toggleExpanded(pool.alias)} aria-expanded={expanded} disabled={!hasMultipleChannels}>
+                          <span className="pool-expand-icon" aria-hidden="true">{hasMultipleChannels ? (expanded ? "−" : "+") : "·"}</span>
+                          <span>{hasMultipleChannels ? (expanded ? `收起 ${pool.routes.length} 个渠道` : `${pool.routes.length} 个渠道`) : "1 个渠道"}</span>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {expanded ? <tr className="pool-routes-expanded-row">
+                    <td colSpan={6}>
+                      <div className="pool-route-list">
+                        <div className="pool-route-list-head" aria-hidden="true">
+                          <span>渠道</span>
+                          <span>转发模型</span>
+                          <span>对话延迟</span>
+                          <span>端点 PING</span>
+                          <span>近 24 小时状态</span>
+                        </div>
                         {pool.routes.map((route) => (
                           <div className="pool-route-item" key={`${route.channelId}-${route.upstreamModel}`}>
                             <div className="pool-route-main">
                               <StatusDot status={route.status} />
-                              <span className="pool-route-channel">{route.channelName}</span>
-                              <span className="mono subtle">{route.upstreamModel}</span>
-                              <span className="pool-route-meta">P{route.priority}</span>
-                              <span className="pool-route-meta">W{route.weight}</span>
+                              <span className="pool-route-channel" title={route.channelName}>{route.channelName}</span>
                             </div>
+                            <span className="pool-route-model mono subtle" title={route.upstreamModel}>{route.upstreamModel}</span>
+                            <span className="pool-route-latency">{formatLatency(route.conversationLatencyMs)}</span>
+                            <span className="pool-route-latency">{formatLatency(route.endpointPingMs)}</span>
                             <div className="pool-route-health" aria-label={`${route.channelName} 近 24 小时每小时状态`}>
-                              <span className="pool-route-health-label">近 24h</span>
                               <div className="pool-route-hour-grid">
                                 {route.hourlyHealth.map((point) => (
                                   <span className={`pool-hour-cell hour-${point.status}`} key={point.bucket} title={formatHealthTooltip(point)} aria-label={formatHealthTooltip(point)} />
@@ -532,10 +544,10 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                             </div>
                           </div>
                         ))}
-                      </div> : null}
-                    </div>
-                  </td>
-                </tr>
+                      </div>
+                    </td>
+                  </tr> : null}
+                </Fragment>
                 );
               })}
             </tbody>
@@ -896,8 +908,8 @@ function formatHour(value: string | undefined) {
   return value ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit" }).format(new Date(value)) : "—";
 }
 
-function formatLatency(value: number) {
-  if (value <= 0) return "—";
+function formatLatency(value: number | null | undefined) {
+  if (value === null || value === undefined || value <= 0) return "—";
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 1 : 2)} s`;
   return `${value.toLocaleString("zh-CN")} ms`;
 }

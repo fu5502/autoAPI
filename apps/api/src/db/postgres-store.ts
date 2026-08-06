@@ -528,7 +528,7 @@ export class PostgresStore implements GatewayStore {
   async getPools(): Promise<PoolSummary[]> {
     const routes = await this.pool.query(
       `SELECT ma.alias, ma.upstream_model, c.id AS channel_id, c.name AS channel_name,
-              p.name AS provider_name, c.status, c.priority, c.weight
+              p.name AS provider_name, c.status, c.priority, c.weight, c.last_latency_ms
        FROM model_aliases ma
        JOIN channels c ON c.id = ma.channel_id
        JOIN providers p ON p.id = c.provider_id
@@ -742,6 +742,7 @@ export class PostgresStore implements GatewayStore {
       const recentHealth = buildRecentHealth(recentMap.get(alias) ?? []);
       const health12hPoints = buildHourlyHealth(health12hMap.get(alias) ?? [], 12);
       const health7dPoints = buildDailyHealth(health7dMap.get(alias) ?? []);
+      const routeHealth1hPoints = buildRecentHealth(routeHealth1hMap.get(`${alias}:${String(row.channel_id)}`) ?? [], 60 * 60 * 1000);
       const pool = pools.get(alias) ?? {
         alias,
         channels: 0,
@@ -774,11 +775,13 @@ export class PostgresStore implements GatewayStore {
         upstreamModel: String(row.upstream_model),
         status: row.status,
         priority: Number(row.priority),
-         weight: Number(row.weight),
-         health1h: buildRecentHealth(routeHealth1hMap.get(`${alias}:${String(row.channel_id)}`) ?? [], 60 * 60 * 1000),
-         hourlyHealth: buildRouteHourlyHealth(routeHourlyMap.get(`${alias}:${String(row.channel_id)}`) ?? []),
-         recentHealth: buildRouteRecentHealth(routeRecentMap.get(`${alias}:${String(row.channel_id)}`) ?? []),
-         health12h: buildHourlyHealth(routeHealth12hMap.get(`${alias}:${String(row.channel_id)}`) ?? [], 12),
+        weight: Number(row.weight),
+        conversationLatencyMs: averageHealthLatency(routeHealth1hPoints),
+        endpointPingMs: row.last_latency_ms === null ? null : Number(row.last_latency_ms),
+        health1h: routeHealth1hPoints,
+        hourlyHealth: buildRouteHourlyHealth(routeHourlyMap.get(`${alias}:${String(row.channel_id)}`) ?? []),
+        recentHealth: buildRouteRecentHealth(routeRecentMap.get(`${alias}:${String(row.channel_id)}`) ?? []),
+        health12h: buildHourlyHealth(routeHealth12hMap.get(`${alias}:${String(row.channel_id)}`) ?? [], 12),
          health7d: buildDailyHealth(routeHealth7dMap.get(`${alias}:${String(row.channel_id)}`) ?? []),
       });
       pools.set(alias, pool);
@@ -1063,6 +1066,13 @@ function recentSuccessRate(points: Array<{ requests: number; successfulRequests:
   const requests = points.reduce((sum, point) => sum + point.requests, 0);
   const successes = points.reduce((sum, point) => sum + point.successfulRequests, 0);
   return requests ? successes / requests : null;
+}
+
+function averageHealthLatency(points: Array<{ requests: number; averageLatencyMs: number }>): number | null {
+  const requests = points.reduce((sum, point) => sum + point.requests, 0);
+  if (!requests) return null;
+  const weightedLatency = points.reduce((sum, point) => sum + point.averageLatencyMs * point.requests, 0);
+  return Math.round(weightedLatency / requests);
 }
 
 function mapChannel(row: QueryResultRow): Channel {

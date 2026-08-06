@@ -268,6 +268,8 @@ export interface PoolRouteSummary {
   status: ChannelStatus;
   priority: number;
   weight: number;
+  conversationLatencyMs: number | null;
+  endpointPingMs: number | null;
   health1h: PoolHealthPoint[];
   hourlyHealth: PoolHealthPoint[];
   recentHealth: PoolHealthPoint[];

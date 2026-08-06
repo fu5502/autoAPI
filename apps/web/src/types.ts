@@ -83,6 +83,8 @@ export interface Pool {
     status: ChannelStatus;
     priority: number;
     weight: number;
+    conversationLatencyMs: number | null;
+    endpointPingMs: number | null;
     health1h: Pool["hourlyHealth"];
     hourlyHealth: Pool["hourlyHealth"];
     recentHealth: Pool["hourlyHealth"];

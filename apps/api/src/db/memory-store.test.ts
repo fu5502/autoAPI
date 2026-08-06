@@ -151,6 +151,8 @@ describe("MemoryStore channel management", () => {
     const routeB = pool?.routes.find((route) => route.channelId === second.channel.id);
     expect(routeA?.hourlyHealth).toHaveLength(24);
     expect(routeB?.hourlyHealth).toHaveLength(24);
+    expect(routeA).toMatchObject({ conversationLatencyMs: 100, endpointPingMs: 20 });
+    expect(routeB).toMatchObject({ conversationLatencyMs: 100, endpointPingMs: 20 });
     expect(routeA?.hourlyHealth.find((point) => point.requests === 1)).toMatchObject({ requests: 1, successfulRequests: 1, status: "available" });
     expect(routeB?.hourlyHealth.find((point) => point.requests === 1)).toMatchObject({ requests: 1, successfulRequests: 0, status: "abnormal" });
   });
