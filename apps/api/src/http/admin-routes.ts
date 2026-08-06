@@ -355,7 +355,7 @@ export async function registerAdminRoutes(
         const siteAsset = customAsset ?? (site ? await dependencies.siteIcons.getIconAsset(site.id).catch(() => null) : null);
         const asset = siteAsset ?? await dependencies.siteIcons.getExternalIconAsset(site?.baseUrl ?? channel.baseUrl);
         if (!asset) return reply.code(404).send();
-        reply.header("cache-control", "private, no-cache").type(asset.contentType);
+        reply.header("cache-control", "private, max-age=86400, stale-while-revalidate=604800").type(asset.contentType);
         return reply.send(Buffer.from(asset.body));
       } catch {
         return reply.code(404).send();

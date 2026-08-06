@@ -42,6 +42,7 @@ describe('admin channel icon proxy', () => {
 
     expect(result.statusCode).toBe(200)
     expect(result.headers['content-type']).toContain('image/png')
+    expect(result.headers['cache-control']).toContain('max-age=86400')
     expect([...result.rawPayload]).toEqual([1, 2, 3])
     expect(siteIcons.getExternalIconAsset).toHaveBeenCalledWith(channel.baseUrl)
   })

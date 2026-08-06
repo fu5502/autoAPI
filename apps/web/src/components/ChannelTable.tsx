@@ -203,7 +203,7 @@ function ChannelSiteIcon({ channel }: { channel: Channel }) {
     setIconSrc(null);
     setIconUnavailable(false);
 
-    void fetch(iconUrl, { cache: "no-store", headers: { Authorization: `Bearer ${getAdminToken()}` }, signal: controller.signal })
+    void fetch(iconUrl, { cache: "force-cache", headers: { Authorization: `Bearer ${getAdminToken()}` }, signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error("Site icon is unavailable");
         return response.blob();

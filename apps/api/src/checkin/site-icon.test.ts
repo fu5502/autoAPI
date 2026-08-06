@@ -52,6 +52,30 @@ describe('site icon resolution', () => {
     ])
   })
 
+  it('reuses a persisted external icon after the service is recreated', async () => {
+    const records = new Map<string, { url: string; body: Uint8Array; contentType: string; updatedAt: string }>()
+    const database = {
+      getIconAssetCache: vi.fn((key: string) => records.get(key) ?? null),
+      saveIconAssetCache: vi.fn((key: string, asset: { url: string; body: Uint8Array; contentType: string }) => {
+        records.set(key, { ...asset, updatedAt: new Date().toISOString() })
+      }),
+      clearIconAssetCache: vi.fn(),
+    } as unknown as AppDatabase
+    const fetcherMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === 'https://relay.example/') return response('<link rel="icon" href="/brand.png">', 'text/html')
+      return response(new Uint8Array([4, 5, 6]), 'image/png')
+    })
+    const fetcher = fetcherMock as unknown as typeof fetch
+
+    await new SiteIconService(database, fetcher).getExternalIconAsset('https://relay.example/v1')
+    const second = await new SiteIconService(database, fetcher).getExternalIconAsset('https://relay.example/v1')
+
+    expect(second).toMatchObject({ contentType: 'image/png' })
+    expect(fetcherMock).toHaveBeenCalledTimes(2)
+    expect(database.saveIconAssetCache).toHaveBeenCalledTimes(1)
+  })
+
   it('loads a custom icon directly and rejects credential-bearing addresses', async () => {
     const fetcherMock = vi.fn(async (_input: RequestInfo | URL) => response(new Uint8Array([7, 8, 9]), 'image/png'))
     const service = new SiteIconService({} as AppDatabase, fetcherMock as unknown as typeof fetch)

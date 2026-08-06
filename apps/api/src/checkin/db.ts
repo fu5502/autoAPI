@@ -21,6 +21,13 @@ export interface StoredSiteIconAsset {
   contentType: string
 }
 
+export interface StoredIconAsset {
+  url: string
+  body: Uint8Array
+  contentType: string
+  updatedAt: string
+}
+
 export interface SiteChannelLink {
   siteId: number
   channelId: string
@@ -192,6 +199,14 @@ export class AppDatabase {
 
       CREATE TABLE IF NOT EXISTS site_icon_assets (
         site_id INTEGER PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+        url TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        body BLOB NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS icon_asset_cache (
+        cache_key TEXT PRIMARY KEY,
         url TEXT NOT NULL,
         content_type TEXT NOT NULL,
         body BLOB NOT NULL,
@@ -392,6 +407,36 @@ export class AppDatabase {
 
   clearSiteIconAsset(siteId: number): void {
     this.db.prepare('DELETE FROM site_icon_assets WHERE site_id = ?').run(siteId)
+  }
+
+  getIconAssetCache(cacheKey: string): StoredIconAsset | null {
+    const row = this.db.prepare(`
+      SELECT cache_key, url, content_type, body, updated_at FROM icon_asset_cache
+      WHERE cache_key = ?
+    `).get(cacheKey) as Row | undefined
+    if (!row || !(row.body instanceof Uint8Array)) return null
+    return {
+      url: String(row.url),
+      contentType: String(row.content_type),
+      body: new Uint8Array(row.body),
+      updatedAt: String(row.updated_at),
+    }
+  }
+
+  saveIconAssetCache(cacheKey: string, asset: StoredSiteIconAsset): void {
+    this.db.prepare(`
+      INSERT INTO icon_asset_cache (cache_key, url, content_type, body, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        url = excluded.url,
+        content_type = excluded.content_type,
+        body = excluded.body,
+        updated_at = excluded.updated_at
+    `).run(cacheKey, asset.url, asset.contentType, asset.body, nowIso())
+  }
+
+  clearIconAssetCache(cacheKey: string): void {
+    this.db.prepare('DELETE FROM icon_asset_cache WHERE cache_key = ?').run(cacheKey)
   }
 
   touchSite(id: number): Site | null {

@@ -1,6 +1,6 @@
 import { parse } from 'node-html-parser'
 import type { BrowserManager } from './browser-manager.js'
-import { AppDatabase } from './db.js'
+import { AppDatabase, type StoredIconAsset } from './db.js'
 
 type Fetcher = typeof fetch
 
@@ -14,6 +14,7 @@ interface IconCandidate {
 
 const htmlLimitBytes = 2 * 1024 * 1024
 const iconLimitBytes = 2 * 1024 * 1024
+const persistentIconMaxAgeMs = 30 * 24 * 60 * 60 * 1000
 const verifiedSiteIcons = new Map([
   ['anyrouter.top', '/logo.png'],
   ['token.dialoguedui.com', '/logo.png'],
@@ -92,9 +93,15 @@ export class SiteIconService {
   }
 
   async getExternalIconAsset(baseUrl: string): Promise<IconAsset | null> {
-    const cacheKey = getIconPageUrl(baseUrl)
+    const cacheKey = `v1:external:${getIconPageUrl(baseUrl)}`
     const cached = this.externalAssetCache.get(cacheKey)
     if (cached && cached.expiresAt > Date.now()) return cached.asset
+
+    const stored = this.readPersistentAsset(cacheKey)
+    if (stored) {
+      this.externalAssetCache.set(cacheKey, { asset: stored.asset, expiresAt: Date.now() + 10 * 60_000 })
+      return stored.asset
+    }
 
     const existing = this.externalAssetPending.get(cacheKey)
     if (existing) return existing
@@ -102,11 +109,16 @@ export class SiteIconService {
     const task = (async () => {
       const resolved = await this.resolveIconUrl(baseUrl, false)
       const direct = await this.loadIconAsset(baseUrl, resolved, true)
-      if (direct) return direct
+      if (direct) {
+        this.savePersistentAsset(cacheKey, resolved, direct)
+        return direct
+      }
 
       const rendered = await this.resolveIconUrl(baseUrl, true)
       if (rendered === resolved) return null
-      return this.loadIconAsset(baseUrl, rendered, true)
+      const asset = await this.loadIconAsset(baseUrl, rendered, true)
+      if (asset) this.savePersistentAsset(cacheKey, rendered, asset)
+      return asset
     })()
       .then((asset) => {
         this.externalAssetCache.set(cacheKey, {
@@ -133,14 +145,22 @@ export class SiteIconService {
     }
     if (!safeUrl) return null
 
-    const cacheKey = `${pageUrl}|${safeUrl}`
+    const cacheKey = `v1:custom:${pageUrl}|${safeUrl}`
     const cached = this.customAssetCache.get(cacheKey)
     if (cached && cached.expiresAt > Date.now()) return cached.asset
+
+    const stored = this.readPersistentAsset(cacheKey)
+    if (stored) {
+      this.customAssetCache.set(cacheKey, { asset: stored.asset, expiresAt: Date.now() + 10 * 60_000 })
+      return stored.asset
+    }
+
     const existing = this.customAssetPending.get(cacheKey)
     if (existing) return existing
 
     const task = this.loadIconAsset(refererUrl, safeUrl, true)
       .then((asset) => {
+        if (asset) this.savePersistentAsset(cacheKey, safeUrl, asset)
         this.customAssetCache.set(cacheKey, {
           asset,
           expiresAt: Date.now() + (asset ? 10 * 60_000 : 60_000),
@@ -152,6 +172,32 @@ export class SiteIconService {
       })
     this.customAssetPending.set(cacheKey, task)
     return task
+  }
+
+  private readPersistentAsset(cacheKey: string): { url: string; asset: IconAsset } | null {
+    const database = this.db as AppDatabase & {
+      getIconAssetCache?: (key: string) => StoredIconAsset | null
+      clearIconAssetCache?: (key: string) => void
+    }
+    if (typeof database.getIconAssetCache !== 'function') return null
+    const stored = database.getIconAssetCache(cacheKey)
+    if (!stored) return null
+    const updatedAt = Date.parse(stored.updatedAt)
+    if (!Number.isFinite(updatedAt) || updatedAt < Date.now() - persistentIconMaxAgeMs) {
+      database.clearIconAssetCache?.(cacheKey)
+      return null
+    }
+    return {
+      url: stored.url,
+      asset: { body: stored.body, contentType: stored.contentType },
+    }
+  }
+
+  private savePersistentAsset(cacheKey: string, url: string, asset: IconAsset): void {
+    const database = this.db as AppDatabase & {
+      saveIconAssetCache?: (key: string, value: { url: string; body: Uint8Array; contentType: string }) => void
+    }
+    database.saveIconAssetCache?.(cacheKey, { url, body: asset.body, contentType: asset.contentType })
   }
 
   async getIconAsset(siteId: number, refresh = false): Promise<IconAsset | null> {
