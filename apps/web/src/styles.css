@@ -1448,13 +1448,30 @@ select:focus-visible {
 
 .pool-health-cell-wrap {
   position: relative;
+  z-index: 0;
   display: block;
   min-width: 0;
+}
+
+.pool-health-cell-wrap:hover,
+.pool-health-cell-wrap.is-hovered,
+.pool-health-cell-wrap:focus-visible {
+  z-index: 8;
 }
 
 .pool-health-strip .pool-hour-cell {
   height: 28px;
   border-radius: 3px;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.pool-health-cell-wrap:hover .pool-hour-cell,
+.pool-health-cell-wrap.is-hovered .pool-hour-cell,
+.pool-health-cell-wrap:focus-visible .pool-hour-cell {
+  position: relative;
+  z-index: 2;
+  transform: scale(1.28);
+  box-shadow: 0 0 0 2px var(--surface), 0 3px 8px rgba(26, 48, 65, 0.24);
 }
 
 .pool-health-cell-wrap.is-hovered .pool-health-tooltip {
