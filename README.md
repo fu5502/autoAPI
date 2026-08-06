@@ -51,7 +51,7 @@ Copy-Item .env.example .env
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-2. 将生成值填入 `CREDENTIAL_ENCRYPTION_KEY`，并分别替换 `POSTGRES_PASSWORD`、`ADMIN_TOKEN`、`GATEWAY_API_KEY` 和 `CHECKIN_VNC_PASSWORD`。同步修改 `DATABASE_URL` 中的 PostgreSQL 密码。VNC 密码必须恰好 8 个字符。
+2. 将生成值填入 `CREDENTIAL_ENCRYPTION_KEY`，并分别替换 `POSTGRES_PASSWORD`、`ADMIN_TOKEN` 和 `GATEWAY_API_KEY`。同步修改 `DATABASE_URL` 中的 PostgreSQL 密码。noVNC 默认关闭，不需要配置 VNC 密码。
 
 3. Start the stack:
 
@@ -59,7 +59,19 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 docker compose up --build -d
 ```
 
-后台和网关统一运行在 `http://localhost:8080`。PostgreSQL 和 Redis 只在 Compose 内网开放，不映射到宿主机。签到授权时，后台会通过短期授权会话将服务器 noVNC 浏览器嵌入授权弹窗，6080 继续只绑定容器/服务器本机，不需要额外开放端口或建立 SSH 隧道；授权弹窗也保留新窗口打开入口作为备用。
+后台和网关统一运行在 `http://localhost:8080`。PostgreSQL 和 Redis 只在 Compose 内网开放，不映射到宿主机。服务器远程浏览器和 noVNC 默认关闭，不开放 `6080`，避免通过远程桌面处理第三方登录。签到授权应使用本地浏览器授权助手；noVNC 仅保留为受控调试开关 `CHECKIN_ENABLE_NOVNC=true`，不建议在公网环境启用。
+
+### CookieCloud 本地授权
+
+签到站授权默认使用 CookieCloud 兼容方式，不需要在服务器开启 noVNC。进入“公益站签到”，点击站点的“授权”，在本地 Chrome/Edge 安装 CookieCloud 扩展，将弹窗中的信息填入扩展：
+
+- Endpoint：填写弹窗中的服务地址，扩展会自动请求其 `/update` 路径。
+- UUID、密码：按弹窗内容填写。
+- Domains：填写站点域名，建议只填写当前站点主域名。
+- 同步方向：选择上传，并开启 Local Storage 同步。
+- Headers：按弹窗提供的整行内容填写自定义请求头。
+
+上传成功后后台会显示 Cookie 和 Local Storage 数量，并将登录状态加密保存到签到数据目录。服务器只保留加密后的会话快照；配对信息和上传 Token 15 分钟后失效，上传完成后不能重复使用。不要把 CookieCloud 的 UUID、密码或自定义请求头发布到公共页面。
 
 ### 管理后台登录
 

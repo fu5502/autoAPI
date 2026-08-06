@@ -10,6 +10,7 @@ import {
   ChevronDown,
   CircleAlert,
   Clock3,
+  Copy,
   Download,
   ExternalLink,
   KeyRound,
@@ -31,7 +32,7 @@ import {
 import type {
   AppEvent,
 } from './local-types'
-import type { AppSettings, AppState, AuthSessionState, ChannelImportPreview, ChannelImportResult, CheckinResult, Site } from './shared/types'
+import type { AppSettings, AppState, AuthSessionState, ChannelImportPreview, ChannelImportResult, CheckinResult, CookieCloudPairing, CookieCloudPairingStatus, Site } from './shared/types'
 import { api } from './api'
 import { api as gatewayApi } from '../api'
 import type { Channel } from '../types'
@@ -114,6 +115,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
   const [error, setError] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [authSession, setAuthSession] = useState<AuthSessionState | null>(null)
+  const [cookieCloudPair, setCookieCloudPair] = useState<{ site: Site; pairing: CookieCloudPairing } | null>(null)
   const [selectedSite, setSelectedSite] = useState<Site | null>(null)
   const [channelImport, setChannelImport] = useState<{ site: Site; candidates: ChannelImportPreview[] } | null>(null)
   const [channelImportStatus, setChannelImportStatus] = useState<ChannelImportStatus | null>(null)
@@ -278,6 +280,46 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
     }
   }
 
+  const openCookieCloudAuth = async (site: Site, flow: AuthorizationFlow = 'standalone') => {
+    try {
+      const pairing = await api.createCookieCloudPair(site.id)
+      if (flow === 'channel-import') setPendingChannelImportSite(site)
+      setCookieCloudPair({ site, pairing })
+      return true
+    } catch (cause) {
+      if (flow === 'channel-import') setPendingChannelImportSite(null)
+      setChannelImportStatus({
+        site,
+        phase: 'error',
+        operation: 'authorize',
+        authorizationFlow: flow,
+        message: cause instanceof Error ? cause.message : '无法生成本地授权配对信息',
+      })
+      return false
+    }
+  }
+
+  const closeCookieCloudAuth = async () => {
+    if (cookieCloudPair) await api.cancelCookieCloudPair(cookieCloudPair.site.id, cookieCloudPair.pairing.pairId).catch(() => undefined)
+    setCookieCloudPair(null)
+    setPendingChannelImportSite(null)
+  }
+
+  const completeCookieCloudAuth = async (status: CookieCloudPairingStatus) => {
+    const activePair = cookieCloudPair
+    if (!activePair || status.status !== 'received') return
+    const site = activePair.site
+    setCookieCloudPair(null)
+    await refresh(true)
+    const pendingSite = pendingChannelImportSite
+    setPendingChannelImportSite(null)
+    if (pendingSite?.id === site.id) {
+      await continueChannelImport({ ...site, authStatus: 'valid' })
+      return
+    }
+    notify('本地授权同步成功', `${site.name} 已接收 CookieCloud 登录状态`, 'success')
+  }
+
   const runCheckin = async (siteIds?: number[]) => {
     try {
       await api.runCheckin(siteIds)
@@ -330,25 +372,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
       return
     }
 
-    setPendingChannelImportSite(site)
-    const session = await authorize(site, 'channel-import')
-    if (!session) {
-      setPendingChannelImportSite(null)
-    } else if (session.status === 'success') {
-      setPendingChannelImportSite(null)
-      setAuthSession(null)
-      await continueChannelImport({ ...site, authStatus: 'valid' })
-    } else if (session.status !== 'waiting') {
-      setPendingChannelImportSite(null)
-      setAuthSession(null)
-      setChannelImportStatus({
-        site,
-        phase: 'error',
-        operation: 'authorize',
-        authorizationFlow: 'channel-import',
-        message: `授权未完成：${session.message}`,
-      })
-    }
+    await openCookieCloudAuth(site, 'channel-import')
   }
 
   const confirmChannelImport = async (input: { candidateId: string; name: string; models: string[]; priority: number; weight: number; tags: string[] }) => {
@@ -437,14 +461,15 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
       <div className="checkin-main-area">
         {loading && !state ? <LoadingScreen /> : error && !state ? <ErrorScreen message={error} retry={() => void refresh()} /> : state ? (
           <>
-            {view === 'dashboard' && <Dashboard state={state} onAdd={() => setAddOpen(true)} onRun={runCheckin} onAuthorize={authorize} onImport={startChannelImport} importedSiteIds={importedSiteIds} onSelect={setSelectedSite} onRefresh={() => refresh(true)} notify={notify} />}
+            {view === 'dashboard' && <Dashboard state={state} onAdd={() => setAddOpen(true)} onRun={runCheckin} onAuthorize={openCookieCloudAuth} onImport={startChannelImport} importedSiteIds={importedSiteIds} onSelect={setSelectedSite} onRefresh={() => refresh(true)} notify={notify} />}
             {view === 'history' && <HistoryView state={state} />}
             {view === 'settings' && <SettingsView settings={state.settings} onSaved={() => refresh(true)} notify={notify} />}
           </>
         ) : null}
       </div>
 
-      {addOpen && <AddSiteModal onClose={() => setAddOpen(false)} onAdded={async (sites) => { setAddOpen(false); await refresh(true); if (sites.length === 1) void authorize(sites[0]!) }} notify={notify} />}
+      {addOpen && <AddSiteModal onClose={() => setAddOpen(false)} onAdded={async (sites) => { setAddOpen(false); await refresh(true); if (sites.length === 1) void openCookieCloudAuth(sites[0]!) }} notify={notify} />}
+      {cookieCloudPair && <CookieCloudAuthModal site={cookieCloudPair.site} pairing={cookieCloudPair.pairing} onClose={() => void closeCookieCloudAuth()} onStatus={completeCookieCloudAuth} />}
       {authSession && state?.sites.find((site) => site.id === authSession.siteId) ? <AuthModal session={authSession} site={state.sites.find((site) => site.id === authSession.siteId)!} channelImportMode={pendingChannelImportSite?.id === authSession.siteId} onClose={() => { setPendingChannelImportSite(null); setAuthSession(null) }} onCancel={async () => { const cancelled = await api.cancelAuthSession(authSession.id); setPendingChannelImportSite(null); setAuthSession(cancelled) }} /> : null}
       {channelImport && <ChannelImportModal site={channelImport.site} candidates={channelImport.candidates} onClose={() => setChannelImport(null)} onDiscoverModels={(candidateId) => api.discoverChannelImportModels(channelImport.site.id, candidateId)} onConfirm={confirmChannelImport} />}
       {channelBalanceLink && <ChannelBalanceLinkModal site={channelBalanceLink.site} channels={channelBalanceLink.channels} reason={channelBalanceLink.reason} onClose={() => setChannelBalanceLink(null)} onConfirm={confirmChannelBalanceLink} onCreate={createManualChannel} />}
@@ -454,7 +479,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
           if (channelImportStatus.authorizationFlow === 'channel-import') {
             void startChannelImport(channelImportStatus.site)
           } else {
-            void authorize(channelImportStatus.site)
+            void openCookieCloudAuth(channelImportStatus.site)
           }
         } else if (channelImportStatus.operation === 'prepare') {
           const site = channelImportStatus.site
@@ -463,7 +488,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
           setChannelImportStatus(null)
         }
       }} />}
-      {selectedSite && state && <SiteDrawer site={selectedSite} results={state.recentResults.filter((result) => result.siteId === selectedSite.id)} onClose={() => setSelectedSite(null)} onRun={() => runCheckin([selectedSite.id])} onAuthorize={() => authorize(selectedSite)} />}
+      {selectedSite && state && <SiteDrawer site={selectedSite} results={state.recentResults.filter((result) => result.siteId === selectedSite.id)} onClose={() => setSelectedSite(null)} onRun={() => runCheckin([selectedSite.id])} onAuthorize={() => void openCookieCloudAuth(selectedSite)} />}
       <ToastRegion toasts={toasts} dismiss={(id) => setToasts((items) => items.filter((item) => item.id !== id))} />
     </section>
   )
@@ -1093,6 +1118,88 @@ function AuthModal({ session, site, channelImportMode = false, onClose, onCancel
     </div>
     <div className="modal-actions"><button className={`button ${waiting ? 'secondary' : 'primary'}`} onClick={waiting ? onCancel : onClose}>{waiting ? '取消授权' : '完成'}</button></div>
   </Modal>
+}
+
+function CookieCloudAuthModal({ site, pairing, onClose, onStatus }: { site: Site; pairing: CookieCloudPairing; onClose: () => void; onStatus: (status: CookieCloudPairingStatus) => void }) {
+  const [status, setStatus] = useState<CookieCloudPairingStatus>({
+    pairId: pairing.pairId,
+    siteId: site.id,
+    status: 'waiting',
+    expiresAt: pairing.expiresAt,
+    receivedAt: null,
+    cookieCount: 0,
+    localStorageCount: 0,
+    message: '等待本地 CookieCloud 上传…',
+  })
+  const [copied, setCopied] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    let completed = false
+    const poll = async () => {
+      try {
+        const next = await api.getCookieCloudPair(site.id, pairing.pairId)
+        if (!active) return
+        setStatus(next)
+        if (!completed && next.status !== 'waiting') {
+          completed = true
+          onStatus(next)
+        }
+      } catch (cause) {
+        if (active) setStatus((current) => ({ ...current, status: 'failed', message: cause instanceof Error ? cause.message : '无法读取本地授权状态' }))
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 1500)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [pairing.pairId, site.id, onStatus])
+
+  const copyValue = async (label: string, value: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value)
+      } else {
+        const input = document.createElement('textarea')
+        input.value = value
+        input.style.position = 'fixed'
+        input.style.opacity = '0'
+        document.body.appendChild(input)
+        try {
+          input.focus()
+          input.select()
+          if (!document.execCommand('copy')) throw new Error('clipboard unavailable')
+        } finally {
+          input.remove()
+        }
+      }
+      setCopied(label)
+      window.setTimeout(() => setCopied((current) => current === label ? null : current), 1600)
+    } catch {
+      setCopied(null)
+    }
+  }
+
+  const expired = status.status === 'expired' || status.status === 'cancelled' || status.status === 'failed'
+  return <Modal title="本地浏览器授权" description="使用 CookieCloud 将本地浏览器的登录状态安全同步到服务器" onClose={onClose}>
+    <div className="cookiecloud-auth-modal">
+      <div className={`cookiecloud-status ${status.status}`}><span className="cookiecloud-status-dot" /><div><strong>{status.status === 'received' ? '授权同步成功' : expired ? '授权未完成' : '等待本地浏览器上传'}</strong><p>{status.message}</p></div></div>
+      <div className="cookiecloud-steps">
+        <p>在 Chrome/Edge 安装 CookieCloud 后，将下面信息填入插件。同步方向选择“上传”，域名填写 <code>{pairing.domain}</code>，并开启 Local Storage 同步。</p>
+        <CookieCloudValue label="服务地址 Endpoint" value={pairing.endpoint} copied={copied === 'endpoint'} onCopy={() => void copyValue('endpoint', pairing.endpoint)} />
+        <CookieCloudValue label="UUID" value={pairing.uuid} copied={copied === 'uuid'} onCopy={() => void copyValue('uuid', pairing.uuid)} />
+        <CookieCloudValue label="密码" value={pairing.password} copied={copied === 'password'} onCopy={() => void copyValue('password', pairing.password)} />
+        <CookieCloudValue label="域名" value={pairing.domain} copied={copied === 'domain'} onCopy={() => void copyValue('domain', pairing.domain)} />
+        <CookieCloudValue label="自定义请求头" value={`${pairing.headerName}: ${pairing.uploadToken}`} copied={copied === 'header'} onCopy={() => void copyValue('header', `${pairing.headerName}: ${pairing.uploadToken}`)} />
+      </div>
+      {status.status === 'received' ? <p className="cookiecloud-result">已接收 {status.cookieCount} 个 Cookie，{status.localStorageCount} 个 Local Storage 项。</p> : null}
+      <p className="cookiecloud-security-note">配对信息仅在短时间内有效，上传 Token 只能用于本次站点授权，不会写入日志。</p>
+    </div>
+    <div className="modal-actions"><button type="button" className={`button ${expired || status.status === 'received' ? 'primary' : 'secondary'}`} onClick={onClose}>{status.status === 'waiting' ? '取消授权' : '关闭'}</button></div>
+  </Modal>
+}
+
+function CookieCloudValue({ label, value, copied, onCopy }: { label: string; value: string; copied: boolean; onCopy: () => void }) {
+  return <label className="cookiecloud-value"><span>{label}</span><div><input readOnly value={value} onFocus={(event) => event.currentTarget.select()} /><button type="button" className="icon-button" title={`复制${label}`} aria-label={`复制${label}`} onClick={onCopy}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div></label>
 }
 
 function EmbeddedBrowser() {

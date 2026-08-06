@@ -6,6 +6,7 @@ import { GatewayError } from "../gateway/errors.js";
 import { BrowserManager } from "./browser-manager.js";
 import { CheckinBalanceSync } from "./channel-balance.js";
 import { CheckinCoordinator } from "./coordinator.js";
+import { CookieCloudService } from "./cookiecloud.js";
 import { AppDatabase } from "./db.js";
 import { EventBus } from "./events.js";
 import { NewApiService } from "./new-api.js";
@@ -14,6 +15,7 @@ import { SiteIconService } from "./site-icon.js";
 import { TelegramNotifier } from "./telegram.js";
 import { normalizeBaseUrl, clampInteger } from "./utils.js";
 import { resolveTelegramToken, settingsForClient } from "./settings-security.js";
+import type { SecretBox } from "../security/secret-box.js";
 import type { AppSettings } from "./types.js";
 
 const faviconUrlSchema = z.union([z.string().trim().max(2000), z.null()]).superRefine((value, context) => {
@@ -76,7 +78,15 @@ const channelLinkSchema = z.object({
   channelId: z.string().uuid(),
 });
 
+const cookieCloudUploadSchema = z.object({
+  uuid: z.string().trim().min(8).max(200),
+  encrypted: z.string().min(1).max(8 * 1024 * 1024),
+  crypto_type: z.enum(["legacy", "aes-128-cbc-fixed"]).optional(),
+});
+
 export interface CheckinModule {
+  interactiveAuthorizationEnabled: boolean;
+  cookieCloud: CookieCloudService;
   db: AppDatabase;
   browser: BrowserManager;
   events: EventBus;
@@ -89,11 +99,19 @@ export interface CheckinModule {
   close(): Promise<void>;
 }
 
-export function createCheckinModule(store: GatewayStore): CheckinModule {
+export function createCheckinModule(
+  store: GatewayStore,
+  options: { interactiveAuthorizationEnabled?: boolean; secrets?: SecretBox } = {},
+): CheckinModule {
+  const interactiveAuthorizationEnabled = options.interactiveAuthorizationEnabled ?? true;
   const db = new AppDatabase();
   const browser = new BrowserManager();
   const events = new EventBus();
-  const newApi = new NewApiService(db, browser, events);
+  const cookieCloud = new CookieCloudService(db, options.secrets ?? null, events);
+  const newApi = new NewApiService(db, browser, events, {
+    interactiveAuthorizationEnabled,
+    cookieCloud,
+  });
   const siteIcons = new SiteIconService(db, fetch, browser);
   const telegram = new TelegramNotifier(db);
   const balanceSync = new CheckinBalanceSync(db, store);
@@ -101,11 +119,14 @@ export function createCheckinModule(store: GatewayStore): CheckinModule {
   const scheduler = new DailyScheduler(db, coordinator, events);
   scheduler.start();
   return {
+    interactiveAuthorizationEnabled,
+    cookieCloud,
     db, browser, events, newApi, coordinator, scheduler, siteIcons, telegram, balanceSync,
     async close() {
       scheduler.stop();
       coordinator.stop();
       await browser.shutdown().catch(() => undefined);
+      cookieCloud.close();
       db.close();
     },
   };
@@ -117,6 +138,39 @@ export async function registerCheckinRoutes(
   requireAdmin: (request: FastifyRequest, reply: FastifyReply) => Promise<void>,
   dependencies: { agent: OpsAgent },
 ): Promise<void> {
+  app.options("/cookiecloud/update", async (_request, reply) => {
+    return reply
+      .header("access-control-allow-origin", "*")
+      .header("access-control-allow-methods", "POST, OPTIONS")
+      .header("access-control-allow-headers", "content-type, content-encoding, x-autoapi-pairing-token")
+      .send();
+  });
+  app.post("/cookiecloud/update", {
+    config: {
+      rateLimit: {
+        max: 60,
+        timeWindow: 15 * 60_000,
+      },
+    },
+  }, async (request, reply) => {
+    const originHeaders = {
+      "access-control-allow-origin": "*",
+      "cache-control": "no-store",
+    };
+    try {
+      const body = cookieCloudUploadSchema.parse(request.body);
+      const uploadToken = typeof request.headers["x-autoapi-pairing-token"] === "string"
+        ? request.headers["x-autoapi-pairing-token"].trim()
+        : "";
+      if (!uploadToken) return reply.code(401).headers(originHeaders).send({ action: "error", message: "缺少 CookieCloud 配对上传 Token" });
+      const status = module.cookieCloud.acceptUpload(body.uuid, body.encrypted, uploadToken, body.crypto_type ?? "legacy");
+      return reply.headers(originHeaders).send({ action: "done", status });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "CookieCloud 上传失败";
+      return reply.code(/Token|授权码/.test(message) ? 401 : 400).headers(originHeaders).send({ action: "error", message });
+    }
+  });
+
   await app.register(async (checkin) => {
     checkin.addHook("onRequest", requireAdmin);
 
@@ -127,7 +181,9 @@ export async function registerCheckinRoutes(
       recentRuns: module.db.listRecentRuns(20),
       channelLinks: module.db.listChannelLinks(),
       settings: settingsForClient(module.db.getSettings()),
-      browserAccessUrl: process.env.CHECKIN_BROWSER_URL?.trim() || null,
+      browserAccessUrl: !module.interactiveAuthorizationEnabled
+        ? null
+        : process.env.CHECKIN_BROWSER_URL?.trim() || null,
     }));
 
     checkin.get("/events", async (request, reply) => {
@@ -305,6 +361,29 @@ export async function registerCheckinRoutes(
         });
       }
     });
+    checkin.post<{ Params: { id: string } }>("/sites/:id/cookiecloud/pair", async (request, reply) => {
+      const siteId = parseId(request.params.id);
+      const site = module.db.getSite(siteId);
+      if (!site) return reply.code(404).send({ error: { message: "站点不存在", type: "not_found" } });
+      const pairing = module.cookieCloud.createPair(site);
+      return {
+        ...pairing,
+        endpoint: `${publicOrigin(request)}/cookiecloud`,
+        withStorage: true,
+      };
+    });
+    checkin.get<{ Params: { id: string; pairId: string } }>("/sites/:id/cookiecloud/pair/:pairId", async (request, reply) => {
+      const siteId = parseId(request.params.id);
+      const status = module.cookieCloud.getPairStatus(request.params.pairId, siteId);
+      if (!status) return reply.code(404).send({ error: { message: "CookieCloud 配对不存在或已过期", type: "not_found" } });
+      return status;
+    });
+    checkin.delete<{ Params: { id: string; pairId: string } }>("/sites/:id/cookiecloud/pair/:pairId", async (request, reply) => {
+      const siteId = parseId(request.params.id);
+      const status = module.cookieCloud.cancelPair(request.params.pairId, siteId);
+      if (!status) return reply.code(404).send({ error: { message: "CookieCloud 配对不存在", type: "not_found" } });
+      return status;
+    });
     checkin.get<{ Params: { id: string } }>("/auth-sessions/:id", async (request, reply) => {
       const state = module.newApi.getAuthorization(request.params.id);
       if (!state) return reply.code(404).send({ error: "授权任务不存在" });
@@ -352,7 +431,16 @@ export async function registerCheckinRoutes(
       const csv = `\uFEFF${lines.map((line) => line.map(csvCell).join(",")).join("\r\n")}`;
       return reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="checkin-history-${Date.now()}.csv"`).send(csv);
     });
-  }, { prefix: "/admin/checkin" });
+}, { prefix: "/admin/checkin" });
+}
+
+function publicOrigin(request: FastifyRequest): string {
+  const forwardedProto = request.headers["x-forwarded-proto"];
+  const protocol = typeof forwardedProto === "string" && forwardedProto.trim()
+    ? forwardedProto.split(",")[0]!.trim()
+    : request.protocol;
+  const host = request.headers.host ?? "localhost:8080";
+  return `${protocol}://${host}`.replace(/\/+$/, "");
 }
 
 function parseId(value: string): number {

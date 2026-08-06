@@ -28,7 +28,6 @@ services:
     build: .
     ports:
       - "${AUTOAPI_BIND_ADDRESS:-0.0.0.0}:${AUTOAPI_PORT:-8080}:8080"
-      - "${CHECKIN_VNC_BIND_ADDRESS:-127.0.0.1}:${CHECKIN_VNC_PORT:-6080}:6080"
     env_file:
       - .env
     environment:
@@ -40,8 +39,7 @@ services:
       REDIS_URL: redis://redis:6379
       TZ: ${TZ:-Asia/Shanghai}
       AUTOAPI_CHECKIN_DATA_DIR: /data/checkin
-      CHECKIN_VNC_PASSWORD: ${CHECKIN_VNC_PASSWORD:?Set CHECKIN_VNC_PASSWORD in .env}
-      CHECKIN_BROWSER_URL: ${CHECKIN_BROWSER_URL:-http://localhost:6080/vnc.html?autoconnect=true}
+      CHECKIN_ENABLE_NOVNC: ${CHECKIN_ENABLE_NOVNC:-false}
     depends_on:
       postgres:
         condition: service_healthy

@@ -133,6 +133,29 @@ export interface AuthSessionState {
   completedAt: string | null
 }
 
+export interface CookieCloudPairing {
+  pairId: string
+  uuid: string
+  password: string
+  uploadToken: string
+  headerName: 'X-AutoAPI-Pairing-Token'
+  endpoint: string
+  domain: string
+  withStorage: boolean
+  expiresAt: string
+}
+
+export interface CookieCloudPairingStatus {
+  pairId: string
+  siteId: number
+  status: 'waiting' | 'received' | 'failed' | 'expired' | 'cancelled'
+  expiresAt: string
+  receivedAt: string | null
+  cookieCount: number
+  localStorageCount: number
+  message: string
+}
+
 export interface ChannelImportPreview {
   candidateId: string
   siteName: string

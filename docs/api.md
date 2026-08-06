@@ -41,6 +41,8 @@
 
 签到接口统一使用管理员登录会话，路径前缀为 `/admin/checkin`。未登录请求返回 `401`。签到站点的“导入渠道池”只在能明确取得官方 API Key 时提供，不会把 Cookie、网页登录 Token 或刷新 Token 当作渠道密钥。
 
+签到授权默认通过 CookieCloud 兼容接口完成：本地扩展向 `POST /cookiecloud/update` 上传 gzip 压缩的 `uuid`、`encrypted` 和 `crypto_type` JSON，并使用弹窗下发的一次性 `X-AutoAPI-Pairing-Token` 请求头。服务端验证后将会话快照加密保存，不提供明文 Cookie 读取接口。noVNC 仅在显式设置 `CHECKIN_ENABLE_NOVNC=true` 时启用。
+
 ## Add a model route
 
 `POST /admin/model-aliases`

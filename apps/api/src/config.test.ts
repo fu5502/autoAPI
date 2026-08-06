@@ -16,6 +16,12 @@ describe("production configuration", () => {
     expect(() => loadConfig(productionEnv)).not.toThrow();
   });
 
+  it("keeps remote noVNC authorization disabled by default", () => {
+    expect(loadConfig(productionEnv).checkinEnableNoVnc).toBe(false);
+    expect(loadConfig({ ...productionEnv, CHECKIN_ENABLE_NOVNC: "false" }).checkinEnableNoVnc).toBe(false);
+    expect(loadConfig({ ...productionEnv, CHECKIN_ENABLE_NOVNC: "true" }).checkinEnableNoVnc).toBe(true);
+  });
+
   it.each([
     ["ADMIN_TOKEN", "replace-with-a-long-admin-token"],
     ["ADMIN_PASSWORD", "AutoAPI@123456"],

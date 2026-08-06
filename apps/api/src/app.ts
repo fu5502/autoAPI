@@ -23,6 +23,7 @@ import { hashGatewayKey } from "./security/gateway-key.js";
 import { AdminAuthService } from "./security/admin-auth.js";
 import { createCheckinModule, registerCheckinRoutes, type CheckinModule } from "./checkin/module.js";
 import { registerBrowserProxy, type BrowserProxyController } from "./checkin/browser-proxy.js";
+import { registerCompressedJsonParser } from "./http/compressed-json.js";
 
 export interface BuildAppOptions {
   config?: AppConfig;
@@ -37,7 +38,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify({
     logger: config.nodeEnv === "test" ? false : {
       level: config.nodeEnv === "production" ? "info" : "warn",
-      redact: ["req.headers.authorization", "req.headers.x-api-key", "req.headers.x-admin-token", "body.apiKey"],
+    redact: ["req.headers.authorization", "req.headers.x-api-key", "req.headers.x-admin-token", "req.headers.x-autoapi-pairing-token", "body.apiKey"],
     },
     // Streaming requests are governed by the upstream connection/idle timeout
     // in fetchUpstream. A fixed Fastify request timeout would cut long Codex
@@ -46,6 +47,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     bodyLimit: 10 * 1024 * 1024,
     trustProxy: config.trustProxy,
   });
+  registerCompressedJsonParser(app);
   app.setErrorHandler(gatewayErrorHandler);
   await app.register(cors, { origin: config.nodeEnv === "production" ? false : true });
   await app.register(rateLimit, { global: false });
@@ -69,7 +71,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const adminAuth = new AdminAuthService(store, config.adminToken);
   await adminAuth.ensureAccount(config.adminUsername, config.adminPassword);
   const startCheckin = options.startCheckin ?? config.nodeEnv !== "test";
-  const checkin = startCheckin ? createCheckinModule(store) : null;
+  const checkin = startCheckin
+    ? createCheckinModule(store, { interactiveAuthorizationEnabled: config.checkinEnableNoVnc, secrets })
+    : null;
   let browserProxy: BrowserProxyController | null = null;
   const runtime = options.runtime ?? (config.appMode === "demo"
     ? new MemoryRuntimeState()
@@ -117,7 +121,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
         return;
       }
     }, { agent });
-    browserProxy = await registerBrowserProxy(app, (token) => adminAuth.isValidToken(token));
+    if (config.checkinEnableNoVnc) {
+      browserProxy = await registerBrowserProxy(app, (token) => adminAuth.isValidToken(token));
+    }
   }
   await registerProxyRoutes(app, { router, store });
 

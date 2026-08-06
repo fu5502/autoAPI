@@ -28,6 +28,11 @@ export interface StoredIconAsset {
   updatedAt: string
 }
 
+export interface StoredSiteAuthSnapshot {
+  encrypted: string
+  updatedAt: string
+}
+
 export interface SiteChannelLink {
   siteId: number
   channelId: string
@@ -202,6 +207,12 @@ export class AppDatabase {
         url TEXT NOT NULL,
         content_type TEXT NOT NULL,
         body BLOB NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS site_auth_snapshots (
+        site_id INTEGER PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+        encrypted TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
 
@@ -407,6 +418,26 @@ export class AppDatabase {
 
   clearSiteIconAsset(siteId: number): void {
     this.db.prepare('DELETE FROM site_icon_assets WHERE site_id = ?').run(siteId)
+  }
+
+  getSiteAuthSnapshot(siteId: number): StoredSiteAuthSnapshot | null {
+    const row = this.db.prepare(`
+      SELECT encrypted, updated_at FROM site_auth_snapshots WHERE site_id = ?
+    `).get(siteId) as Row | undefined
+    if (!row) return null
+    return { encrypted: String(row.encrypted), updatedAt: String(row.updated_at) }
+  }
+
+  saveSiteAuthSnapshot(siteId: number, encrypted: string): void {
+    this.db.prepare(`
+      INSERT INTO site_auth_snapshots (site_id, encrypted, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(site_id) DO UPDATE SET encrypted = excluded.encrypted, updated_at = excluded.updated_at
+    `).run(siteId, encrypted, nowIso())
+  }
+
+  clearSiteAuthSnapshot(siteId: number): void {
+    this.db.prepare('DELETE FROM site_auth_snapshots WHERE site_id = ?').run(siteId)
   }
 
   getIconAssetCache(cacheKey: string): StoredIconAsset | null {

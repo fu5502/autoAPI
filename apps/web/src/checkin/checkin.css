@@ -1192,6 +1192,149 @@
   width: min(560px, calc(100vw - 36px)) !important;
 }
 
+.checkin-module .cookiecloud-auth-modal {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.checkin-module .cookiecloud-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  background: var(--surface-soft);
+}
+
+.checkin-module .cookiecloud-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-bg);
+}
+
+.checkin-module .cookiecloud-status.received .cookiecloud-status-dot {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-bg);
+}
+
+.checkin-module .cookiecloud-status.failed .cookiecloud-status-dot,
+.checkin-module .cookiecloud-status.expired .cookiecloud-status-dot,
+.checkin-module .cookiecloud-status.cancelled .cookiecloud-status-dot {
+  background: var(--red);
+  box-shadow: 0 0 0 3px var(--red-bg);
+}
+
+.checkin-module .cookiecloud-status strong {
+  display: block;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.checkin-module .cookiecloud-status p,
+.checkin-module .cookiecloud-steps > p,
+.checkin-module .cookiecloud-security-note,
+.checkin-module .cookiecloud-result {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.checkin-module .cookiecloud-steps {
+  display: grid;
+  gap: 9px;
+}
+
+.checkin-module .cookiecloud-steps > p {
+  margin: 0 0 2px;
+}
+
+.checkin-module .cookiecloud-steps code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--surface-soft);
+  color: var(--brand-strong);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+}
+
+.checkin-module .cookiecloud-value {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.checkin-module .cookiecloud-value > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.checkin-module .cookiecloud-value > div {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+}
+
+.checkin-module .cookiecloud-value input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  outline: 0;
+  color: var(--text);
+  background: var(--surface-soft);
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.checkin-module .cookiecloud-value input:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px rgba(77, 129, 117, .12);
+}
+
+.checkin-module .cookiecloud-value .icon-button {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+}
+
+.checkin-module .cookiecloud-security-note {
+  padding-top: 2px;
+  color: var(--subtle);
+}
+
+.checkin-module .cookiecloud-result {
+  margin: 0;
+  color: var(--brand-strong);
+  font-weight: 650;
+}
+
+:root[data-theme="dark"] .checkin-module .cookiecloud-status,
+:root[data-theme="dark"] .checkin-module .cookiecloud-value input,
+:root[data-theme="dark"] .checkin-module .cookiecloud-steps code {
+  border-color: var(--line);
+  background: var(--surface-soft);
+  color: var(--ink);
+}
+
+@media (max-width: 600px) {
+  .checkin-module .cookiecloud-value {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+}
+
 @media (max-width: 600px) {
   .checkin-modal-layer {
     padding: 10px !important;

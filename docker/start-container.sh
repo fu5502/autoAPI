@@ -2,14 +2,19 @@
 set -eu
 export DISPLAY="${DISPLAY:-:99}"
 api_pid=""
+display_pid=""
 
-start-novnc &
-browser_pid=$!
-trap 'kill "$browser_pid" ${api_pid:+"$api_pid"} 2>/dev/null || true' EXIT TERM INT
+if [ "${CHECKIN_ENABLE_NOVNC:-false}" = "true" ]; then
+  start-novnc &
+else
+  start-checkin-display &
+fi
+display_pid=$!
+trap 'kill "$display_pid" ${api_pid:+"$api_pid"} 2>/dev/null || true' EXIT TERM INT
 
 sleep 1
-if ! kill -0 "$browser_pid" 2>/dev/null; then
-  wait "$browser_pid"
+if ! kill -0 "$display_pid" 2>/dev/null; then
+  wait "$display_pid"
   exit $?
 fi
 

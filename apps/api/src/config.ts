@@ -20,6 +20,7 @@ const schema = z.object({
   APP_MODE: z.enum(["production", "demo"]).default("demo"),
   DATA_DIR: z.string().trim().min(1).default(".autoapi-data"),
   PUBLIC_BASE_URL: z.string().url().optional(),
+  CHECKIN_ENABLE_NOVNC: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -51,6 +52,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     adminLoginRateLimitWindowMs: parsed.ADMIN_LOGIN_RATE_LIMIT_WINDOW_MS,
     appMode: parsed.APP_MODE,
     dataDir: parsed.DATA_DIR,
+    checkinEnableNoVnc: parsed.CHECKIN_ENABLE_NOVNC,
     gatewayBaseUrl: `${(parsed.PUBLIC_BASE_URL ?? `http://localhost:${parsed.PORT}`).replace(/\/+$/, "")}/v1`,
   } as const;
 }

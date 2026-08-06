@@ -8,6 +8,7 @@ import type {
   Site,
 } from './types.js'
 import { BrowserManager } from './browser-manager.js'
+import { CookieCloudService, type BrowserAuthSnapshot } from './cookiecloud.js'
 import { AppDatabase } from './db.js'
 import { EventBus } from './events.js'
 import { localDateKey, nowIso, quotaToAmount, roundAmount, safeMessage } from './utils.js'
@@ -201,11 +202,45 @@ const fengwindMainSiteUrl = 'https://api.fengwind.com/'
 export class NewApiService {
   readonly authSessions = new Map<string, AuthSessionState>()
 
+  private readonly interactiveAuthorizationEnabled: boolean
+
   constructor(
     private readonly db: AppDatabase,
     private readonly browser: BrowserManager,
     private readonly events: EventBus,
-  ) {}
+    options: { interactiveAuthorizationEnabled?: boolean; cookieCloud?: CookieCloudService } = {},
+  ) {
+    this.interactiveAuthorizationEnabled = options.interactiveAuthorizationEnabled ?? true
+    this.cookieCloud = options.cookieCloud ?? null
+  }
+
+  private readonly cookieCloud: CookieCloudService | null
+
+  private async applyImportedCookies(context: BrowserContext, site: Site): Promise<BrowserAuthSnapshot | null> {
+    return this.cookieCloud?.applyToContext(context, site.id) ?? null
+  }
+
+  private async openImportedSitePage(context: BrowserContext, page: Page, site: Site): Promise<void> {
+    const snapshot = await this.applyImportedCookies(context, site)
+    await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
+    await this.applyImportedStorage(page, site, snapshot)
+  }
+
+  private async openImportedStorage(page: Page, site: Site): Promise<void> {
+    await this.applyImportedStorage(page, site, await this.cookieCloud?.getSnapshot(site.id) ?? null)
+  }
+
+  private async applyImportedStorage(page: Page, site: Site, snapshot: BrowserAuthSnapshot | null): Promise<void> {
+    if (!snapshot) return
+    const host = new URL(site.baseUrl).hostname.toLowerCase()
+    const storage = snapshot.localStorageByHost[host]
+      ?? Object.entries(snapshot.localStorageByHost).find(([key]) => key === host || key.endsWith(`.${host}`) || host.endsWith(`.${key}`))?.[1]
+    if (!storage || !Object.keys(storage).length) return
+    await page.evaluate((items) => {
+      for (const [key, value] of Object.entries(items)) window.localStorage.setItem(key, value)
+    }, storage)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+  }
 
   async extractOfficialApiKeys(siteId: number): Promise<OfficialApiKeyExtraction> {
     const site = this.db.getSite(siteId)
@@ -233,7 +268,7 @@ export class NewApiService {
 
     const timeoutMs = this.db.getSettings().requestTimeoutSeconds * 1000
     return this.browser.run({ interactive: false }, async (context, page) => {
-      await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
+      await this.openImportedSitePage(context, page, site)
       let headers: Record<string, string>
       if (protocol === 'sub2api') {
         const auth = await this.detectSub2ApiAuthentication(page, timeoutMs)
@@ -301,6 +336,9 @@ export class NewApiService {
   startAuthorization(siteId: number): AuthSessionState {
     const site = this.db.getSite(siteId)
     if (!site) throw new Error('站点不存在')
+    if (!this.interactiveAuthorizationEnabled) {
+      throw new Error('服务器远程浏览器授权已关闭，请使用本地浏览器授权助手同步登录状态')
+    }
     if ([...this.authSessions.values()].some((session) => session.status === 'waiting')) {
       throw new Error('已有授权窗口正在进行，请先完成或取消')
     }
@@ -350,7 +388,7 @@ export class NewApiService {
 
   private async authorizeInBrowser(site: Site, state: AuthSessionState) {
     try {
-      await this.browser.run({ interactive: true, closeBrowserWhenDone: true }, async (_context, page) => {
+      await this.browser.run({ interactive: true, closeBrowserWhenDone: true }, async (context, page) => {
         const observedLegacyUserIds = new Set<number>()
         const pendingResponseChecks = new Set<Promise<void>>()
         const allowedAuthOrigins = new Set([new URL(site.baseUrl).origin])
@@ -361,7 +399,7 @@ export class NewApiService {
             pendingResponseChecks.add(check)
           })
         }
-        await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
+        await this.openImportedSitePage(context, page, site)
         const sub2ApiSite = isSub2ApiSite(site.baseUrl)
         const fengwindWelfareSite = isFengwindWelfareSite(site.baseUrl)
         const hybgzsWelfareSite = isHybgzsWelfareSite(site.baseUrl)
@@ -513,8 +551,8 @@ export class NewApiService {
     const requestTimeoutMs = this.db.getSettings().requestTimeoutSeconds * 1000
     this.db.markSiteRunning(site.id)
     try {
-      return await this.browser.run({ interactive: isHybgzsWelfareSite(site.baseUrl) || site.adapter === 'hybgzs-welfare' }, async (_context, page) => {
-        await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
+      return await this.browser.run({ interactive: isHybgzsWelfareSite(site.baseUrl) || site.adapter === 'hybgzs-welfare' }, async (context, page) => {
+        await this.openImportedSitePage(context, page, site)
         const challenge = await detectChallenge(page)
         if (challenge) return this.makeResult(site, runId, startedAt, 'manual_required', challenge)
 
@@ -621,9 +659,11 @@ export class NewApiService {
     }
 
     try {
-      return await this.browser.run({ interactive: false }, async (_context, page) => {
+      return await this.browser.run({ interactive: false }, async (context, page) => {
+        await this.applyImportedCookies(context, site)
         if (site.adapter === 'hybgzs-welfare' || isHybgzsWelfareSite(site.baseUrl)) {
           await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
+          await this.openImportedStorage(page, site)
           const auth = await this.detectHybgzsWelfareAuthentication(page, requestTimeoutMs)
           if (!auth) {
             return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money: hybgzsWelfareMoney })
@@ -655,6 +695,7 @@ export class NewApiService {
         }
 
         await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
+        await this.openImportedStorage(page, site)
         const challenge = await detectChallenge(page)
         if (challenge) return this.makeResult(site, runId, startedAt, 'manual_required', challenge)
 
