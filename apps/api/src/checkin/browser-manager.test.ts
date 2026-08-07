@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { BrowserContext, Page } from 'playwright-core'
-import { BrowserManager, closeStartupBlankPages, removeStaleChromeLockFiles } from './browser-manager.js'
+import { BrowserManager, closeStartupBlankPages, getChromiumLaunchEnvironment, removeStaleChromeLockFiles } from './browser-manager.js'
 
 describe('closeStartupBlankPages', () => {
   it('closes only browser startup pages and keeps existing site tabs', async () => {
@@ -121,5 +121,26 @@ describe('Chrome profile lock recovery', () => {
     } finally {
       await fs.rm(profileDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('Chromium launch environment', () => {
+  it('provides stable Linux display defaults when the process has no display variables', () => {
+    expect(getChromiumLaunchEnvironment({ PATH: '/usr/bin' }, 'linux')).toMatchObject({
+      PATH: '/usr/bin',
+      DISPLAY: ':99',
+      XDG_RUNTIME_DIR: '/tmp/autoapi-runtime',
+    })
+  })
+
+  it('preserves an explicitly configured Linux display', () => {
+    expect(getChromiumLaunchEnvironment({ DISPLAY: ' :88 ', XDG_RUNTIME_DIR: '/run/user/1000' }, 'linux')).toMatchObject({
+      DISPLAY: ':88',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+    })
+  })
+
+  it('does not inject Linux-only variables on Windows', () => {
+    expect(getChromiumLaunchEnvironment({ PATH: 'C:\\Windows' }, 'win32')).toEqual({ PATH: 'C:\\Windows' })
   })
 })

@@ -180,6 +180,7 @@ export class BrowserManager {
     if (process.platform === 'linux') {
       await removeStaleChromeLockFiles(browserProfileDir, await isChromeProfileInUse(browserProfileDir))
     }
+    const launchEnvironment = await prepareChromiumLaunchEnvironment()
     const chromeProcess = spawn(findChromeExecutable(), [
       `--remote-debugging-port=${debugPort}`,
       '--remote-debugging-address=127.0.0.1',
@@ -193,6 +194,7 @@ export class BrowserManager {
       'about:blank',
     ], {
       detached: false,
+      env: launchEnvironment,
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
     })
@@ -258,6 +260,40 @@ export class BrowserManager {
     })
     await closeStartupBlankPages(context)
     return context
+  }
+}
+
+/** Build a deterministic Linux display environment for the Chromium child process. */
+export function getChromiumLaunchEnvironment(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const launchEnvironment = { ...environment }
+  if (platform === 'linux') {
+    launchEnvironment.DISPLAY = launchEnvironment.DISPLAY?.trim() || ':99'
+    launchEnvironment.XDG_RUNTIME_DIR = launchEnvironment.XDG_RUNTIME_DIR?.trim() || '/tmp/autoapi-runtime'
+  }
+  return launchEnvironment
+}
+
+async function prepareChromiumLaunchEnvironment(): Promise<NodeJS.ProcessEnv> {
+  const launchEnvironment = getChromiumLaunchEnvironment()
+  if (process.platform !== 'linux') return launchEnvironment
+
+  const runtimeDir = launchEnvironment.XDG_RUNTIME_DIR
+  if (runtimeDir) {
+    await fs.mkdir(runtimeDir, { recursive: true })
+    await fs.chmod(runtimeDir, 0o700).catch(() => undefined)
+  }
+  await assertLinuxDisplaySocket(launchEnvironment.DISPLAY ?? ':99')
+  return launchEnvironment
+}
+
+async function assertLinuxDisplaySocket(display: string): Promise<void> {
+  const match = /^(?:unix\/)?:(\d+)(?:\.\d+)?$/.exec(display.trim())
+  if (!match) return
+  const socketPath = `/tmp/.X11-unix/X${match[1]}`
+  try {
+    await fs.access(socketPath)
+  } catch {
+    throw new Error(`Chromium 启动前未检测到 X Server（DISPLAY=${display}）。请确认容器已启动 Xvfb，且等待显示服务就绪后再执行签到。`)
   }
 }
 
