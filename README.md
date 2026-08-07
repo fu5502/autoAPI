@@ -1,5 +1,9 @@
 # autoAPI
 
+## 项目交接与长期上下文
+
+完整的当前架构、数据保留规则、本地/Docker/1Panel 部署、本地授权助手、渠道路由、签到模块、API 入口、故障排查和开发约定，统一记录在 [docs/project-context.md](docs/project-context.md)。开始新的开发会话或修改现有功能前，请先阅读该文档。
+
 autoAPI is a self-hosted model gateway for keeping Codex, Hermes, Claude-compatible tools, and OpenAI-compatible clients on one stable endpoint while upstream relay providers change underneath them.
 
 It stores provider credentials encrypted, lets you select the models that enter each pool, probes channels only when requested, and fails requests over to another eligible channel when an upstream returns a retryable error. Streaming requests can switch only before the first upstream event is emitted; after that point autoAPI reports the interruption without joining two responses into one context.
