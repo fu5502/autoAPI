@@ -4,11 +4,23 @@ autoAPI 是一个自托管的多渠道模型网关。Codex、Hermes、Claude Cod
 
 渠道的 Base URL 和 API Key 只保存在 autoAPI 后台，客户端不需要知道具体中转站信息。API Key 使用服务端密钥加密保存，管理页面和日志默认脱敏。
 
-## 项目交接文档
+## 文档入口
 
-完整的当前架构、数据保留规则、本地/Docker/1Panel 部署、本地授权助手、渠道路由、签到模块、API 入口、故障排查和开发约定，统一记录在 [docs/project-context.md](docs/project-context.md)。
+开始新的开发会话或修改线上功能前，先阅读 [项目上下文与交接手册](docs/project-context.md)。它是本项目跨会话的唯一事实来源，记录当前架构、最近变更、数据目录、授权方式、Docker/1Panel 发布流程、线上排障和“不能清空数据”的约定。
 
-开始新的开发会话或修改现有功能前，请先阅读该文档。它是本项目跨会话的长期上下文。
+其他文档：
+
+- [客户端接入](docs/clients.md)：Codex、Hermes、Claude Code、CPA/CLIProxyAPI、OpenAI SDK 和 curl 配置。
+- [管理 API](docs/api.md)：网关、后台、签到和本地授权助手接口概要。
+
+新会话的最短恢复步骤：
+
+```powershell
+Set-Location C:/Users/fu550/Documents/autoAPI
+Get-Content -Encoding utf8 docs/project-context.md
+git status --short --branch
+git log -5 --oneline --decorate
+```
 
 ## 核心能力
 
