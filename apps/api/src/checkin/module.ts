@@ -12,6 +12,7 @@ import { EventBus } from "./events.js";
 import { NewApiService } from "./new-api.js";
 import { DailyScheduler } from "./scheduler.js";
 import { SiteIconService } from "./site-icon.js";
+import { initialSiteName } from "./site-name.js";
 import { TelegramNotifier } from "./telegram.js";
 import { normalizeBaseUrl, clampInteger } from "./utils.js";
 import { resolveTelegramToken, settingsForClient } from "./settings-security.js";
@@ -294,7 +295,7 @@ export async function registerCheckinRoutes(
     checkin.post("/sites", async (request, reply) => {
       const input = siteSchema.parse(request.body);
       const baseUrl = normalizeBaseUrl(input.baseUrl);
-      const site = module.db.createSite(input.name ?? new URL(baseUrl).hostname, baseUrl, input.note, input.faviconUrl);
+      const site = module.db.createSite(initialSiteName(baseUrl, input.name), baseUrl, input.note, input.faviconUrl);
       module.events.emit({ type: "state_changed", title: "站点已添加", message: `${site.name} 等待授权`, data: { siteId: site.id } });
       return reply.code(201).send(site);
     });
@@ -307,7 +308,7 @@ export async function registerCheckinRoutes(
         try {
           const baseUrl = normalizeBaseUrl(input);
           if (existing.has(baseUrl)) { skipped.push({ input, reason: "站点已存在" }); continue; }
-          const site = module.db.createSite(new URL(baseUrl).hostname, baseUrl);
+          const site = module.db.createSite(initialSiteName(baseUrl), baseUrl);
           existing.add(baseUrl);
           created.push(site);
         } catch (error) { skipped.push({ input, reason: error instanceof Error ? error.message : "地址无效" }); }
