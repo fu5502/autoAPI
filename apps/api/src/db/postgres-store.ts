@@ -200,11 +200,11 @@ export class PostgresStore implements GatewayStore {
   async updateChannelBalance(id: string, balance: number, balanceCurrency: string | null): Promise<Channel | null> {
     await this.pool.query(
       `UPDATE channels SET
-        current_balance = $2,
-        balance_currency = $3,
+        current_balance = $2::numeric,
+        balance_currency = $3::text,
         balance_status = CASE
-          WHEN $2 <= 0 THEN 'exhausted'
-          WHEN min_balance IS NOT NULL AND $2 < min_balance THEN 'low'
+          WHEN $2::numeric <= 0 THEN 'exhausted'
+          WHEN min_balance IS NOT NULL AND $2::numeric < min_balance THEN 'low'
           ELSE 'ok'
         END,
         balance_updated_at = now(),
