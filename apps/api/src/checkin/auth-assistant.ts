@@ -5,7 +5,6 @@ import type { AppDatabase } from './db.js'
 import type { EventBus } from './events.js'
 import type { Site } from './types.js'
 import { nowIso } from './utils.js'
-import { officialNameForAuth } from './site-name.js'
 
 const PAIR_TTL_MS = 10 * 60_000
 const MAX_COOKIES = 1_000
@@ -231,7 +230,6 @@ export class AuthAssistantService {
       this.db.updateSiteAuth(pairing.siteId, {
         adapter: site.adapter,
         authStatus: 'valid',
-        name: officialNameForAuth(site),
         lastError: null,
       })
       pairing.status = 'received'

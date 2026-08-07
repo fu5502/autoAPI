@@ -160,6 +160,10 @@ Linux 服务器不需要开启 noVNC。推荐在用户自己的 Chrome/Edge 中�
 
 服务端不会把 Cookie、网页登录 Token、access_token 或 refresh_token 当作渠道 API Key。渠道导入必须拿到明确的官方 API Key。
 
+黑与白福利站的“立即签到”可能触发 CAP 人机验证。Linux 服务器默认关闭 noVNC 时，服务端可以读取本地授权助手同步的登录态和余额，但无法替用户点击服务器上的 CAP；这不是登录失效。此时签到记录会显示“登录有效；请完成 CAP”，可在本地已登录浏览器中完成一次签到后，再点击后台刷新余额。需要全程在服务器浏览器中人工处理时，只能在受控内网/SSH 隧道环境临时启用 noVNC，不能直接暴露公网。
+
+如果线上同时显示“登录状态已失效”，优先重新从线上管理域名创建授权任务并同步，确认扩展、管理页面和目标站点使用正确的公开域名。不要在更换 `CREDENTIAL_ENCRYPTION_KEY` 后继续使用旧授权快照；生产升级必须保留原密钥和 `autoapi-checkin` volume。
+
 ## 客户端接入
 
 完整的 Codex、Hermes、Claude Code、OpenAI SDK 和 curl 配置见 [docs/clients.md](docs/clients.md)。

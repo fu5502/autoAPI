@@ -1273,7 +1273,10 @@ function balanceRefreshTimingClass(value: string | null | undefined): string {
 }
 
 function SiteAvatar({ site, large = false }: { site: Site; large?: boolean }) {
-  const iconUrl = `/admin/checkin/sites/${site.id}/favicon?v=${encodeURIComponent(site.updatedAt)}`
+  // Status and balance updates change updatedAt frequently. Keep the icon URL
+  // stable so those updates do not refetch an already cached icon.
+  const iconVersion = site.faviconUrl || site.baseUrl
+  const iconUrl = `/admin/checkin/sites/${site.id}/favicon?v=${encodeURIComponent(iconVersion)}`
   const [iconSrc, setIconSrc] = useState<string | null>(null)
   const [failedUrl, setFailedUrl] = useState<string | null>(null)
   useEffect(() => {

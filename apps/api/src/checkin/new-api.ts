@@ -12,7 +12,6 @@ import { AuthAssistantService, type BrowserAuthSnapshot } from './auth-assistant
 import { AppDatabase } from './db.js'
 import { EventBus } from './events.js'
 import { localDateKey, nowIso, quotaToAmount, roundAmount, safeMessage } from './utils.js'
-import { officialNameForAuth } from './site-name.js'
 
 interface RemoteResponse<T = unknown> {
   httpStatus: number
@@ -359,7 +358,6 @@ export class NewApiService {
         baseUrl,
         username: auth.user.display_name || auth.user.username || null,
         legacyUserId: auth.legacyUserId ?? null,
-        name: officialNameForAuth(site, status.data?.system_name),
         currencySymbol: money.currencySymbol,
         quotaPerUnit: money.quotaPerUnit,
         displayScale: money.displayScale,
@@ -489,7 +487,6 @@ export class NewApiService {
                   authStatus: 'valid',
                   baseUrl: effectiveBaseUrl,
                   username: auth.user?.username || auth.user?.email || null,
-                  name: officialNameForAuth(site),
                   currencySymbol: hybgzsWelfareMoney.currencySymbol,
                   quotaPerUnit: hybgzsWelfareMoney.quotaPerUnit,
                   displayScale: hybgzsWelfareMoney.displayScale,
@@ -512,7 +509,6 @@ export class NewApiService {
                   authStatus: 'valid',
                   baseUrl: effectiveBaseUrl,
                   username: auth.user.display_name || auth.user.username || null,
-                  name: officialNameForAuth(site),
                   currencySymbol: trueSotaMoney.currencySymbol,
                   quotaPerUnit: trueSotaMoney.quotaPerUnit,
                   displayScale: trueSotaMoney.displayScale,
@@ -534,7 +530,6 @@ export class NewApiService {
                   authStatus: 'valid',
                   baseUrl: effectiveBaseUrl,
                   username: auth.user.username || auth.user.email || null,
-                  name: officialNameForAuth(site),
                   currencySymbol: fengwindWelfareMoney.currencySymbol,
                   quotaPerUnit: fengwindWelfareMoney.quotaPerUnit,
                   displayScale: fengwindWelfareMoney.displayScale,
@@ -555,7 +550,6 @@ export class NewApiService {
                   authStatus: 'valid',
                   baseUrl: effectiveBaseUrl,
                   username: auth.user.username || auth.user.email || null,
-                  name: officialNameForAuth(site),
                   currencySymbol: money.currencySymbol,
                   quotaPerUnit: money.quotaPerUnit,
                   displayScale: money.displayScale,
@@ -578,7 +572,6 @@ export class NewApiService {
                   authStatus: 'valid',
                   baseUrl: effectiveBaseUrl,
                   username: auth.user.display_name || auth.user.username || null,
-                  name: officialNameForAuth(site),
                   currencySymbol: yiApiMoney.currencySymbol,
                   quotaPerUnit: yiApiMoney.quotaPerUnit,
                   displayScale: yiApiMoney.displayScale,
@@ -600,7 +593,6 @@ export class NewApiService {
                   authStatus: 'valid',
                   baseUrl: effectiveBaseUrl,
                   username: traffic.username,
-                  name: officialNameForAuth(site),
                   currencySymbol: chyTrafficMoney.currencySymbol,
                   quotaPerUnit: chyTrafficMoney.quotaPerUnit,
                   displayScale: chyTrafficMoney.displayScale,
@@ -627,7 +619,6 @@ export class NewApiService {
                   baseUrl: effectiveBaseUrl,
                   username: auth.user.display_name || auth.user.username || null,
                   legacyUserId: auth.legacyUserId ?? null,
-                  name: officialNameForAuth(site, status.data?.system_name),
                   currencySymbol: money.currencySymbol,
                   quotaPerUnit: money.quotaPerUnit,
                   displayScale: money.displayScale,
@@ -879,7 +870,6 @@ export class NewApiService {
             authStatus: 'valid',
             baseUrl: site.baseUrl,
             username: auth.user.username || auth.user.email || null,
-            name: officialNameForAuth(site),
             currencySymbol: money.currencySymbol,
             quotaPerUnit: money.quotaPerUnit,
             displayScale: money.displayScale,
@@ -1057,7 +1047,6 @@ export class NewApiService {
     this.db.updateSiteAuth(site.id, {
       adapter: 'sub2api',
       authStatus: 'valid',
-      name: officialNameForAuth(site),
       username: auth.user.username || auth.user.email || null,
       currencySymbol: money.currencySymbol,
       quotaPerUnit: money.quotaPerUnit,
@@ -1125,7 +1114,6 @@ export class NewApiService {
     this.db.updateSiteAuth(site.id, {
       adapter: 'fengwind-welfare',
       authStatus: 'valid',
-      name: officialNameForAuth(site),
       username: auth.user.username || auth.user.email || null,
       currencySymbol: fengwindWelfareMoney.currencySymbol,
       quotaPerUnit: fengwindWelfareMoney.quotaPerUnit,
@@ -1200,7 +1188,6 @@ export class NewApiService {
     this.db.updateSiteAuth(site.id, {
       adapter: 'hybgzs-welfare',
       authStatus: 'valid',
-      name: officialNameForAuth(site),
       username: auth.user?.username || auth.user?.email || null,
       currencySymbol: hybgzsWelfareMoney.currencySymbol,
       quotaPerUnit: hybgzsWelfareMoney.quotaPerUnit,
@@ -1459,7 +1446,6 @@ export class NewApiService {
       authStatus: 'valid',
       baseUrl: site.baseUrl,
       username: auth.user.display_name || auth.user.username || null,
-      name: officialNameForAuth(site),
       currencySymbol: yiApiMoney.currencySymbol,
       quotaPerUnit: yiApiMoney.quotaPerUnit,
       displayScale: yiApiMoney.displayScale,
@@ -1505,7 +1491,6 @@ export class NewApiService {
       authStatus: 'valid',
       baseUrl: site.baseUrl,
       username: auth.user.display_name || auth.user.username || null,
-      name: officialNameForAuth(site),
       currencySymbol: trueSotaMoney.currencySymbol,
       quotaPerUnit: trueSotaMoney.quotaPerUnit,
       displayScale: trueSotaMoney.displayScale,

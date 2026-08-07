@@ -233,7 +233,7 @@ function ChannelSiteIcon({ channel }: { channel: Channel }) {
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [channel.baseUrl, channel.faviconUrl, iconUrl, site?.updatedAt]);
+  }, [channel.baseUrl, channel.faviconUrl, iconUrl]);
 
   const label = site?.name ?? channel.name;
   const fallback = iconUnavailable || !iconSrc;
