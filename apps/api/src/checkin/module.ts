@@ -484,8 +484,25 @@ export async function registerCheckinRoutes(
     checkin.post<{ Params: { id: string } }>("/sites/:id/channel-balance/sync", async (request, reply) => {
       const siteId = parseId(request.params.id);
       if (!module.db.getSite(siteId)) return reply.code(404).send({ error: { message: "站点不存在", type: "not_found" } });
-      const result = await module.balanceSync.syncSite(siteId);
-      return reply.send(result);
+      try {
+        const run = await module.coordinator.refreshBalance([siteId]);
+        const result = module.db.listResults({ runId: run.id, limit: 1 })[0] ?? null;
+        const synced = await module.balanceSync.syncSite(siteId);
+        return reply.send({
+          ...synced,
+          refreshed: Boolean(result && result.balanceAfterAmount !== null && /余额已刷新|余额刷新成功|balance.*refresh/i.test(result.message)),
+          result: result ? {
+            status: result.status,
+            message: result.message,
+            balance: result.balanceAfterAmount,
+            currency: module.db.getSite(siteId)?.currencySymbol ?? null,
+          } : null,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "无法刷新站点余额";
+        const status = /已有签到任务正在运行/.test(message) ? 409 : 502;
+        return reply.code(status).send({ error: { message, type: status === 409 ? "conflict" : "balance_refresh_failed" } });
+      }
     });
     checkin.post<{ Params: { id: string } }>("/sites/:id/authorize", async (request, reply) => {
       try {

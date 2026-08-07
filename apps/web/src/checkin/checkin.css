@@ -119,8 +119,16 @@
 .checkin-module .reward-cell strong.today{ color: var(--green); }
 .checkin-module .reward-cell strong.previous{ color: var(--amber); }
 .checkin-module .reward-cell small{ color: var(--subtle); font-size: 9px; white-space: nowrap; }
+.checkin-module .reward-cell small.balance-refresh-today{ color: var(--green); }
+.checkin-module .reward-cell small.balance-refresh-previous{ color: var(--amber); }
+.checkin-module .reward-cell small.balance-refresh-unknown{ color: var(--subtle); }
+.checkin-module .site-balance-cell{ display: grid; justify-items: start; gap: 2px; min-width: 0; }
+.checkin-module .balance-refresh-time{ color: var(--subtle); font-size: 9px; line-height: 1.2; white-space: nowrap; }
 .checkin-module .balance-value{ color: var(--brand-strong); font-size: 13px; font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .checkin-module .balance-value.empty{ color: var(--subtle); font-size: 11px; font-weight: 500; }
+.checkin-module .site-balance-button{ display: inline-flex; align-items: center; gap: 5px; padding: 3px 5px; border: 1px solid transparent; border-radius: 5px; background: transparent; cursor: pointer; }
+.checkin-module .site-balance-button:hover:not(:disabled){ border-color: var(--border); background: var(--surface-soft); }
+.checkin-module .site-balance-button:disabled{ cursor: wait; opacity: .7; }
 .checkin-module .row-actions{ display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
 .checkin-module .icon-button{ width: 30px; height: 30px; border: 1px solid transparent; border-radius: 7px; display: inline-grid; place-items: center; background: transparent; color: #68726d; cursor: pointer; transition: background .14s ease, color .14s ease; }
 .checkin-module .icon-button:hover:not(:disabled){ color: var(--brand-strong); background: var(--violet-bg); }

@@ -1,6 +1,6 @@
 import type { CheckinResult, CheckinRun, RunTrigger } from './types.js'
 import { AppDatabase } from './db.js'
-import { CheckinBalanceSync } from './channel-balance.js'
+import { CheckinBalanceSync, type CheckinBalanceSyncOptions } from './channel-balance.js'
 import { EventBus } from './events.js'
 import { NewApiService } from './new-api.js'
 import { TelegramNotifier } from './telegram.js'
@@ -98,6 +98,65 @@ export class CheckinCoordinator {
     return this.db.getRun(run.id)!
   }
 
+  async refreshBalance(siteIds?: number[], options: CheckinBalanceSyncOptions = {}): Promise<CheckinRun> {
+    if (this.activeRun) throw new Error('已有签到任务正在运行')
+    const candidates = this.db.listSites().filter((site) => !siteIds || siteIds.includes(site.id))
+    if (candidates.length === 0) throw new Error('没有可刷新的站点')
+
+    const run = this.db.startRun('manual')
+    this.activeRun = run
+    this.events.emit({
+      type: 'run_started',
+      title: '余额刷新已开始',
+      message: `正在刷新 ${candidates.length} 个站点的余额`,
+      data: { runId: run.id, operation: 'balance_refresh' },
+    })
+
+    let success = 0
+    let failed = 0
+    let skipped = 0
+    try {
+      for (const site of candidates) {
+        let result: CheckinResult
+        try {
+          result = await this.newApi.refreshBalanceSite(site, run.id)
+        } catch (error) {
+          result = balanceRefreshFailure(site, run.id, error)
+        }
+        const { id: _id, siteName: _siteName, ...storedResult } = result
+        this.db.applyResult(site.id, storedResult)
+        await this.balanceSync?.syncSite(site.id, options).catch((error) => {
+          this.events.emit({
+            type: 'state_changed',
+            title: '渠道余额同步失败',
+            message: `${site.name}: ${error instanceof Error ? error.message : '未知错误'}`,
+          })
+        })
+
+        if (balanceRefreshSucceeded(result)) success += 1
+        else if (result.status === 'failed' || result.status === 'manual_required') failed += 1
+        else skipped += 1
+
+        this.events.emit({
+          type: 'site_result',
+          title: balanceRefreshSucceeded(result) ? '余额刷新成功' : result.status === 'manual_required' ? '余额刷新需要授权' : '余额刷新未完成',
+          message: `${site.name}: ${result.message}`,
+          data: { result, siteId: site.id, runId: run.id, operation: 'balance_refresh' },
+        })
+      }
+    } finally {
+      const completed = this.db.completeRun(run.id, { success, failed, skipped })!
+      this.activeRun = null
+      this.events.emit({
+        type: 'run_completed',
+        title: '余额刷新已完成',
+        message: `成功 ${success}，失败或需授权 ${failed}，跳过 ${skipped}`,
+        data: { run: completed, operation: 'balance_refresh' },
+      })
+    }
+    return this.db.getRun(run.id)!
+  }
+
   stop() {
     for (const timer of this.retryTimers) clearTimeout(timer)
     this.retryTimers.clear()
@@ -113,6 +172,31 @@ export class CheckinCoordinator {
     }, settings.retryDelayMinutes * 60_000)
     timer.unref?.()
     this.retryTimers.add(timer)
+  }
+}
+
+function balanceRefreshSucceeded(result: CheckinResult): boolean {
+  return result.balanceAfterAmount !== null && /余额已刷新|余额刷新成功|balance.*refresh/i.test(result.message)
+}
+
+function balanceRefreshFailure(site: { id: number; name: string; lastBalanceRaw: number | null; lastBalanceAmount: number | null }, runId: number, error: unknown): CheckinResult {
+  const now = new Date().toISOString()
+  return {
+    id: 0,
+    runId,
+    siteId: site.id,
+    siteName: site.name,
+    status: 'failed',
+    rewardRaw: null,
+    rewardAmount: null,
+    balanceBeforeRaw: site.lastBalanceRaw,
+    balanceBeforeAmount: site.lastBalanceAmount,
+    balanceAfterRaw: null,
+    balanceAfterAmount: null,
+    balanceDeltaAmount: null,
+    message: error instanceof Error ? error.message : '余额刷新失败',
+    startedAt: now,
+    completedAt: now,
   }
 }
 

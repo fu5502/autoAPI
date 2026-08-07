@@ -8,6 +8,11 @@ export interface CheckinBalanceSyncResult {
   skippedBecauseBalanceIsUnknown: boolean;
 }
 
+export interface CheckinBalanceSyncOptions {
+  /** Used by the gateway-wide refresh so disabled channels are never updated indirectly. */
+  onlyEnabledChannels?: boolean;
+}
+
 /** Keeps check-in balances aligned with explicitly linked or same-site channels. */
 export class CheckinBalanceSync {
   constructor(
@@ -29,28 +34,36 @@ export class CheckinBalanceSync {
     };
   }
 
-  async syncAll(): Promise<CheckinBalanceSyncResult> {
+  async syncAll(options: CheckinBalanceSyncOptions = {}): Promise<CheckinBalanceSyncResult> {
     const updatedChannelIds = new Set<string>();
     let skippedBecauseBalanceIsUnknown = false;
     for (const site of this.db.listSites()) {
-      const result = await this.syncSite(site.id);
+      const result = await this.syncSite(site.id, options);
       for (const channelId of result.updatedChannelIds) updatedChannelIds.add(channelId);
       skippedBecauseBalanceIsUnknown ||= result.skippedBecauseBalanceIsUnknown;
     }
     return { updatedChannelIds: [...updatedChannelIds], skippedBecauseBalanceIsUnknown };
   }
 
-  async syncSite(siteId: number): Promise<CheckinBalanceSyncResult> {
+  async syncSite(siteId: number, options: CheckinBalanceSyncOptions = {}): Promise<CheckinBalanceSyncResult> {
     const site = this.db.getSite(siteId);
     if (!site || site.lastBalanceAmount === null) {
       return { updatedChannelIds: [], skippedBecauseBalanceIsUnknown: Boolean(site) };
     }
 
     const channels = await this.store.listChannels();
+    const channelsById = new Map(channels.map((channel) => [channel.id, channel]));
+    const isEligible = (channelId: string) => {
+      if (!options.onlyEnabledChannels) return true;
+      const channel = channelsById.get(channelId);
+      return Boolean(channel?.enabled && channel.status !== "disabled");
+    };
     const linkedChannelIds = new Set(this.db.listChannelLinks(siteId).map((link) => link.channelId));
     const targetChannelIds = new Set([
-      ...linkedChannelIds,
-      ...channels.filter((channel) => matchesCheckinSite(channel.baseUrl, site)).map((channel) => channel.id),
+      ...[...linkedChannelIds].filter(isEligible),
+      ...channels
+        .filter((channel) => (!options.onlyEnabledChannels || (channel.enabled && channel.status !== "disabled")) && matchesCheckinSite(channel.baseUrl, site))
+        .map((channel) => channel.id),
     ]);
     const updatedChannelIds: string[] = [];
 

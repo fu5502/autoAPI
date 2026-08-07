@@ -12,6 +12,9 @@ import type { AppDatabase } from "../checkin/db.js";
 import type { SiteIconService } from "../checkin/site-icon.js";
 import type { Channel } from "../domain/types.js";
 import { matchesCheckinSite } from "../checkin/channel-balance.js";
+import type { CheckinCoordinator } from "../checkin/coordinator.js";
+import { fetchBalance } from "../gateway/balance.js";
+import type { SecretBox } from "../security/secret-box.js";
 
 const faviconUrlSchema = z.string().trim().max(2_000).url().refine(isSafeFaviconUrl, "图标地址必须使用不带账号密码的 HTTP(S) 地址");
 
@@ -110,6 +113,7 @@ export async function registerAdminRoutes(
   dependencies: {
     store: GatewayStore;
     agent: OpsAgent;
+    secrets?: SecretBox | undefined;
     router: GatewayRouter;
     adminAuth: AdminAuthService;
     gatewayBaseUrl: string;
@@ -117,6 +121,7 @@ export async function registerAdminRoutes(
     loginRateLimitWindowMs?: number;
     checkinDb?: AppDatabase | undefined;
     siteIcons?: SiteIconService | undefined;
+    checkin?: { db: AppDatabase; coordinator: CheckinCoordinator } | undefined;
   },
 ) {
   app.post("/admin/auth/login", {
@@ -341,6 +346,81 @@ export async function registerAdminRoutes(
     });
 
     admin.get("/channels", async () => serializeAdminChannels(await dependencies.store.listChannels(), dependencies.checkinDb));
+
+    admin.post("/channels/balances/refresh", async (_request, reply) => {
+      const channels = await dependencies.store.listChannels();
+      const channelsToRefresh = channels.filter((channel) => channel.enabled && channel.status !== "disabled");
+      const refreshedChannelIds = new Set<string>();
+      const unknownChannelIds: string[] = [];
+      const failures: Array<{ channelId?: string; siteId?: number; name: string; message: string }> = [];
+      const checkinResults = new Map<number, { status: string; message: string; balanceAfterAmount: number | null }>();
+
+      if (dependencies.checkin) {
+        try {
+          const run = await dependencies.checkin.coordinator.refreshBalance(undefined, { onlyEnabledChannels: true });
+          for (const result of dependencies.checkin.db.listResults({ runId: run.id, limit: 1000 })) {
+            checkinResults.set(result.siteId, {
+              status: result.status,
+              message: result.message,
+              balanceAfterAmount: result.balanceAfterAmount,
+            });
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "签到站点余额刷新失败";
+          if (/已有签到任务正在运行/.test(message)) {
+            return reply.code(409).send({ error: { message, type: "conflict" } });
+          }
+          failures.push({ name: "签到站点", message });
+        }
+      }
+
+      const resolveSite = createCheckinSiteResolver(dependencies.checkin?.db);
+      for (const channel of channelsToRefresh) {
+        const checkinSite = resolveSite(channel);
+        if (checkinSite) {
+          const result = checkinResults.get(checkinSite.id);
+          if (result && balanceRefreshSucceeded(result)) refreshedChannelIds.add(channel.id);
+          else if (result && (result.status === "failed" || result.status === "manual_required")) {
+            failures.push({ channelId: channel.id, siteId: checkinSite.id, name: checkinSite.name, message: result.message });
+          } else if (!result || result.balanceAfterAmount === null) {
+            unknownChannelIds.push(channel.id);
+          }
+          continue;
+        }
+
+        if (!dependencies.secrets) {
+          unknownChannelIds.push(channel.id);
+          continue;
+        }
+        try {
+          const apiKey = dependencies.secrets.decrypt(channel.keyCiphertext);
+          const balance = await fetchBalance(channel, apiKey, 8_000);
+          if (balance.balance === null) {
+            unknownChannelIds.push(channel.id);
+            continue;
+          }
+          const updated = await dependencies.store.updateChannelBalance(channel.id, balance.balance, balance.currency);
+          if (updated) refreshedChannelIds.add(channel.id);
+          else failures.push({ channelId: channel.id, name: channel.name, message: "渠道不存在" });
+        } catch (error) {
+          failures.push({ channelId: channel.id, name: channel.name, message: error instanceof Error ? error.message : "余额读取失败" });
+        }
+      }
+
+      const latestChannels = await dependencies.store.listChannels();
+      return {
+        refreshedChannelIds: [...refreshedChannelIds],
+        unknownChannelIds,
+        failures,
+        summary: {
+          total: channelsToRefresh.length,
+          refreshed: refreshedChannelIds.size,
+          unknown: unknownChannelIds.length,
+          failed: failures.length,
+        },
+        channels: serializeAdminChannels(latestChannels, dependencies.checkinDb),
+      };
+    });
 
     admin.get<{ Params: { id: string } }>("/channels/:id/favicon", async (request, reply) => {
       if (!dependencies.siteIcons) return reply.code(404).send();
@@ -699,6 +779,7 @@ export interface CheckinSiteReference {
   name: string;
   baseUrl: string;
   faviconUrl: string | null;
+  lastBalanceUpdatedAt?: string | null;
   updatedAt: string;
 }
 
@@ -728,6 +809,7 @@ function serializeAdminChannelWithResolver(channel: Channel, resolveSite: Checki
       name: site.name,
       baseUrl: site.baseUrl,
       faviconUrl: site.faviconUrl,
+      lastBalanceUpdatedAt: site.lastBalanceUpdatedAt ?? null,
       updatedAt: site.updatedAt,
     } : null,
   };
@@ -767,6 +849,10 @@ function getBalanceStatus(balance: number | null, minBalance: number | null): Ch
   if (balance <= 0) return "exhausted";
   if (minBalance !== null && balance < minBalance) return "low";
   return "ok";
+}
+
+function balanceRefreshSucceeded(result: { balanceAfterAmount: number | null; message: string }): boolean {
+  return result.balanceAfterAmount !== null && /余额已刷新|余额刷新成功|balance.*refresh/i.test(result.message);
 }
 
 function isSafeFaviconUrl(value: string): boolean {

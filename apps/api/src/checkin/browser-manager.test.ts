@@ -1,0 +1,92 @@
+import { describe, expect, it, vi } from 'vitest'
+import type { BrowserContext, Page } from 'playwright-core'
+import { BrowserManager, closeStartupBlankPages } from './browser-manager.js'
+
+describe('closeStartupBlankPages', () => {
+  it('closes only browser startup pages and keeps existing site tabs', async () => {
+    const closed: string[] = []
+    const page = (url: string): Page => ({
+      url: () => url,
+      isClosed: () => false,
+      close: async () => { closed.push(url) },
+    } as unknown as Page)
+    const pages = [page('about:blank'), page('chrome://newtab/'), page('https://example.com/')]
+    const context = { pages: () => pages } as unknown as BrowserContext
+
+    await closeStartupBlankPages(context)
+
+    expect(closed).toEqual(['chrome://newtab/'])
+  })
+
+  it('keeps the only startup page so Chrome does not close the CDP target', async () => {
+    const closed: string[] = []
+    const page = {
+      url: () => 'about:blank',
+      isClosed: () => false,
+      close: async () => { closed.push('about:blank') },
+    } as unknown as Page
+    const context = { pages: () => [page] } as unknown as BrowserContext
+
+    await closeStartupBlankPages(context)
+
+    expect(closed).toEqual([])
+  })
+
+  it('keeps one blank page when Chrome exposes multiple startup pages', async () => {
+    const closed: string[] = []
+    const pages = ['about:blank', 'chrome://newtab/'].map((url) => ({
+      url: () => url,
+      isClosed: () => false,
+      close: async () => { closed.push(url) },
+    } as unknown as Page))
+    const context = { pages: () => pages } as unknown as BrowserContext
+
+    await closeStartupBlankPages(context)
+
+    expect(closed).toEqual(['chrome://newtab/'])
+  })
+})
+
+describe('BrowserManager connection recovery', () => {
+  it('reconnects when a stale CDP context rejects newPage', async () => {
+    const manager = new BrowserManager()
+    const staleContext = {
+      pages: () => [],
+      newPage: async () => { throw new Error('browserContext.newPage: Target page, context or browser has been closed') },
+    } as unknown as BrowserContext
+    const taskPage = {
+      url: () => 'https://dddai.dev/',
+      isClosed: () => false,
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    } as unknown as Page
+    const freshContext = {
+      pages: () => [],
+      newPage: vi.fn(async () => taskPage),
+    } as unknown as BrowserContext
+    const browser = {
+      isConnected: () => true,
+      close: vi.fn(async () => undefined),
+    }
+    Object.assign(manager as unknown as Record<string, unknown>, {
+      activeBrowser: browser,
+      activeContext: staleContext,
+    })
+    vi.spyOn(manager as unknown as { ensureContext: () => Promise<BrowserContext> }, 'ensureContext')
+      .mockResolvedValueOnce(staleContext)
+      .mockResolvedValueOnce(freshContext)
+
+    let receivedContext: BrowserContext | null = null
+    const result = await manager.run({ interactive: false }, async (context, page) => {
+      receivedContext = context
+      return page
+    })
+
+    expect(receivedContext).toBe(freshContext)
+    expect(result).toBe(taskPage)
+    expect(freshContext.newPage).toHaveBeenCalledTimes(1)
+    expect(browser.close).toHaveBeenCalledTimes(1)
+    expect(taskPage.close).toHaveBeenCalledTimes(1)
+  })
+})

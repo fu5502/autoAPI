@@ -28,10 +28,20 @@ export class BrowserManager {
     this.queue = previous.then(() => slot)
     await previous
     this.busy = true
+    let preservePage = false
 
     try {
-      const context = await this.ensureContext()
-      const page = await context.newPage()
+      let context = await this.ensureContext()
+      let page: Page
+      try {
+        page = await this.createTaskPage(context)
+      } catch (error) {
+        if (!isClosedTargetError(error)) throw error
+        await this.resetConnection(context)
+        context = await this.ensureContext()
+        page = await this.createTaskPage(context)
+      }
+      preservePage = isStartupBlankPage(page)
       this.activePage = page
       page.setDefaultTimeout(30_000)
       page.setDefaultNavigationTimeout(45_000)
@@ -41,8 +51,12 @@ export class BrowserManager {
     } finally {
       const page = this.activePage
       this.activePage = null
-      if (page && !page.isClosed()) await page.close().catch(() => undefined)
-      if (options.closeBrowserWhenDone) await this.shutdown()
+      if (options.closeBrowserWhenDone) {
+        if (page && !page.isClosed()) await page.close().catch(() => undefined)
+        await this.shutdown()
+      } else if (!preservePage && page && !page.isClosed()) {
+        await page.close().catch(() => undefined)
+      }
       this.busy = false
       release()
     }
@@ -104,7 +118,8 @@ export class BrowserManager {
   }
 
   private async ensureContext(): Promise<BrowserContext> {
-    if (this.activeContext) return this.activeContext
+    if (this.activeContext && this.activeBrowser?.isConnected()) return this.activeContext
+    if (this.activeContext || this.activeBrowser) await this.resetConnection()
     if (!this.contextPromise) {
       this.contextPromise = this.connectOrLaunchChrome().catch((error) => {
         this.contextPromise = null
@@ -112,6 +127,21 @@ export class BrowserManager {
       })
     }
     return this.contextPromise
+  }
+
+  private async createTaskPage(context: BrowserContext): Promise<Page> {
+    const startupPage = findStartupBlankPage(context)
+    if (startupPage && !startupPage.isClosed()) return startupPage
+    return context.newPage()
+  }
+
+  private async resetConnection(expectedContext?: BrowserContext): Promise<void> {
+    if (expectedContext && this.activeContext !== expectedContext) return
+    const browser = this.activeBrowser
+    this.activeBrowser = null
+    this.activeContext = null
+    this.contextPromise = null
+    await browser?.close().catch(() => undefined)
   }
 
   private async connectOrLaunchChrome(): Promise<BrowserContext> {
@@ -207,8 +237,39 @@ export class BrowserManager {
       this.chromeProcessId = null
       void fs.rm(debugPortFile, { force: true }).catch(() => undefined)
     })
+    await closeStartupBlankPages(context)
     return context
   }
+}
+
+/** Remove tabs opened by Chrome itself while preserving existing user tabs. */
+export async function closeStartupBlankPages(context: BrowserContext): Promise<void> {
+  const pages = context.pages()
+  const blankPages = pages.filter(isStartupBlankPage)
+  const keepPage = blankPages.find((page) => !page.isClosed()) ?? null
+  await Promise.all(blankPages.map(async (page) => {
+    if (page === keepPage) return
+    if (page.isClosed()) return
+    await page.close().catch(() => undefined)
+  }))
+}
+
+function findStartupBlankPage(context: BrowserContext): Page | null {
+  return context.pages().find((page) => !page.isClosed() && isStartupBlankPage(page)) ?? null
+}
+
+function isStartupBlankPage(page: Page): boolean {
+  try {
+    const url = page.url().trim().toLowerCase().replace(/\/$/, '')
+    return ['about:blank', 'chrome://newtab', 'chrome://new-tab-page'].includes(url)
+  } catch {
+    return false
+  }
+}
+
+function isClosedTargetError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /target page, context or browser has been closed|browsercontext\.newpage|context or browser has been closed|target.*closed/i.test(message)
 }
 
 async function terminateProcessTree(processId: number, child: ChildProcess | null) {

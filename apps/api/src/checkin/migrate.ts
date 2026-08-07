@@ -104,12 +104,12 @@ export function migrateDatabase(sourcePath: string, targetPath: string): { sourc
       INSERT INTO sites (
         name, base_url, note, favicon_url, favicon_custom, adapter, enabled, auth_status,
         username, legacy_user_id, currency_symbol, quota_per_unit, display_scale,
-        last_balance_raw, last_balance_amount, last_checked_at, last_status, last_reward_amount,
+        last_balance_raw, last_balance_amount, last_balance_updated_at, last_checked_at, last_status, last_reward_amount,
         last_reward_at, last_balance_delta_amount, last_error, created_at, updated_at
       )
       SELECT name, base_url, note, favicon_url, favicon_custom, adapter, enabled, auth_status,
         username, legacy_user_id, currency_symbol, quota_per_unit, display_scale,
-        last_balance_raw, last_balance_amount, last_checked_at, last_status, last_reward_amount,
+        last_balance_raw, last_balance_amount, last_checked_at, last_checked_at, last_status, last_reward_amount,
         last_reward_at, last_balance_delta_amount, last_error, created_at, updated_at
       FROM source.sites AS source_sites
       WHERE NOT EXISTS (SELECT 1 FROM sites AS target_sites WHERE target_sites.base_url = source_sites.base_url)

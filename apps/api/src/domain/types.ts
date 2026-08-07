@@ -66,6 +66,8 @@ export interface Channel {
   minBalance: number | null;
   balance: number | null;
   balanceCurrency: string | null;
+  /** Time when the displayed balance was last refreshed successfully or edited. */
+  balanceUpdatedAt?: string | null;
   balanceStatus: BalanceStatus;
   consecutiveFailures: number;
   cooldownUntil: string | null;
@@ -268,6 +270,8 @@ export interface PoolRouteSummary {
   status: ChannelStatus;
   priority: number;
   weight: number;
+  /** Most recent request timestamp for this model/channel route. */
+  lastRequestedAt?: string | null;
   conversationLatencyMs: number | null;
   endpointPingMs: number | null;
   health1h: PoolHealthPoint[];

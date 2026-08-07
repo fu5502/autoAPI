@@ -112,6 +112,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await registerAdminRoutes(app, {
     store,
     agent,
+    secrets,
     router,
     adminAuth,
     gatewayBaseUrl: config.gatewayBaseUrl,
@@ -119,6 +120,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     loginRateLimitWindowMs: config.adminLoginRateLimitWindowMs,
     checkinDb: checkin?.db,
     siteIcons: checkin?.siteIcons,
+    checkin: checkin ? { db: checkin.db, coordinator: checkin.coordinator } : undefined,
   });
   if (checkin) {
     await registerCheckinRoutes(app, checkin, async (request, reply) => {

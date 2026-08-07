@@ -35,6 +35,7 @@ export interface Site {
   displayScale: number
   lastBalanceRaw: number | null
   lastBalanceAmount: number | null
+  lastBalanceUpdatedAt?: string | null
   lastCheckedAt: string | null
   lastStatus: CheckinStatus
   lastRewardAmount: number | null

@@ -118,4 +118,20 @@ describe("CheckinBalanceSync", () => {
     await expect(sync.syncSite(site.id)).resolves.toEqual({ updatedChannelIds: [], skippedBecauseBalanceIsUnknown: true });
     expect(updateChannelBalance).not.toHaveBeenCalled();
   });
+
+  it("skips disabled channels when a gateway-wide refresh syncs a site balance", async () => {
+    const site = makeSite();
+    const enabledChannel = makeChannel({ id: "enabled-channel" });
+    const disabledChannel = makeChannel({ id: "disabled-channel", enabled: false, status: "disabled" });
+    const { sync, updateChannelBalance } = createSync(site, [enabledChannel, disabledChannel], [
+      { siteId: site.id, channelId: disabledChannel.id, createdAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+
+    await expect(sync.syncSite(site.id, { onlyEnabledChannels: true })).resolves.toEqual({
+      updatedChannelIds: [enabledChannel.id],
+      skippedBecauseBalanceIsUnknown: false,
+    });
+    expect(updateChannelBalance).toHaveBeenCalledTimes(1);
+    expect(updateChannelBalance).toHaveBeenCalledWith(enabledChannel.id, 12.5, "USD");
+  });
 });

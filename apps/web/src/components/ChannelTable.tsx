@@ -7,6 +7,7 @@ import { StatusDot } from "./StatusDot";
 export function ChannelTable({
   channels,
   syncingBalanceId,
+  balanceRefreshPending,
   onSyncBalance,
   probingId,
   onProbe,
@@ -19,6 +20,7 @@ export function ChannelTable({
 }: {
   channels: Channel[];
   syncingBalanceId: number | null;
+  balanceRefreshPending: boolean;
   onSyncBalance: (siteId: number) => void;
   probingId: string | null;
   onProbe: (id: string) => void;
@@ -160,7 +162,7 @@ export function ChannelTable({
                 <td><span className="channel-routing-number">{channel.weight}</span></td>
                 <td><StatusDot status={channel.status} /></td>
                 <td><span className="mono subtle">{channel.protocol}</span></td>
-                <td>{formatBalance(channel, onSyncBalance, syncingBalanceId)}</td>
+                <td>{formatBalance(channel, onSyncBalance, syncingBalanceId, balanceRefreshPending)}</td>
                 <td>{channel.lastLatencyMs === null ? "—" : `${channel.lastLatencyMs} ms`}</td>
                 <td className={channel.recentRequestCount === 0 ? "subtle" : channel.recentErrorRate > 0.2 ? "danger-text" : channel.recentErrorRate > 0.05 ? "warning-text" : "success-text"}>{channel.recentRequestCount === 0 ? "—" : formatPercent(1 - channel.recentErrorRate)}</td>
                 <td>
@@ -242,25 +244,32 @@ function ChannelSiteIcon({ channel }: { channel: Channel }) {
   );
 }
 
-function formatBalance(channel: Channel, onSyncBalance: (siteId: number) => void, syncingBalanceId: number | null) {
+function formatBalance(channel: Channel, onSyncBalance: (siteId: number) => void, syncingBalanceId: number | null, balanceRefreshPending: boolean) {
   const value = channel.balance === null ? null : `${channel.balanceCurrency === "USD" ? "$" : `${channel.balanceCurrency ?? ""} `}${formatBalanceValue(channel.balance)}`;
   const balanceClass = channel.balance === null ? "unknown" : channel.balanceStatus;
+  const refreshedAt = channel.checkinSite?.lastBalanceUpdatedAt ?? channel.balanceUpdatedAt ?? null;
+  const refreshLabel = formatBalanceRefreshTime(refreshedAt);
   const balanceContent = <>
-    {syncingBalanceId === channel.checkinSite?.id ? <RefreshCw size={13} className="spin" aria-hidden="true" /> : <span className="channel-balance-mark" aria-hidden="true" />}
+    {syncingBalanceId === channel.checkinSite?.id || balanceRefreshPending ? <RefreshCw size={13} className="spin" aria-hidden="true" /> : <span className="channel-balance-mark" aria-hidden="true" />}
     {value === null ? <span>未知</span> : <strong>{value}</strong>}
   </>;
   if (channel.checkinSite) {
-    const syncing = syncingBalanceId === channel.checkinSite.id;
-    const disabled = syncingBalanceId !== null;
-    return <button className={`channel-balance channel-balance-${balanceClass} channel-balance-button`} type="button" title={syncing ? "同步中…" : disabled ? "另一个签到站正在同步" : "点击余额同步签到站余额"} aria-label={`${syncing ? "同步中" : "同步"}${channel.checkinSite.name}余额`} disabled={disabled} onClick={(event) => {
+    const syncing = syncingBalanceId === channel.checkinSite.id || balanceRefreshPending;
+    const disabled = syncingBalanceId !== null || balanceRefreshPending;
+    return <div className="channel-balance-cell"><button className={`channel-balance channel-balance-${balanceClass} channel-balance-button`} type="button" title={syncing ? "同步中…" : disabled ? "另一个签到站正在同步" : "点击余额同步签到站余额"} aria-label={`${syncing ? "同步中" : "同步"}${channel.checkinSite.name}余额`} disabled={disabled} onClick={(event) => {
       event.stopPropagation();
       onSyncBalance(channel.checkinSite!.id);
-    }}>{balanceContent}</button>;
+    }}>{balanceContent}</button><small className="channel-balance-time">{refreshLabel}</small></div>;
   }
   if (value === null) {
-    return <span className="channel-balance channel-balance-unknown" title="当前余额未知">{balanceContent}</span>;
+    return <div className="channel-balance-cell"><span className="channel-balance channel-balance-unknown" title="当前余额未知">{balanceContent}</span><small className="channel-balance-time">{refreshLabel}</small></div>;
   }
-  return <span className={`channel-balance channel-balance-${channel.balanceStatus}`} title={`当前余额 ${value}`}>{balanceContent}</span>;
+  return <div className="channel-balance-cell"><span className={`channel-balance channel-balance-${channel.balanceStatus}`} title={`当前余额 ${value}`}>{balanceContent}</span><small className="channel-balance-time">{refreshLabel}</small></div>;
+}
+
+function formatBalanceRefreshTime(value: string | null): string {
+  if (!value) return "尚未刷新";
+  return `刷新于 ${new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value))}`;
 }
 
 function formatBalanceValue(value: number) {

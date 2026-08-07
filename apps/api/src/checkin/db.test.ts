@@ -51,3 +51,26 @@ describe('check-in site deletion', () => {
     expect(database.deleteSite(site.id)).toBe(false)
   })
 })
+
+describe('check-in site balance updates', () => {
+  it('persists a legitimate zero balance instead of retaining the previous value', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('余额测试站', 'https://balance.example')
+
+    database.updateSiteAuth(site.id, {
+      adapter: 'sub2api',
+      authStatus: 'valid',
+      lastBalanceRaw: 12.5,
+      lastBalanceAmount: 12.5,
+    })
+    database.updateSiteAuth(site.id, {
+      adapter: 'sub2api',
+      authStatus: 'valid',
+      lastBalanceRaw: 0,
+      lastBalanceAmount: 0,
+    })
+
+    expect(database.getSite(site.id)).toMatchObject({ lastBalanceRaw: 0, lastBalanceAmount: 0 })
+  })
+})

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { BrowserContext, Locator, Page, Response } from 'playwright-core'
+import type { BrowserContext, Locator, Page, Request, Response } from 'playwright-core'
 import type {
   AdapterType,
   AuthSessionState,
@@ -41,6 +41,7 @@ interface RemoteUser {
   username?: string
   display_name?: string
   quota?: number
+  balance?: number
 }
 
 interface RemoteAuth {
@@ -49,6 +50,16 @@ interface RemoteAuth {
   sessionToken?: string
   legacyUserId?: number
   user: RemoteUser
+}
+
+interface ModernAccessToken {
+  token: string
+  expiresAt: number | null
+}
+
+interface ModernAccessTokenObserver {
+  waitForToken(timeoutMs: number): Promise<ModernAccessToken | null>
+  dispose(): void
 }
 
 interface CheckinStats {
@@ -198,12 +209,16 @@ const chyTrafficMoney = { currencySymbol: 'GB', quotaPerUnit: 1, displayScale: 1
 const sub2ApiMoney = { currencySymbol: '白晶', quotaPerUnit: 1, displayScale: 1 }
 const fengwindWelfareMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const hybgzsWelfareMoney = { currencySymbol: '$', quotaPerUnit: 500_000, displayScale: 1 }
+const yiApiMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
+const trueSotaMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
+const fastAiTokenMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const fengwindMainSiteUrl = 'https://api.fengwind.com/'
 
 export class NewApiService {
   readonly authSessions = new Map<string, AuthSessionState>()
 
   private readonly interactiveAuthorizationEnabled: boolean
+  private readonly modernAccessTokens = new Map<number, ModernAccessToken>()
 
   constructor(
     private readonly db: AppDatabase,
@@ -225,6 +240,13 @@ export class NewApiService {
     const snapshot = await this.applyImportedCookies(context, site)
     await this.installImportedStorage(page, site, snapshot)
     await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
+  }
+
+  private async openBalanceDashboard(page: Page, site: Site): Promise<void> {
+    const dashboardUrl = getDashboardUrl(site.baseUrl)
+    if (!dashboardUrl) return
+    await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
+    await this.openImportedStorage(page, site)
   }
 
   private async openImportedStorage(page: Page, site: Site): Promise<void> {
@@ -302,6 +324,13 @@ export class NewApiService {
     site: Site,
     timeoutMs: number,
   ): Promise<{ baseUrl: string; protocol: 'new-api' | 'sub2api'; headers: Record<string, string> } | null> {
+    if (isTrueSotaSite(site.baseUrl)) {
+      const auth = await this.detectTrueSotaAuthentication(page, timeoutMs)
+      return auth?.accessToken
+        ? { baseUrl: site.baseUrl, protocol: 'sub2api', headers: { Authorization: `Bearer ${auth.accessToken}` } }
+        : null
+    }
+
     if (site.adapter === 'sub2api' || isSub2ApiSite(site.baseUrl)) {
       const auth = await this.detectSub2ApiAuthentication(page, timeoutMs)
       return auth ? { baseUrl: site.baseUrl, protocol: 'sub2api', headers: { Authorization: `Bearer ${auth.accessToken}` } } : null
@@ -433,12 +462,14 @@ export class NewApiService {
         }
         await this.openImportedSitePage(context, page, site)
         const sub2ApiSite = isSub2ApiSite(site.baseUrl)
+        const trueSotaSite = isTrueSotaSite(site.baseUrl)
         const fengwindWelfareSite = isFengwindWelfareSite(site.baseUrl)
         const hybgzsWelfareSite = isHybgzsWelfareSite(site.baseUrl)
+        const yiApiSite = isYiApiSite(site.baseUrl)
         if (sub2ApiSite) {
           await page.goto(new URL('/login', site.baseUrl).toString(), { waitUntil: 'domcontentloaded' })
         }
-        const initialStatus = isChyTrafficSite(site.baseUrl) || sub2ApiSite || fengwindWelfareSite || hybgzsWelfareSite ? null : await this.getRemoteStatus(page)
+        const initialStatus = isChyTrafficSite(site.baseUrl) || sub2ApiSite || trueSotaSite || fengwindWelfareSite || hybgzsWelfareSite || yiApiSite ? null : await this.getRemoteStatus(page)
         const effectiveBaseUrl = resolveServerBaseUrl(initialStatus?.data?.server_address, site.baseUrl)
         allowedAuthOrigins.add(new URL(effectiveBaseUrl).origin)
         if (effectiveBaseUrl !== site.baseUrl) {
@@ -472,6 +503,29 @@ export class NewApiService {
                 this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 登录状态已识别`, data: { siteId: site.id } })
                 return
               }
+            } else if (trueSotaSite) {
+              const auth = await this.detectTrueSotaAuthentication(page, 30_000)
+              if (auth) {
+                const balanceRaw = numberOrNull(auth.user.balance ?? auth.user.quota)
+                this.db.updateSiteAuth(site.id, {
+                  adapter: 'sub2api',
+                  authStatus: 'valid',
+                  baseUrl: effectiveBaseUrl,
+                  username: auth.user.display_name || auth.user.username || null,
+                  name: officialNameForAuth(site),
+                  currencySymbol: trueSotaMoney.currencySymbol,
+                  quotaPerUnit: trueSotaMoney.quotaPerUnit,
+                  displayScale: trueSotaMoney.displayScale,
+                  lastBalanceRaw: balanceRaw,
+                  lastBalanceAmount: quotaToAmount(balanceRaw, trueSotaMoney.quotaPerUnit, trueSotaMoney.displayScale),
+                  lastError: null,
+                })
+                state.status = 'success'
+                state.message = '授权成功，已识别为 TrueSOTA'
+                state.completedAt = nowIso()
+                this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 已可自动读取余额`, data: { siteId: site.id } })
+                return
+              }
             } else if (fengwindWelfareSite) {
               const auth = await this.detectFengwindWelfareAuthentication(page, 30_000)
               if (auth) {
@@ -495,21 +549,47 @@ export class NewApiService {
             } else if (sub2ApiSite) {
               const auth = await this.detectSub2ApiAuthentication(page, 30_000)
               if (auth) {
+                const money = moneyForSub2ApiSite(site)
                 this.db.updateSiteAuth(site.id, {
                   adapter: 'sub2api',
                   authStatus: 'valid',
                   baseUrl: effectiveBaseUrl,
                   username: auth.user.username || auth.user.email || null,
                   name: officialNameForAuth(site),
-                  currencySymbol: sub2ApiMoney.currencySymbol,
-                  quotaPerUnit: sub2ApiMoney.quotaPerUnit,
-                  displayScale: sub2ApiMoney.displayScale,
+                  currencySymbol: money.currencySymbol,
+                  quotaPerUnit: money.quotaPerUnit,
+                  displayScale: money.displayScale,
+                  lastBalanceRaw: numberOrNull(auth.user.balance),
+                  lastBalanceAmount: quotaToAmount(numberOrNull(auth.user.balance), money.quotaPerUnit, money.displayScale),
                   lastError: null,
                 })
                 state.status = 'success'
                 state.message = '授权成功，已识别为 Sub2API'
                 state.completedAt = nowIso()
                 this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 已可自动签到`, data: { siteId: site.id } })
+                return
+              }
+            } else if (yiApiSite) {
+              const auth = await this.detectYiApiAuthentication(page, 30_000)
+              if (auth) {
+                const balanceRaw = numberOrNull(auth.user.balance ?? auth.user.quota)
+                this.db.updateSiteAuth(site.id, {
+                  adapter: 'new-api-modern',
+                  authStatus: 'valid',
+                  baseUrl: effectiveBaseUrl,
+                  username: auth.user.display_name || auth.user.username || null,
+                  name: officialNameForAuth(site),
+                  currencySymbol: yiApiMoney.currencySymbol,
+                  quotaPerUnit: yiApiMoney.quotaPerUnit,
+                  displayScale: yiApiMoney.displayScale,
+                  lastBalanceRaw: balanceRaw,
+                  lastBalanceAmount: quotaToAmount(balanceRaw, yiApiMoney.quotaPerUnit, yiApiMoney.displayScale),
+                  lastError: null,
+                })
+                state.status = 'success'
+                state.message = '授权成功，已识别为 YiAPI'
+                state.completedAt = nowIso()
+                this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 已记录 YiAPI 登录状态`, data: { siteId: site.id } })
                 return
               }
             } else if (isChyTrafficSite(effectiveBaseUrl)) {
@@ -588,6 +668,7 @@ export class NewApiService {
     this.db.markSiteRunning(site.id)
     try {
       return await this.browser.run({ interactive: isHybgzsWelfareSite(site.baseUrl) || site.adapter === 'hybgzs-welfare' }, async (context, page) => {
+        const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.openImportedSitePage(context, page, site)
         const challenge = await detectChallenge(page)
         if (challenge) return this.makeResult(site, runId, startedAt, 'manual_required', challenge)
@@ -601,11 +682,17 @@ export class NewApiService {
         if (site.adapter === 'fengwind-welfare' || isFengwindWelfareSite(site.baseUrl)) {
           return this.checkinFengwindWelfareSite(page, site, runId, startedAt, requestTimeoutMs)
         }
+        if (isTrueSotaSite(site.baseUrl)) {
+          return this.refreshTrueSotaBalance(page, site, runId, startedAt, requestTimeoutMs)
+        }
         if (site.adapter === 'sub2api' || isSub2ApiSite(site.baseUrl)) {
           return this.checkinSub2ApiSite(page, site, runId, startedAt, requestTimeoutMs)
         }
         if (isAnyRouterSite(site.baseUrl)) {
           return this.checkinPageTriggeredSite(page, site, runId, startedAt, requestTimeoutMs)
+        }
+        if (isYiApiSite(site.baseUrl)) {
+          return this.refreshYiApiBalance(page, site, runId, startedAt, requestTimeoutMs)
         }
 
         const statusResponse = await this.getRemoteStatus(page, requestTimeoutMs)
@@ -616,10 +703,13 @@ export class NewApiService {
         // authenticated request, so avoid rotating the user's session just
         // to discover that there is nothing to claim.
         if (remoteStatus?.checkin_enabled === false) {
-          return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', {
+          const latestBalance = await this.readNewApiBalanceWithoutRefresh(page, site, requestTimeoutMs, modernAccessToken)
+          const message = latestBalance === null ? '签到功能未启用' : '签到功能未启用，余额已刷新'
+          return this.makeResult(site, runId, startedAt, 'disabled', message, {
             beforeRaw: site.lastBalanceRaw,
-            afterRaw: site.lastBalanceRaw,
+            afterRaw: latestBalance ?? site.lastBalanceRaw,
             money,
+            loginVerified: latestBalance !== null,
           })
         }
 
@@ -705,7 +795,18 @@ export class NewApiService {
 
     try {
       return await this.browser.run({ interactive: false }, async (context, page) => {
+        const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.applyImportedCookies(context, site)
+        if (isTrueSotaSite(site.baseUrl)) {
+          await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
+          await this.openImportedStorage(page, site)
+          return this.refreshTrueSotaBalance(page, site, runId, startedAt, requestTimeoutMs)
+        }
+        if (isYiApiSite(site.baseUrl)) {
+          await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
+          await this.openImportedStorage(page, site)
+          return this.refreshYiApiBalance(page, site, runId, startedAt, requestTimeoutMs)
+        }
         if (site.adapter === 'hybgzs-welfare' || isHybgzsWelfareSite(site.baseUrl)) {
           await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
           await this.openImportedStorage(page, site)
@@ -741,6 +842,10 @@ export class NewApiService {
 
         await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
         await this.openImportedStorage(page, site)
+        if (isFastAiTokenSite(site.baseUrl)) {
+          const dashboardUrl = getDashboardUrl(site.baseUrl)
+          if (dashboardUrl) await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
+        }
         const challenge = await detectChallenge(page)
         if (challenge) return this.makeResult(site, runId, startedAt, 'manual_required', challenge)
 
@@ -761,26 +866,45 @@ export class NewApiService {
 
         if (site.adapter === 'sub2api' || isSub2ApiSite(site.baseUrl)) {
           const auth = await this.detectSub2ApiAuthentication(page, requestTimeoutMs)
+          const money = moneyForSub2ApiSite(site)
           if (!auth) {
-            return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money: sub2ApiMoney })
+            return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money })
           }
           const balance = numberOrNull(auth.user.balance)
           if (balance === null) {
-            return this.makeResult(site, runId, startedAt, 'failed', '无法读取 Sub2API 余额', { money: sub2ApiMoney })
+            return this.makeResult(site, runId, startedAt, 'failed', '无法读取 Sub2API 余额', { money, loginVerified: true })
           }
+          this.db.updateSiteAuth(site.id, {
+            adapter: 'sub2api',
+            authStatus: 'valid',
+            baseUrl: site.baseUrl,
+            username: auth.user.username || auth.user.email || null,
+            name: officialNameForAuth(site),
+            currencySymbol: money.currencySymbol,
+            quotaPerUnit: money.quotaPerUnit,
+            displayScale: money.displayScale,
+            lastBalanceRaw: balance,
+            lastBalanceAmount: quotaToAmount(balance, money.quotaPerUnit, money.displayScale),
+            lastError: null,
+          })
           return this.makeResult(site, runId, startedAt, 'disabled', '自动签到已关闭，余额已刷新', {
             beforeRaw: site.lastBalanceRaw,
             afterRaw: balance,
-            money: sub2ApiMoney,
+            money,
+            loginVerified: true,
           })
         }
 
+        await this.openBalanceDashboard(page, site)
         const statusResponse = await this.getRemoteStatus(page, requestTimeoutMs)
         if (statusResponse.success && statusResponse.data?.checkin_enabled === false) {
-          return this.makeResult(site, runId, startedAt, 'disabled', '自动签到已关闭，未刷新余额以保护登录会话', {
+          const latestBalance = await this.readNewApiBalanceWithoutRefresh(page, site, requestTimeoutMs, modernAccessToken)
+          const message = latestBalance === null ? '自动签到已关闭，未读取到最新余额' : '自动签到已关闭，余额已刷新'
+          return this.makeResult(site, runId, startedAt, 'disabled', message, {
             beforeRaw: site.lastBalanceRaw,
-            afterRaw: site.lastBalanceRaw,
+            afterRaw: latestBalance ?? site.lastBalanceRaw,
             money: deriveMoneySettings(statusResponse.data),
+            loginVerified: latestBalance !== null,
           })
         }
 
@@ -925,18 +1049,19 @@ export class NewApiService {
     startedAt: string,
     timeoutMs: number,
   ): Promise<CheckinResult> {
+    const money = moneyForSub2ApiSite(site)
     const auth = await this.detectSub2ApiAuthentication(page, timeoutMs)
     if (!auth) {
-      return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money: sub2ApiMoney })
+      return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money })
     }
     this.db.updateSiteAuth(site.id, {
       adapter: 'sub2api',
       authStatus: 'valid',
       name: officialNameForAuth(site),
       username: auth.user.username || auth.user.email || null,
-      currencySymbol: sub2ApiMoney.currencySymbol,
-      quotaPerUnit: sub2ApiMoney.quotaPerUnit,
-      displayScale: sub2ApiMoney.displayScale,
+      currencySymbol: money.currencySymbol,
+      quotaPerUnit: money.quotaPerUnit,
+      displayScale: money.displayScale,
       lastError: null,
     })
 
@@ -948,11 +1073,11 @@ export class NewApiService {
       const status: CheckinStatus = [401, 403].includes(statusResponse.httpStatus) || isManualMessage(message)
         ? 'manual_required'
         : 'failed'
-      return this.makeResult(site, runId, startedAt, status, message, { beforeRaw: beforeBalance, money: sub2ApiMoney })
+      return this.makeResult(site, runId, startedAt, status, message, { beforeRaw: beforeBalance, money })
     }
 
     if (statusResponse.data?.config?.enabled === false) {
-      return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw: beforeBalance, money: sub2ApiMoney })
+      return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw: beforeBalance, money })
     }
     if (statusResponse.data?.signedToday) {
       const today = statusResponse.data.today || localDateKey(new Date())
@@ -961,7 +1086,7 @@ export class NewApiService {
         rewardRaw: numberOrNull(record?.reward_amount),
         beforeRaw: beforeBalance,
         afterRaw: beforeBalance,
-        money: sub2ApiMoney,
+        money,
       })
     }
 
@@ -971,7 +1096,7 @@ export class NewApiService {
       const status: CheckinStatus = [401, 403].includes(checkin.httpStatus) || isManualMessage(message)
         ? 'manual_required'
         : 'failed'
-      return this.makeResult(site, runId, startedAt, status, message, { beforeRaw: beforeBalance, money: sub2ApiMoney })
+      return this.makeResult(site, runId, startedAt, status, message, { beforeRaw: beforeBalance, money })
     }
 
     const reward = numberOrNull(checkin.data?.record?.reward_amount)
@@ -982,7 +1107,7 @@ export class NewApiService {
       rewardRaw: reward,
       beforeRaw: beforeBalance,
       afterRaw: afterBalance,
-      money: sub2ApiMoney,
+      money,
     })
   }
 
@@ -1305,6 +1430,151 @@ export class NewApiService {
     return pageRequest<RemoteStatus>(page, '/api/status', 'GET', {}, timeoutMs)
   }
 
+  private async refreshYiApiBalance(
+    page: Page,
+    site: Site,
+    runId: number,
+    startedAt: string,
+    timeoutMs: number,
+  ): Promise<CheckinResult> {
+    const auth = await this.detectYiApiAuthentication(page, timeoutMs)
+    if (!auth) {
+      return this.makeResult(site, runId, startedAt, 'manual_required', 'YiAPI 登录状态已失效，请重新授权', {
+        beforeRaw: site.lastBalanceRaw,
+        money: yiApiMoney,
+      })
+    }
+
+    const balance = numberOrNull(auth.user.balance ?? auth.user.quota)
+    if (balance === null) {
+      return this.makeResult(site, runId, startedAt, 'failed', '无法读取 YiAPI 余额', {
+        beforeRaw: site.lastBalanceRaw,
+        money: yiApiMoney,
+        loginVerified: true,
+      })
+    }
+
+    this.db.updateSiteAuth(site.id, {
+      adapter: 'new-api-modern',
+      authStatus: 'valid',
+      baseUrl: site.baseUrl,
+      username: auth.user.display_name || auth.user.username || null,
+      name: officialNameForAuth(site),
+      currencySymbol: yiApiMoney.currencySymbol,
+      quotaPerUnit: yiApiMoney.quotaPerUnit,
+      displayScale: yiApiMoney.displayScale,
+      lastBalanceRaw: balance,
+      lastBalanceAmount: quotaToAmount(balance, yiApiMoney.quotaPerUnit, yiApiMoney.displayScale),
+      lastError: null,
+    })
+    return this.makeResult(site, runId, startedAt, 'disabled', 'YiAPI 未提供签到接口，余额已刷新', {
+      beforeRaw: site.lastBalanceRaw,
+      afterRaw: balance,
+      money: yiApiMoney,
+      loginVerified: true,
+    })
+  }
+
+  private async refreshTrueSotaBalance(
+    page: Page,
+    site: Site,
+    runId: number,
+    startedAt: string,
+    timeoutMs: number,
+  ): Promise<CheckinResult> {
+    const beforeRaw = site.lastBalanceRaw
+    const auth = await this.detectTrueSotaAuthentication(page, timeoutMs)
+    if (!auth) {
+      return this.makeResult(site, runId, startedAt, 'manual_required', 'TrueSOTA 登录状态已失效，请重新授权', {
+        beforeRaw,
+        money: trueSotaMoney,
+      })
+    }
+
+    const balance = numberOrNull(auth.user.balance ?? auth.user.quota)
+    if (balance === null) {
+      return this.makeResult(site, runId, startedAt, 'failed', '无法读取 TrueSOTA 余额', {
+        beforeRaw,
+        money: trueSotaMoney,
+        loginVerified: true,
+      })
+    }
+
+    this.db.updateSiteAuth(site.id, {
+      adapter: 'sub2api',
+      authStatus: 'valid',
+      baseUrl: site.baseUrl,
+      username: auth.user.display_name || auth.user.username || null,
+      name: officialNameForAuth(site),
+      currencySymbol: trueSotaMoney.currencySymbol,
+      quotaPerUnit: trueSotaMoney.quotaPerUnit,
+      displayScale: trueSotaMoney.displayScale,
+      lastBalanceRaw: balance,
+      lastBalanceAmount: quotaToAmount(balance, trueSotaMoney.quotaPerUnit, trueSotaMoney.displayScale),
+      lastError: null,
+    })
+    return this.makeResult(site, runId, startedAt, 'disabled', 'TrueSOTA 未提供签到接口，余额已刷新', {
+      beforeRaw,
+      afterRaw: balance,
+      money: trueSotaMoney,
+      loginVerified: true,
+    })
+  }
+
+  private getCachedModernAccessToken(siteId: number): ModernAccessToken | null {
+    const cached = this.modernAccessTokens.get(siteId)
+    if (!cached) return null
+    if (cached.expiresAt !== null && cached.expiresAt <= Date.now() + 10_000) {
+      this.modernAccessTokens.delete(siteId)
+      return null
+    }
+    return cached
+  }
+
+  private rememberModernAccessToken(siteId: number, token: ModernAccessToken | null): void {
+    if (!token?.token) return
+    this.modernAccessTokens.set(siteId, {
+      ...token,
+      expiresAt: token.expiresAt ?? Date.now() + 5 * 60_000,
+    })
+  }
+
+  private async readNewApiBalanceWithoutRefresh(
+    page: Page,
+    site: Site,
+    timeoutMs: number,
+    observer?: ModernAccessTokenObserver,
+  ): Promise<number | null> {
+    const captured = await observer?.waitForToken(timeoutMs) ?? null
+    observer?.dispose()
+    this.rememberModernAccessToken(site.id, captured)
+
+    if (captured) {
+      const authenticated = await pageRequest<RemoteUser>(
+        page,
+        '/api/user/self',
+        'GET',
+        { Authorization: `Bearer ${captured.token}` },
+        timeoutMs,
+      )
+      const balance = authenticated.success ? numberOrNull(authenticated.data?.quota) : null
+      if (balance !== null) return balance
+    }
+
+    // A few older deployments accept the refresh cookie directly for this
+    // read. It is safe to try because this is a GET and never rotates it.
+    const cookieAuthenticated = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', {}, timeoutMs)
+    const cookieBalance = cookieAuthenticated.success ? numberOrNull(cookieAuthenticated.data?.quota) : null
+    if (cookieBalance !== null) return cookieBalance
+
+    // Legacy New API installations can still identify the user without the
+    // modern refresh endpoint. Explicitly disable modern auth detection here.
+    const legacyAuth = await this.detectAuthentication(page, site.legacyUserId, timeoutMs, false)
+    if (!legacyAuth) return null
+    const legacyUser = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', buildAuthHeaders(legacyAuth), timeoutMs)
+    return legacyUser.success ? numberOrNull(legacyUser.data?.quota) : null
+  }
+
   private async detectAuthentication(
     page: Page,
     knownLegacyUserId?: number | null,
@@ -1365,25 +1635,90 @@ export class NewApiService {
     return null
   }
 
+  private async detectYiApiAuthentication(page: Page, timeoutMs = 30_000): Promise<RemoteAuth | null> {
+    const accessToken = await readYiApiAccessToken(page)
+    if (!accessToken) return null
+    const headers = { Authorization: `Bearer ${accessToken}` }
+    for (const pathname of ['/api/v1/user/profile', '/api/v1/auth/me']) {
+      const response = await pageRequest<unknown>(page, pathname, 'GET', headers, timeoutMs)
+      if (!response.success) continue
+      const user = normalizeYiApiUser(response.data)
+      if (!user) continue
+      return { adapter: 'new-api-modern', accessToken, user }
+    }
+    return null
+  }
+
+  private async detectTrueSotaAuthentication(page: Page, timeoutMs = 30_000): Promise<RemoteAuth | null> {
+    let accessToken = await readSub2ApiToken(page, 'access')
+    const readUser = async (): Promise<RemoteAuth | null> => {
+      if (!accessToken) return null
+      const headers = { Authorization: `Bearer ${accessToken}` }
+      for (const pathname of ['/api/v1/auth/me', '/api/v1/user/profile']) {
+        const response = await pageRequest<unknown>(page, pathname, 'GET', headers, timeoutMs)
+        if (!response.success) continue
+        const user = normalizeYiApiUser(response.data)
+        if (!user) continue
+        return { adapter: 'sub2api', accessToken, user }
+      }
+      return null
+    }
+
+    const authenticated = await readUser()
+    if (authenticated) return authenticated
+
+    const refreshToken = await readSub2ApiToken(page, 'refresh')
+    if (!refreshToken) return null
+    const refreshed = await pageRequest<{ access_token?: string; token?: string }>(
+      page,
+      '/api/v1/auth/refresh',
+      'POST',
+      { 'Content-Type': 'application/json' },
+      timeoutMs,
+      JSON.stringify({ refresh_token: refreshToken }),
+    )
+    const refreshedToken = refreshed.success ? (refreshed.data?.access_token || refreshed.data?.token) : null
+    if (!refreshedToken) return null
+    accessToken = refreshedToken
+    await page.evaluate((token) => localStorage.setItem('auth_token', token), accessToken).catch(() => undefined)
+    return readUser()
+  }
+
   private async detectSub2ApiAuthentication(
     page: Page,
     timeoutMs = 30_000,
   ): Promise<{ accessToken: string; user: Sub2ApiUser } | null> {
-    const accessToken = await readSub2ApiToken(page, 'access')
-    if (!accessToken) return null
+    let activeToken = await readSub2ApiToken(page, 'access')
+    if (!activeToken) return null
 
-    let activeToken = accessToken
-    let response = await pageRequest<Sub2ApiUser>(
-      page,
-      '/api/v1/auth/me',
-      'GET',
-      { Authorization: `Bearer ${activeToken}` },
-      timeoutMs,
-    )
-    if (!response.success && response.httpStatus === 401) {
+    const readUser = async () => {
+      let lastResponse: RemoteResponse<unknown> | null = null
+      let authenticatedWithoutBalance: { response: RemoteResponse<unknown>; user: Sub2ApiUser } | null = null
+      let unauthorized = false
+      for (const pathname of ['/api/v1/auth/me', '/api/v1/user/profile']) {
+        const response = await pageRequest<unknown>(
+          page,
+          pathname,
+          'GET',
+          { Authorization: `Bearer ${activeToken}` },
+          timeoutMs,
+        )
+        lastResponse = response
+        if (response.httpStatus === 401) unauthorized = true
+        if (!response.success) continue
+        const user = normalizeSub2ApiUser(response.data)
+        if (!user) continue
+        if (numberOrNull(user.balance ?? user.quota) !== null) return { response, user, unauthorized }
+        authenticatedWithoutBalance ??= { response, user }
+      }
+      return { response: lastResponse, user: authenticatedWithoutBalance?.user ?? null, unauthorized }
+    }
+
+    let authenticated = await readUser()
+    if (authenticated.unauthorized || (!authenticated.user && authenticated.response?.httpStatus === 401)) {
       const refreshToken = await readSub2ApiToken(page, 'refresh')
       if (refreshToken) {
-        const refreshed = await pageRequest<{ access_token?: string }>(
+        const refreshed = await pageRequest<{ access_token?: string; refresh_token?: string }>(
           page,
           '/api/v1/auth/refresh',
           'POST',
@@ -1393,20 +1728,15 @@ export class NewApiService {
         )
         if (refreshed.success && refreshed.data?.access_token) {
           activeToken = refreshed.data.access_token
-          await page.evaluate((token) => localStorage.setItem('auth_token', token), activeToken)
-          response = await pageRequest<Sub2ApiUser>(
-            page,
-            '/api/v1/auth/me',
-            'GET',
-            { Authorization: `Bearer ${activeToken}` },
-            timeoutMs,
-          )
+          await page.evaluate(({ accessToken, refreshToken: nextRefreshToken }) => {
+            localStorage.setItem('auth_token', accessToken)
+            if (nextRefreshToken) localStorage.setItem('refresh_token', nextRefreshToken)
+          }, { accessToken: activeToken, refreshToken: refreshed.data.refresh_token ?? null }).catch(() => undefined)
+          authenticated = await readUser()
         }
       }
     }
-    return response.success && response.data
-      ? { accessToken: activeToken, user: response.data }
-      : null
+    return authenticated.user ? { accessToken: activeToken, user: authenticated.user } : null
   }
 
   private async detectFengwindWelfareAuthentication(
@@ -1427,6 +1757,102 @@ export class NewApiService {
       : null
   }
 
+}
+
+function observeModernAccessToken(
+  page: Page,
+  baseUrl: string,
+  initial: ModernAccessToken | null,
+): ModernAccessTokenObserver {
+  let captured = initial
+  let resolveWait: ((token: ModernAccessToken | null) => void) | null = null
+
+  const waitPromise = new Promise<ModernAccessToken | null>((resolve) => {
+    resolveWait = resolve
+  })
+
+  const accept = (token: string, expiresAt: number | null) => {
+    const normalized = token.replace(/^Bearer\s+/i, '').trim()
+    if (!normalized) return
+    captured = { token: normalized, expiresAt }
+    resolveWait?.(captured)
+    resolveWait = null
+  }
+
+  let origin = ''
+  try {
+    origin = new URL(baseUrl).origin
+  } catch {
+    return {
+      waitForToken: async () => captured,
+      dispose: () => undefined,
+    }
+  }
+
+  const isTargetApiRequest = (urlValue: string) => {
+    try {
+      const url = new URL(urlValue)
+      return url.origin === origin && url.pathname.startsWith('/api/')
+    } catch {
+      return false
+    }
+  }
+
+  const onRequest = (request: Request) => {
+    if (!isTargetApiRequest(request.url())) return
+    const authorization = request.headers().authorization
+    if (typeof authorization === 'string' && /^Bearer\s+\S+/i.test(authorization)) {
+      accept(authorization, null)
+    }
+  }
+
+  const onResponse = (response: Response) => {
+    if (!isTargetApiRequest(response.url())) return
+    try {
+      const url = new URL(response.url())
+      if (url.pathname !== '/api/user/auth/refresh') return
+    } catch {
+      return
+    }
+    void response.json().then((payload: unknown) => {
+      if (!payload || typeof payload !== 'object') return
+      const body = payload as { data?: unknown }
+      const data = body.data && typeof body.data === 'object'
+        ? body.data as Record<string, unknown>
+        : payload as Record<string, unknown>
+      const token = typeof data.access_token === 'string' ? data.access_token : ''
+      if (!token) return
+      accept(token, normalizeAccessTokenExpiry(data.access_expires_at))
+    }).catch(() => undefined)
+  }
+
+  if (typeof page.on !== 'function') {
+    return {
+      waitForToken: async () => captured,
+      dispose: () => undefined,
+    }
+  }
+
+  page.on('request', onRequest)
+  page.on('response', onResponse)
+  return {
+    async waitForToken(timeoutMs: number) {
+      if (captured) return captured
+      const waitMs = Math.min(Math.max(timeoutMs, 250), 5_000)
+      return Promise.race([
+        waitPromise,
+        new Promise<ModernAccessToken | null>((resolve) => setTimeout(() => resolve(captured), waitMs)),
+      ])
+    },
+    dispose() {
+      if (typeof page.off === 'function') {
+        page.off('request', onRequest)
+        page.off('response', onResponse)
+      }
+      resolveWait?.(captured)
+      resolveWait = null
+    },
+  }
 }
 
 async function pageRequest<T>(
@@ -1822,6 +2248,69 @@ async function readSub2ApiToken(page: Page, kind: 'access' | 'refresh'): Promise
   }, kind).catch(() => null)
 }
 
+async function readYiApiAccessToken(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    for (const storage of [localStorage, sessionStorage]) {
+      for (const key of ['auth_token', 'access_token', 'accessToken']) {
+        const value = storage.getItem(key)?.trim()
+        if (value) return value.replace(/^Bearer\s+/i, '')
+      }
+    }
+    return null
+  }).catch(() => null)
+}
+
+function normalizeYiApiUser(value: unknown): RemoteUser | null {
+  if (!value || typeof value !== 'object') return null
+  const payload = value as Record<string, unknown>
+  const nestedData = payload.data && typeof payload.data === 'object'
+    ? payload.data as Record<string, unknown>
+    : null
+  const nestedUser = payload.user && typeof payload.user === 'object'
+    ? payload.user as Record<string, unknown>
+    : nestedData?.user && typeof nestedData.user === 'object'
+      ? nestedData.user as Record<string, unknown>
+      : null
+  const source = nestedUser ?? nestedData ?? payload
+  const balance = numberOrNull(
+    source.balance
+    ?? source.quota
+    ?? source.remaining
+    ?? source.available_balance
+    ?? source.wallet_balance
+    ?? source.walletBalance
+    ?? payload.balance
+    ?? payload.quota,
+  )
+  const id = numberOrNull(source.id ?? payload.id)
+  const user: RemoteUser = {}
+  if (id !== null) user.id = id
+  if (typeof source.username === 'string') user.username = source.username
+  if (typeof source.display_name === 'string') user.display_name = source.display_name
+  if (balance !== null) {
+    user.balance = balance
+    user.quota = balance
+  }
+  return user.id !== undefined || user.username !== undefined || user.display_name !== undefined || user.balance !== undefined
+    ? user
+    : null
+}
+
+function normalizeSub2ApiUser(value: unknown): Sub2ApiUser | null {
+  const user = normalizeYiApiUser(value)
+  if (!user) return null
+  const payload = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const nestedData = payload.data && typeof payload.data === 'object' ? payload.data as Record<string, unknown> : null
+  const nestedUser = payload.user && typeof payload.user === 'object'
+    ? payload.user as Record<string, unknown>
+    : nestedData?.user && typeof nestedData.user === 'object'
+      ? nestedData.user as Record<string, unknown>
+      : null
+  const source = nestedUser ?? nestedData ?? payload
+  const email = typeof source.email === 'string' ? source.email : undefined
+  return email ? { ...user, email } : user
+}
+
 function buildAuthHeaders(auth: RemoteAuth): Record<string, string> {
   if (auth.adapter === 'new-api-modern' && auth.accessToken) return { Authorization: `Bearer ${auth.accessToken}` }
   if (auth.adapter === 'new-api-legacy' && auth.legacyUserId) return { 'New-API-User': String(auth.legacyUserId) }
@@ -1875,12 +2364,51 @@ function hasExactHostname(baseUrl: string, hostname: string): boolean {
   }
 }
 
+function getDashboardUrl(baseUrl: string): string | null {
+  try {
+    const url = new URL(baseUrl)
+    if (/^\/dashboard\/?$/i.test(url.pathname)) return null
+    url.pathname = '/dashboard'
+    url.search = ''
+    url.hash = ''
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return null
+  }
+}
+
 function isChyTrafficSite(baseUrl: string): boolean {
   return hasExactHostname(baseUrl, 'dy.chybenzun.top')
 }
 
 function isSub2ApiSite(baseUrl: string): boolean {
-  return hasExactHostname(baseUrl, 'token.dialoguedui.com')
+  return hasExactHostname(baseUrl, 'token.dialoguedui.com') || isFastAiTokenSite(baseUrl)
+}
+
+function isFastAiTokenSite(baseUrl: string): boolean {
+  return hasExactHostname(baseUrl, 'fastaitoken.com') || hasExactHostname(baseUrl, 'www.fastaitoken.com')
+}
+
+function moneyForSub2ApiSite(site: Site) {
+  return isFastAiTokenSite(site.baseUrl) ? fastAiTokenMoney : sub2ApiMoney
+}
+
+function isYiApiSite(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '')
+    return hostname === 'yiapi.ai' || hostname === 'www.yiapi.ai'
+  } catch {
+    return false
+  }
+}
+
+function isTrueSotaSite(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '')
+    return hostname === 'true-sota.com' || hostname === 'www.true-sota.com'
+  } catch {
+    return false
+  }
 }
 
 function isFengwindWelfareSite(baseUrl: string): boolean {
@@ -2012,8 +2540,16 @@ function deriveMoneySettings(status?: RemoteStatus) {
 }
 
 function numberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string' && !value.trim()) return null
   const number = Number(value)
   return Number.isFinite(number) ? number : null
+}
+
+function normalizeAccessTokenExpiry(value: unknown): number | null {
+  const raw = Number(value)
+  if (!Number.isFinite(raw) || raw <= 0) return null
+  return raw < 1_000_000_000_000 ? raw * 1000 : raw
 }
 
 function findTodayRecord(records?: CheckinStats['records']) {

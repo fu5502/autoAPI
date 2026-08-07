@@ -122,6 +122,7 @@ describe("checkin site balance integration", () => {
       name: "关联签到站",
       baseUrl: "https://another.example",
       faviconUrl: "https://another.example/icon.png",
+      lastBalanceUpdatedAt: null,
       updatedAt: "2026-01-02T00:00:00.000Z",
     });
 
@@ -135,6 +136,7 @@ describe("checkin site balance integration", () => {
       name: "关联签到站",
       baseUrl: "https://another.example",
       faviconUrl: "https://another.example/icon.png",
+      lastBalanceUpdatedAt: null,
       updatedAt: "2026-01-02T00:00:00.000Z",
     });
     expect(result).not.toHaveProperty("keyCiphertext");

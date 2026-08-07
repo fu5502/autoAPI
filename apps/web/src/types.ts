@@ -18,6 +18,7 @@ export interface Channel {
   minBalance: number | null;
   balance: number | null;
   balanceCurrency: string | null;
+  balanceUpdatedAt?: string | null;
   balanceStatus: "ok" | "low" | "exhausted" | "unknown" | "error";
   consecutiveFailures: number;
   cooldownUntil: string | null;
@@ -34,6 +35,7 @@ export interface Channel {
     name: string;
     baseUrl: string;
     faviconUrl: string | null;
+    lastBalanceUpdatedAt?: string | null;
     updatedAt: string;
   } | null;
 }
@@ -83,6 +85,7 @@ export interface Pool {
     status: ChannelStatus;
     priority: number;
     weight: number;
+    lastRequestedAt?: string | null;
     conversationLatencyMs: number | null;
     endpointPingMs: number | null;
     health1h: Pool["hourlyHealth"];

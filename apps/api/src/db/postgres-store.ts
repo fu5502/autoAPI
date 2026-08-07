@@ -141,8 +141,8 @@ export class PostgresStore implements GatewayStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const current = await client.query<{ provider_id: string; credential_id: string; current_balance: string | null; balance_currency: string | null; favicon_url: string | null }>(
-        "SELECT provider_id, credential_id, current_balance, balance_currency, favicon_url FROM channels WHERE id = $1 FOR UPDATE",
+      const current = await client.query<{ provider_id: string; credential_id: string; current_balance: string | null; balance_currency: string | null; balance_updated_at: Date | null; favicon_url: string | null }>(
+        "SELECT provider_id, credential_id, current_balance, balance_currency, balance_updated_at, favicon_url FROM channels WHERE id = $1 FOR UPDATE",
         [id],
       );
       const row = current.rows[0];
@@ -163,6 +163,9 @@ export class PostgresStore implements GatewayStore {
       }
       const balance = input.balance === undefined ? (row.current_balance === null ? null : Number(row.current_balance)) : input.balance;
       const balanceCurrency = input.balanceCurrency === undefined ? row.balance_currency : input.balanceCurrency;
+      const balanceUpdatedAt = input.balance === undefined
+        ? row.balance_updated_at
+        : new Date().toISOString();
       const faviconUrl = input.faviconUrl === undefined ? row.favicon_url : input.faviconUrl;
       await client.query(
         `UPDATE channels SET
@@ -171,9 +174,9 @@ export class PostgresStore implements GatewayStore {
           enabled = $11, status = CASE WHEN $11 THEN 'pending' ELSE 'disabled' END,
           consecutive_failures = 0, cooldown_until = NULL, isolation_reason = NULL,
           last_checked_at = NULL, last_latency_ms = NULL, current_balance = $12,
-          balance_currency = $13, balance_status = $14, updated_at = now()
+          balance_currency = $13, balance_status = $14, balance_updated_at = $15, updated_at = now()
          WHERE id = $1`,
-        [id, input.name, normalizeBaseUrl(input.baseUrl), faviconUrl, input.protocol, input.priority, input.weight, input.minBalance, input.models, input.tags, input.enabled ?? true, balance, balanceCurrency, getBalanceStatus(balance, input.minBalance)],
+        [id, input.name, normalizeBaseUrl(input.baseUrl), faviconUrl, input.protocol, input.priority, input.weight, input.minBalance, input.models, input.tags, input.enabled ?? true, balance, balanceCurrency, getBalanceStatus(balance, input.minBalance), balanceUpdatedAt],
       );
       await client.query(
         `UPDATE model_aliases SET enabled = false
@@ -204,6 +207,7 @@ export class PostgresStore implements GatewayStore {
           WHEN min_balance IS NOT NULL AND $2 < min_balance THEN 'low'
           ELSE 'ok'
         END,
+        balance_updated_at = now(),
         updated_at = now()
        WHERE id = $1`,
       [id, balance, balanceCurrency],
@@ -294,6 +298,7 @@ export class PostgresStore implements GatewayStore {
           current_balance = CASE WHEN $8::numeric IS NULL THEN current_balance ELSE $8 END,
           balance_currency = CASE WHEN $8::numeric IS NULL THEN balance_currency ELSE $9 END,
           balance_status = CASE WHEN $8::numeric IS NULL THEN balance_status ELSE $10 END,
+          balance_updated_at = CASE WHEN $8::numeric IS NULL THEN balance_updated_at ELSE now() END,
           updated_at = now()
          WHERE id = $1`,
         [
@@ -528,10 +533,16 @@ export class PostgresStore implements GatewayStore {
   async getPools(): Promise<PoolSummary[]> {
     const routes = await this.pool.query(
       `SELECT ma.alias, ma.upstream_model, c.id AS channel_id, c.name AS channel_name,
-              p.name AS provider_name, c.status, c.priority, c.weight, c.last_latency_ms
+              p.name AS provider_name, c.status, c.priority, c.weight, c.last_latency_ms,
+              route_usage.last_requested_at
        FROM model_aliases ma
        JOIN channels c ON c.id = ma.channel_id
        JOIN providers p ON p.id = c.provider_id
+       LEFT JOIN LATERAL (
+         SELECT max(ue.created_at) AS last_requested_at
+         FROM usage_events ue
+         WHERE ue.channel_id = c.id AND ue.model_alias = ma.alias
+       ) route_usage ON true
        WHERE ma.enabled = true
        ORDER BY ma.alias, c.priority DESC, c.weight DESC`,
     );
@@ -776,6 +787,7 @@ export class PostgresStore implements GatewayStore {
         status: row.status,
         priority: Number(row.priority),
         weight: Number(row.weight),
+        lastRequestedAt: row.last_requested_at ? new Date(row.last_requested_at).toISOString() : null,
         conversationLatencyMs: averageHealthLatency(routeHealth1hPoints),
         endpointPingMs: row.last_latency_ms === null ? null : Number(row.last_latency_ms),
         health1h: routeHealth1hPoints,
@@ -786,6 +798,7 @@ export class PostgresStore implements GatewayStore {
       });
       pools.set(alias, pool);
     }
+    for (const pool of pools.values()) pool.routes.sort(comparePoolRoutesByLastRequest);
     return [...pools.values()].sort((a, b) => {
       const latestDifference = (latestRequestByAlias.get(b.alias) ?? 0) - (latestRequestByAlias.get(a.alias) ?? 0);
       return latestDifference || a.alias.localeCompare(b.alias, "zh-CN");
@@ -1075,6 +1088,14 @@ function averageHealthLatency(points: Array<{ requests: number; averageLatencyMs
   return Math.round(weightedLatency / requests);
 }
 
+function comparePoolRoutesByLastRequest(a: PoolSummary["routes"][number], b: PoolSummary["routes"][number]): number {
+  const lastRequestDifference = (Date.parse(b.lastRequestedAt ?? "") || 0) - (Date.parse(a.lastRequestedAt ?? "") || 0);
+  if (lastRequestDifference !== 0) return lastRequestDifference;
+  if (a.priority !== b.priority) return b.priority - a.priority;
+  if (a.weight !== b.weight) return b.weight - a.weight;
+  return a.channelName.localeCompare(b.channelName, "zh-CN");
+}
+
 function mapChannel(row: QueryResultRow): Channel {
   return {
     id: String(row.id),
@@ -1094,6 +1115,7 @@ function mapChannel(row: QueryResultRow): Channel {
     minBalance: row.min_balance === null ? null : Number(row.min_balance),
     balance: row.current_balance === null ? null : Number(row.current_balance),
     balanceCurrency: row.balance_currency === null ? null : String(row.balance_currency),
+    balanceUpdatedAt: row.balance_updated_at ? new Date(row.balance_updated_at).toISOString() : null,
     balanceStatus: row.balance_status,
     consecutiveFailures: Number(row.consecutive_failures),
     cooldownUntil: row.cooldown_until ? new Date(row.cooldown_until).toISOString() : null,

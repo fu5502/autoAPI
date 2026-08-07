@@ -903,4 +903,72 @@ describe("admin channel management", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("refreshes ordinary channel balances without running model probes", async () => {
+    const upstream = await startMockUpstream((app) => {
+      app.get("/api/user/self", async () => ({ balance: 0, currency: "USD" }));
+    });
+    resources.push(upstream.app);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-balance-refresh-test",
+      GATEWAY_API_KEY: "gateway-balance-refresh-test",
+      CREDENTIAL_ENCRYPTION_KEY: "balance-refresh-encryption-test",
+    });
+    const store = new MemoryStore();
+    const secrets = createSecretBox(config.credentialEncryptionKey);
+    const channel = await addHealthyChannel(store, secrets, { name: "Balance relay", baseUrl: upstream.baseUrl, balance: 12 });
+    const app = await buildApp({ config, store, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(app.app);
+
+    const response = await app.app.inject({
+      method: "POST",
+      url: "/admin/channels/balances/refresh",
+      headers: { authorization: "Bearer admin-balance-refresh-test" },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ summary: { total: 1, refreshed: 1, unknown: 0, failed: 0 } });
+    expect(await store.getChannel(channel.id)).toMatchObject({ balance: 0, balanceCurrency: "USD", balanceStatus: "exhausted" });
+  });
+
+  it("does not request balances for disabled channels", async () => {
+    let requests = 0;
+    const upstream = await startMockUpstream((app) => {
+      app.get("/api/user/self", async () => {
+        requests += 1;
+        return { balance: 4, currency: "USD" };
+      });
+    });
+    resources.push(upstream.app);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-disabled-balance-test",
+      GATEWAY_API_KEY: "gateway-disabled-balance-test",
+      CREDENTIAL_ENCRYPTION_KEY: "disabled-balance-encryption-test",
+    });
+    const store = new MemoryStore();
+    const secrets = createSecretBox(config.credentialEncryptionKey);
+    const enabledChannel = await addHealthyChannel(store, secrets, { name: "Enabled relay", baseUrl: upstream.baseUrl, balance: 12 });
+    const disabledChannel = await addHealthyChannel(store, secrets, { name: "Disabled relay", baseUrl: upstream.baseUrl, balance: 12 });
+    await store.setChannelEnabled(disabledChannel.id, false);
+    const app = await buildApp({ config, store, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(app.app);
+
+    const response = await app.app.inject({
+      method: "POST",
+      url: "/admin/channels/balances/refresh",
+      headers: { authorization: "Bearer admin-disabled-balance-test" },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ summary: { total: 1, refreshed: 1, unknown: 0, failed: 0 } });
+    expect(requests).toBe(1);
+    expect(await store.getChannel(enabledChannel.id)).toMatchObject({ balance: 4 });
+    expect(await store.getChannel(disabledChannel.id)).toMatchObject({ balance: 12, enabled: false, status: "disabled" });
+  });
 });

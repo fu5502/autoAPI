@@ -1,6 +1,6 @@
 import { Fragment, lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Copy, GitBranch, KeyRound, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun } from "lucide-react";
+import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Clock3, Coins, Copy, GitBranch, Gauge, KeyRound, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun, WalletCards, type LucideIcon } from "lucide-react";
 import { ApiError, api, clearAdminSession, getAdminToken, hasAdminSession } from "./api";
 import { ChannelTable } from "./components/ChannelTable";
 import { ChannelEditor } from "./components/ChannelEditor";
@@ -93,6 +93,18 @@ export default function App() {
     onError: (error) => {
       setActionNotice(null);
       setActionError(error instanceof Error ? error.message : "签到站余额同步失败，请重试。");
+    },
+  });
+  const refreshBalances = useMutation({
+    mutationFn: api.refreshChannelBalances,
+    onSuccess: async (result) => {
+      setActionError(null);
+      setActionNotice(`余额刷新完成：成功 ${result.summary.refreshed} 个，未知 ${result.summary.unknown} 个，失败 ${result.summary.failed} 个`);
+      await refreshAll(queryClient);
+    },
+    onError: (error) => {
+      setActionNotice(null);
+      setActionError(error instanceof Error ? error.message : "批量刷新余额失败，请重试");
     },
   });
   const removeChannel = useMutation({
@@ -228,8 +240,8 @@ export default function App() {
         {view !== "checkin" && failed && !authError ? <ErrorState error={failed} onRetry={refreshed} /> : null}
         {view !== "checkin" && !loading && !failed && status.data && channels.data && pools.data && usage.data ? (
           <>
-            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} onSyncBalance={syncBalance.mutate} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} /> : null}
-            {view === "channels" ? <ChannelsView channels={channels.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} onSyncBalance={syncBalance.mutate} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} onAddChannel={() => setProviderOpen(true)} /> : null}
+            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} /> : null}
+            {view === "channels" ? <ChannelsView channels={channels.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} onRefreshBalances={() => refreshBalances.mutate()} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} onAddChannel={() => setProviderOpen(true)} /> : null}
             {view === "pools" ? <PoolsView pools={pools.data} onAddRoute={() => setAliasOpen(true)} /> : null}
             {view === "usage" ? <UsageView usage={usage.data} window={usageWindow} onWindowChange={setUsageWindow} /> : null}
             {view === "requests" ? <RequestsView page={requests.data} filters={requestFilters} refreshInterval={requestRefreshInterval} onRefreshIntervalChange={setRequestRefreshInterval} onFilterChange={(next) => setRequestFilters({ ...next, offset: 0 })} onRefresh={() => void requests.refetch()} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} /> : null}
@@ -293,6 +305,7 @@ function Overview({
   pools,
   usage,
   syncingBalanceId,
+  balanceRefreshPending,
   onSyncBalance,
   probingId,
   onProbe,
@@ -308,6 +321,7 @@ function Overview({
   pools: Pool[];
   usage: Usage;
   syncingBalanceId: number | null;
+  balanceRefreshPending: boolean;
   onSyncBalance: (siteId: number) => void;
   probingId: string | null;
   onProbe: (id: string) => void;
@@ -386,7 +400,7 @@ function Overview({
       </section>
       <section className="surface">
         <SectionHead title="渠道运行情况" meta={`${channels.filter((channel) => channel.status === "isolated").length} 个已隔离`} />
-        <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
+        <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
       </section>
     </div>
   );
@@ -451,18 +465,18 @@ function PoolHealthLegend() {
   );
 }
 
-function ChannelsView({ channels, syncingBalanceId, onSyncBalance, probingId, onProbe, onEdit, onDelete, onToggle, togglingId, deletingId, onReorder, onAddChannel }: { channels: Channel[]; syncingBalanceId: number | null; onSyncBalance: (siteId: number) => void; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel) => void; togglingId: string | null; deletingId: string | null; onReorder: (channelIds: string[]) => Promise<void>; onAddChannel: () => void }) {
+function ChannelsView({ channels, syncingBalanceId, balanceRefreshPending, onSyncBalance, onRefreshBalances, probingId, onProbe, onEdit, onDelete, onToggle, togglingId, deletingId, onReorder, onAddChannel }: { channels: Channel[]; syncingBalanceId: number | null; balanceRefreshPending: boolean; onSyncBalance: (siteId: number) => void; onRefreshBalances: () => void; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel) => void; togglingId: string | null; deletingId: string | null; onReorder: (channelIds: string[]) => Promise<void>; onAddChannel: () => void }) {
   return (
     <div className="view-stack">
       <section className="channel-summary">
         <div><span>已知余额</span><strong>{formatKnownBalance(channels)}</strong></div>
         <div><span>余额未知</span><strong>{channels.filter((item) => item.balance === null).length}</strong></div>
         <div><span>冷却中</span><strong>{channels.filter((item) => item.cooldownUntil).length}</strong></div>
-        <div><span>可用权重</span><strong>{channels.filter((item) => item.status === "healthy").reduce((sum, item) => sum + item.weight, 0)}</strong></div>
+        <div><span>近 15 分钟请求</span><strong>{channels.reduce((sum, item) => sum + item.recentRequestCount, 0).toLocaleString("zh-CN")}</strong></div>
       </section>
       <section className="surface">
-        <SectionHead title="全部渠道" meta="实时健康状态与余额" action={<button className="button primary" onClick={onAddChannel}><CirclePlus size={15} /> 添加渠道</button>} />
-        <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
+        <SectionHead title="全部渠道" meta="实时健康状态与余额" action={<div className="section-head-actions"><button className="button secondary" onClick={onRefreshBalances} disabled={balanceRefreshPending}><WalletCards size={15} className={balanceRefreshPending ? "spin" : ""} /> {balanceRefreshPending ? "刷新中" : "批量刷新余额"}</button><button className="button primary" onClick={onAddChannel}><CirclePlus size={15} /> 添加渠道</button></div>} />
+        <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
       </section>
       <section className="surface detail-list">
         <SectionHead title="隔离详情" meta="自动熔断状态" />
@@ -509,7 +523,8 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
             <tbody>
               {pools.length === 0 ? <tr><td className="empty-table-cell" colSpan={6}>暂无模型池。添加渠道并选择模型后，模型会进入池。</td></tr> : pools.map((pool) => {
                 const expanded = expandedAliases.has(pool.alias);
-                const hasMultipleChannels = pool.routes.length > 1;
+                const routes = sortPoolRoutesByLastRequest(pool.routes);
+                const hasMultipleChannels = routes.length > 1;
                 return (
                 <Fragment key={pool.alias}>
                   <tr className={`pool-table-row ${expanded ? "expanded" : ""}`.trim()}>
@@ -529,7 +544,7 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                       <div className="pool-route-cell">
                         <button className="pool-expand-button" type="button" onClick={() => toggleExpanded(pool.alias)} aria-expanded={expanded} disabled={!hasMultipleChannels}>
                           <span className="pool-expand-icon" aria-hidden="true">{hasMultipleChannels ? (expanded ? "−" : "+") : "·"}</span>
-                          <span>{hasMultipleChannels ? (expanded ? `收起 ${pool.routes.length} 个渠道` : `${pool.routes.length} 个渠道`) : "1 个渠道"}</span>
+                          <span>{hasMultipleChannels ? (expanded ? `收起 ${routes.length} 个渠道` : `${routes.length} 个渠道`) : "1 个渠道"}</span>
                         </button>
                       </div>
                     </td>
@@ -537,7 +552,7 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                   {expanded ? <tr className="pool-route-detail-row">
                     <td className="pool-route-detail-cell" colSpan={6}>
                       <div className="pool-route-list">
-                        {pool.routes.map((route) => (
+                        {routes.map((route) => (
                           <div className="pool-route-item" key={`${route.channelId}-${route.upstreamModel}`}>
                             <div className="pool-route-main">
                               <span className="pool-route-meta pool-route-conversation" title="最近 1 小时真实请求的平均响应耗时">
@@ -588,6 +603,16 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
 
 function PoolRouteSiteIcon({ route }: { route: Pool["routes"][number] }) {
   return <ChannelSiteIcon channelId={route.channelId} channelName={route.channelName} className="pool-route-site-icon" />;
+}
+
+function sortPoolRoutesByLastRequest(routes: Pool["routes"]): Pool["routes"] {
+  return [...routes].sort((a, b) => {
+    const lastRequestDifference = (Date.parse(b.lastRequestedAt ?? "") || 0) - (Date.parse(a.lastRequestedAt ?? "") || 0);
+    if (lastRequestDifference !== 0) return lastRequestDifference;
+    if (a.priority !== b.priority) return b.priority - a.priority;
+    if (a.weight !== b.weight) return b.weight - a.weight;
+    return a.channelName.localeCompare(b.channelName, "zh-CN");
+  });
 }
 
 function ChannelSiteIcon({ channelId, channelName, className }: { channelId: string | null; channelName: string; className: string }) {
@@ -644,7 +669,7 @@ function ChannelSiteIcon({ channelId, channelName, className }: { channelId: str
   );
 }
 
-function UsageView({ usage, window, onWindowChange }: { usage: Usage; window: Usage["window"]; onWindowChange: (window: Usage["window"]) => void }) {
+function UsageViewLegacy({ usage, window, onWindowChange }: { usage: Usage; window: Usage["window"]; onWindowChange: (window: Usage["window"]) => void }) {
   return (
     <div className="view-stack">
       <div className="usage-toolbar">
@@ -663,6 +688,110 @@ function UsageView({ usage, window, onWindowChange }: { usage: Usage; window: Us
       </div>
     </div>
   );
+}
+
+type UsageTab = "models" | "channels" | "clients";
+
+function UsageView({ usage, window, onWindowChange }: { usage: Usage; window: Usage["window"]; onWindowChange: (window: Usage["window"]) => void }) {
+  const [tab, setTab] = useState<UsageTab>("models");
+  const totalTokens = usage.promptTokens + usage.completionTokens;
+  const successRate = usage.totalRequests === 0 ? null : usage.successfulRequests / usage.totalRequests;
+  const rows = tab === "models" ? usage.byModel : tab === "channels" ? usage.byChannel : usage.byClient;
+  const tabLabels: Record<UsageTab, string> = { models: "模型统计", channels: "渠道统计", clients: "客户端统计" };
+  const periodLabel = getUsagePeriodLabel(window);
+
+  return (
+    <div className="view-stack usage-view">
+      <div className="usage-page-heading">
+        <div>
+          <h2>使用统计</h2>
+          <p>查看 AI 模型的 Token、请求和渠道使用情况</p>
+        </div>
+        <div className="usage-page-controls">
+          <div className="segmented usage-window-control" role="group" aria-label="统计时间范围">
+            {(["1h", "24h", "7d"] as const).map((value) => (
+              <button className={window === value ? "active" : ""} key={value} type="button" onClick={() => onWindowChange(value)}>
+                {value === "1h" ? "1 小时" : value === "24h" ? "今天" : "7 天"}
+              </button>
+            ))}
+          </div>
+          <span className="usage-period-label">{periodLabel}</span>
+        </div>
+      </div>
+
+      <section className="surface usage-summary-panel">
+        <div className="usage-primary-stat">
+          <span className="usage-stat-icon tone-blue"><Coins size={18} /></span>
+          <div>
+            <span>总 Token</span>
+            <strong>{formatTokens(totalTokens)}</strong>
+            <small>{totalTokens.toLocaleString("zh-CN")} tokens</small>
+          </div>
+        </div>
+        <div className="usage-stat-grid">
+          <UsageStat label="输入" value={formatTokens(usage.promptTokens)} detail="输入 Token" icon={Route} tone="blue" />
+          <UsageStat label="输出" value={formatTokens(usage.completionTokens)} detail="输出 Token" icon={Activity} tone="green" />
+          <UsageStat label="请求次数" value={usage.totalRequests.toLocaleString("zh-CN")} detail={`${usage.successfulRequests.toLocaleString("zh-CN")} 次成功`} icon={Gauge} tone="ink" />
+          <UsageStat label="健康百分比" value={successRate === null ? "—" : formatPercent(successRate, 1)} detail={`${usage.errorRate ? `${formatPercent(usage.errorRate, 1)} 错误` : "暂无错误"}`} icon={WalletCards} tone="green" />
+          <UsageStat label="平均耗时" value={formatDuration(usage.averageLatencyMs)} detail="端到端请求耗时" icon={Clock3} tone="amber" />
+        </div>
+      </section>
+
+      <section className="surface usage-trend-panel">
+        <div className="usage-panel-heading">
+          <div>
+            <h2>使用趋势</h2>
+            <p>按时间查看请求和失败变化</p>
+          </div>
+          <span>{usage.totalRequests.toLocaleString("zh-CN")} 次请求</span>
+        </div>
+        <div className="usage-chart-legend" aria-label="图表图例">
+          <span><i className="usage-legend-dot requests" />请求次数</span>
+          <span><i className="usage-legend-dot errors" />失败次数</span>
+        </div>
+        <Suspense fallback={<div className="chart-frame skeleton" />}><UsageChart usage={usage} /></Suspense>
+      </section>
+
+      <section className="surface usage-details-panel">
+        <div className="usage-tabs" role="tablist" aria-label="使用统计分类">
+          {(Object.keys(tabLabels) as UsageTab[]).map((value) => (
+            <button className={tab === value ? "active" : ""} key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>
+              {tabLabels[value]}
+            </button>
+          ))}
+        </div>
+        <div className="usage-details-toolbar">
+          <div><h2>{tabLabels[tab]}</h2><span>按请求次数排序</span></div>
+          <span>{rows.length} 个统计项</span>
+        </div>
+        <UsageDetailTable rows={rows} totalRequests={usage.totalRequests} />
+      </section>
+
+      {usage.byError.length > 0 ? (
+        <section className="usage-error-summary" aria-label="错误原因">
+          <strong>主要错误原因</strong>
+          {usage.byError.slice(0, 3).map((row) => <span key={row.name}><b>{row.name}</b>{row.requests} 次</span>)}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function UsageStat({ label, value, detail, icon: Icon, tone }: { label: string; value: string; detail: string; icon: LucideIcon; tone: "blue" | "green" | "ink" | "amber" }) {
+  return <div className="usage-stat"><span className={`usage-stat-icon tone-${tone}`}><Icon size={16} /></span><div><span>{label}</span><strong>{value}</strong><small>{detail}</small></div></div>;
+}
+
+function UsageDetailTable({ rows, totalRequests }: { rows: Usage["byModel"]; totalRequests: number }) {
+  if (rows.length === 0) return <div className="usage-empty"><Search size={20} /><strong>暂无统计数据</strong><span>有请求经过网关后，这里会显示真实使用情况。</span></div>;
+  return <div className="usage-detail-table-wrap"><table className="usage-detail-table"><thead><tr><th>名称</th><th>请求次数</th><th>健康百分比</th><th>错误</th><th>平均耗时</th><th>请求占比</th></tr></thead><tbody>{rows.map((row) => {
+    const health = row.requests === 0 ? null : (row.requests - row.errors) / row.requests;
+    const share = totalRequests === 0 ? null : row.requests / totalRequests;
+    return <tr key={row.name}><td data-label="名称"><strong title={row.name}>{row.name}</strong></td><td data-label="请求次数" className="usage-number">{row.requests.toLocaleString("zh-CN")}</td><td data-label="健康百分比" className={health === null ? "subtle" : health >= 0.95 ? "success-text" : health >= 0.8 ? "warning-text" : "danger-text"}>{health === null ? "—" : formatPercent(health, 1)}</td><td data-label="错误" className={row.errors ? "danger-text" : "subtle"}>{row.errors.toLocaleString("zh-CN")}</td><td data-label="平均耗时">{formatDuration(row.latencyMs)}</td><td data-label="请求占比" className="subtle">{share === null ? "—" : formatPercent(share, 1)}</td></tr>;
+  })}</tbody></table></div>;
+}
+
+function getUsagePeriodLabel(window: Usage["window"]) {
+  return window === "1h" ? "近 1 小时" : window === "24h" ? "近 24 小时" : "近 7 天";
 }
 
 type RequestFilters = { window: Usage["window"]; limit: number; offset: number; client: string; channel: string; model: string; sourceIp: string };

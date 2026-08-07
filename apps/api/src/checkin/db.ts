@@ -84,6 +84,7 @@ function mapSite(row: Row): Site {
     displayScale: Number(row.display_scale),
     lastBalanceRaw: nullableNumber(row.last_balance_raw),
     lastBalanceAmount: nullableNumber(row.last_balance_amount),
+    lastBalanceUpdatedAt: row.last_balance_updated_at === null || row.last_balance_updated_at === undefined ? null : String(row.last_balance_updated_at),
     lastCheckedAt: row.last_checked_at === null ? null : String(row.last_checked_at),
     lastStatus: String(row.last_status) as CheckinStatus,
     lastRewardAmount: nullableNumber(row.last_reward_amount),
@@ -173,6 +174,7 @@ export class AppDatabase {
         display_scale REAL NOT NULL DEFAULT 1,
         last_balance_raw REAL,
         last_balance_amount REAL,
+        last_balance_updated_at TEXT,
         last_checked_at TEXT,
         last_status TEXT NOT NULL DEFAULT 'never',
         last_reward_amount REAL,
@@ -324,11 +326,17 @@ export class AppDatabase {
       this.db.exec('UPDATE sites SET favicon_custom = 1 WHERE favicon_url IS NOT NULL')
     }
     this.addColumnIfMissing('sites', 'last_reward_at', 'TEXT')
+    this.addColumnIfMissing('sites', 'last_balance_updated_at', 'TEXT')
     this.addColumnIfMissing('site_models', 'enabled', 'INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))')
     this.db.exec(`
       UPDATE sites
       SET last_reward_at = last_checked_at
       WHERE last_reward_at IS NULL AND last_reward_amount IS NOT NULL
+    `)
+    this.db.exec(`
+      UPDATE sites
+      SET last_balance_updated_at = last_checked_at
+      WHERE last_balance_updated_at IS NULL AND last_balance_amount IS NOT NULL
     `)
   }
 
@@ -626,11 +634,11 @@ export class AppDatabase {
     username?: string | null
     legacyUserId?: number | null
     name?: string
-    currencySymbol?: string
-    quotaPerUnit?: number
-    displayScale?: number
-    lastBalanceRaw?: number | null
-    lastBalanceAmount?: number | null
+        currencySymbol?: string
+        quotaPerUnit?: number
+        displayScale?: number
+        lastBalanceRaw?: number | null
+        lastBalanceAmount?: number | null
     lastError?: string | null
   }): Site | null {
     const site = this.getSite(id)
@@ -638,11 +646,15 @@ export class AppDatabase {
     const baseUrl = input.baseUrl ?? site.baseUrl
     const faviconUrl = baseUrl === site.baseUrl ? site.faviconUrl : null
     const faviconCustom = baseUrl === site.baseUrl ? site.faviconCustom : false
+    const balanceUpdatedAt = (input.lastBalanceRaw !== undefined && input.lastBalanceRaw !== null)
+      || (input.lastBalanceAmount !== undefined && input.lastBalanceAmount !== null)
+      ? nowIso()
+      : site.lastBalanceUpdatedAt ?? null
     this.db.prepare(`
       UPDATE sites SET
         adapter = ?, auth_status = ?, base_url = ?, username = ?, legacy_user_id = ?, name = ?,
         currency_symbol = ?, quota_per_unit = ?, display_scale = ?, favicon_url = ?, favicon_custom = ?,
-        last_balance_raw = ?, last_balance_amount = ?, last_error = ?, updated_at = ?
+        last_balance_raw = ?, last_balance_amount = ?, last_balance_updated_at = ?, last_error = ?, updated_at = ?
       WHERE id = ?
     `).run(
       input.adapter,
@@ -656,8 +668,9 @@ export class AppDatabase {
       input.displayScale ?? site.displayScale,
       faviconUrl,
       Number(faviconCustom),
-      input.lastBalanceRaw ?? site.lastBalanceRaw,
-      input.lastBalanceAmount ?? site.lastBalanceAmount,
+      input.lastBalanceRaw !== undefined ? input.lastBalanceRaw : site.lastBalanceRaw,
+      input.lastBalanceAmount !== undefined ? input.lastBalanceAmount : site.lastBalanceAmount,
+      balanceUpdatedAt,
       input.lastError ?? null,
       nowIso(),
       id,
@@ -698,6 +711,7 @@ export class AppDatabase {
       UPDATE sites SET
         last_balance_raw = COALESCE(?, last_balance_raw),
         last_balance_amount = COALESCE(?, last_balance_amount),
+        last_balance_updated_at = CASE WHEN ? IS NOT NULL OR ? IS NOT NULL THEN ? ELSE last_balance_updated_at END,
         last_checked_at = ?, last_status = ?,
         last_reward_amount = COALESCE(?, last_reward_amount),
         last_reward_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_reward_at END,
@@ -707,6 +721,9 @@ export class AppDatabase {
     `).run(
       result.balanceAfterRaw,
       result.balanceAfterAmount,
+      result.balanceAfterRaw,
+      result.balanceAfterAmount,
+      result.balanceAfterRaw !== null || result.balanceAfterAmount !== null ? result.completedAt : null,
       result.completedAt,
       result.status,
       result.rewardAmount,

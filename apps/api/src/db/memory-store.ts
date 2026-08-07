@@ -59,6 +59,7 @@ export class MemoryStore implements GatewayStore {
       minBalance: input.minBalance ?? null,
       balance: null,
       balanceCurrency: null,
+      balanceUpdatedAt: null,
       balanceStatus: "unknown",
       consecutiveFailures: 0,
       cooldownUntil: null,
@@ -109,7 +110,10 @@ export class MemoryStore implements GatewayStore {
     channel.priority = input.priority;
     channel.weight = input.weight;
     channel.minBalance = input.minBalance;
-    if (input.balance !== undefined) channel.balance = input.balance;
+    if (input.balance !== undefined) {
+      channel.balance = input.balance;
+      channel.balanceUpdatedAt = new Date().toISOString();
+    }
     if (input.balanceCurrency !== undefined) channel.balanceCurrency = input.balanceCurrency;
     channel.balanceStatus = getBalanceStatus(channel.balance, channel.minBalance);
     channel.models = input.models;
@@ -137,6 +141,7 @@ export class MemoryStore implements GatewayStore {
     if (!channel) return null;
     channel.balance = balance;
     channel.balanceCurrency = balanceCurrency;
+    channel.balanceUpdatedAt = new Date().toISOString();
     channel.balanceStatus = getBalanceStatus(balance, channel.minBalance);
     return channel;
   }
@@ -195,6 +200,7 @@ export class MemoryStore implements GatewayStore {
     if (result.balance !== null) {
       channel.balance = result.balance;
       channel.balanceCurrency = result.balanceCurrency;
+      channel.balanceUpdatedAt = channel.lastCheckedAt;
       channel.balanceStatus = result.balanceStatus;
     }
     return channel;
@@ -329,6 +335,10 @@ export class MemoryStore implements GatewayStore {
       const channel = this.channels.get(route.channelId);
       if (!channel) continue;
       const routeEvents = this.usage.filter((event) => event.modelAlias === route.alias && event.channelId === channel.id);
+      const lastRequestedAt = routeEvents.reduce<string | null>((latest, event) => {
+        if (!latest || Date.parse(event.createdAt) > Date.parse(latest)) return event.createdAt;
+        return latest;
+      }, null);
       const routeEvents1h = routeEvents.filter((event) => isHealthRelevantEvent(event) && Date.parse(event.createdAt) >= Date.now() - 3_600_000);
       const routeHealth = buildPoolHealth(routeEvents);
       const health = buildPoolHealth(this.usage.filter((event) => event.modelAlias === route.alias));
@@ -355,6 +365,7 @@ export class MemoryStore implements GatewayStore {
         status: channel.status,
         priority: channel.priority,
         weight: channel.weight,
+        lastRequestedAt,
         conversationLatencyMs: routeEvents1h.length ? average(routeEvents1h.map((event) => event.latencyMs)) : null,
         endpointPingMs: channel.lastLatencyMs,
         health1h: routeHealth.health1h,
@@ -365,6 +376,7 @@ export class MemoryStore implements GatewayStore {
       });
       grouped.set(route.alias, pool);
     }
+    for (const pool of grouped.values()) pool.routes.sort(comparePoolRoutesByLastRequest);
     return [...grouped.values()].sort((a, b) => {
       const latestDifference = (latestRequestByAlias.get(b.alias) ?? 0) - (latestRequestByAlias.get(a.alias) ?? 0);
       return latestDifference || a.alias.localeCompare(b.alias, "zh-CN");
@@ -596,7 +608,11 @@ export class PersistentMemoryStore extends MemoryStore {
         throw new Error("Unsupported autoAPI local state format");
       }
       for (const channel of state.channels) {
-        if (channel && typeof channel.id === "string") this.channels.set(channel.id, { ...channel, faviconUrl: channel.faviconUrl ?? null });
+        if (channel && typeof channel.id === "string") this.channels.set(channel.id, {
+          ...channel,
+          faviconUrl: channel.faviconUrl ?? null,
+          balanceUpdatedAt: channel.balanceUpdatedAt ?? (channel.balance !== null ? channel.lastCheckedAt : null),
+        });
       }
       this.routes.push(...state.routes.filter((route) => route && typeof route.id === "string"));
       this.usage.push(...state.usage.filter((event) => event && typeof event.createdAt === "string"));
@@ -715,6 +731,14 @@ function channelAvailabilityRank(channel: Channel): number {
 
 function channelHealthPercent(channel: Channel): number {
   return 1 - Math.min(1, Math.max(0, Number.isFinite(channel.recentErrorRate) ? channel.recentErrorRate : 1));
+}
+
+function comparePoolRoutesByLastRequest(a: PoolSummary["routes"][number], b: PoolSummary["routes"][number]): number {
+  const lastRequestDifference = (Date.parse(b.lastRequestedAt ?? "") || 0) - (Date.parse(a.lastRequestedAt ?? "") || 0);
+  if (lastRequestDifference !== 0) return lastRequestDifference;
+  if (a.priority !== b.priority) return b.priority - a.priority;
+  if (a.weight !== b.weight) return b.weight - a.weight;
+  return a.channelName.localeCompare(b.channelName, "zh-CN");
 }
 
 function sum(values: number[]): number {

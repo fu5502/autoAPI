@@ -577,6 +577,7 @@ function SitesView({ state, onRun, onAuthorize, onImport, importedSiteIds, onSel
   const [filter, setFilter] = useState<'all' | 'valid' | 'attention' | 'disabled'>('all')
   const [editingSite, setEditingSite] = useState<Site | null>(null)
   const [importingSiteId, setImportingSiteId] = useState<number | null>(null)
+  const [refreshingBalanceSiteId, setRefreshingBalanceSiteId] = useState<number | null>(null)
   const sites = useMemo(() => state.sites.filter((site) => {
     const searchMatch = `${site.name} ${site.baseUrl} ${site.note}`.toLowerCase().includes(query.toLowerCase())
     const filterMatch = filter === 'all' || (filter === 'valid' && site.authStatus === 'valid') || (filter === 'attention' && (['expired', 'manual_required', 'unknown'].includes(site.authStatus) || ['failed', 'manual_required'].includes(site.lastStatus))) || (filter === 'disabled' && !site.enabled)
@@ -616,6 +617,20 @@ function SitesView({ state, onRun, onAuthorize, onImport, importedSiteIds, onSel
     }
   }
 
+  const refreshBalance = async (site: Site) => {
+    if (refreshingBalanceSiteId !== null) return
+    setRefreshingBalanceSiteId(site.id)
+    try {
+      const result = await api.syncChannelBalance(site.id)
+      await onRefresh()
+      notify(result.refreshed ? '余额已刷新' : '余额未刷新', result.result?.message ?? `${site.name} 暂未读取到最新余额`, result.refreshed ? 'success' : 'warning')
+    } catch (cause) {
+      notify('余额刷新失败', cause instanceof Error ? cause.message : '未知错误', 'danger')
+    } finally {
+      setRefreshingBalanceSiteId(null)
+    }
+  }
+
   return <>
     <section className="section-block site-management-section">
       <div className="section-heading"><div><h2>站点管理</h2><p>所有站点每分钟刷新；自动签到关闭后仍可手动操作</p></div><span>{state.summary.enabledSites} / {state.summary.totalSites} 个已启用</span></div>
@@ -626,11 +641,11 @@ function SitesView({ state, onRun, onAuthorize, onImport, importedSiteIds, onSel
       </div>
       <div className="table-wrap"><table className="data-table management-table"><thead><tr><th>站点</th><th>适配器</th><th>登录</th><th>签到</th><th>签到金额</th><th>当前余额</th><th>加入渠道</th><th>自动签到</th><th>操作</th></tr></thead><tbody>{sites.map((site) => <tr key={site.id}>
         <td><button className="site-cell" onClick={() => onSelect(site)}><SiteAvatar site={site} /><span><strong>{site.name}</strong><small>{site.baseUrl}</small>{site.note ? <small className="site-note" title={site.note}>备注：{site.note}</small> : null}</span></button></td>
-        <td><span className="adapter-label">{site.adapter === 'new-api-modern' ? 'New API 新版' : site.adapter === 'new-api-legacy' ? 'New API 旧版' : site.adapter === 'local-api' ? 'LocalAPI' : site.adapter === 'sub2api' ? 'Sub2API' : site.adapter === 'fengwind-welfare' ? 'Fengwind 福利站' : site.adapter === 'hybgzs-welfare' ? '黑与白福利站' : site.adapter === 'chy-traffic' ? 'CHY 流量签到' : '待检测'}</span></td>
+        <td><span className="adapter-label">{siteAdapterLabel(site)}</span></td>
         <td><div className="site-auth-cell"><StatusBadge tone={statusTone(site.authStatus)}>{authLabel(site.authStatus)}</StatusBadge>{site.authSyncStatus === 'success' && site.authSyncedAt ? <small className="auth-sync-meta">已同步 {formatDateTime(site.authSyncedAt)}</small> : site.authSyncStatus === 'failed' ? <small className="auth-sync-meta danger-text" title={site.authSyncMessage ?? undefined}>同步失败</small> : null}</div></td>
         <td><StatusBadge tone={statusTone(site.lastStatus)}>{checkinLabel(site.lastStatus)}</StatusBadge></td>
-        <td><div className="reward-cell"><strong className={rewardTimingTone(site.lastRewardAt)}>{formatAmount(site.lastRewardAmount, site.currencySymbol)}</strong><small>{rewardTimingLabel(site.lastRewardAt)}</small></div></td>
-        <td><span className={`balance-value ${site.lastBalanceAmount === null ? 'empty' : ''}`}>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></td>
+        <td><div className="reward-cell"><strong className={site.lastStatus === 'disabled' ? rewardTimingTone(site.lastBalanceUpdatedAt) : rewardTimingTone(site.lastRewardAt)}>{formatAmount(site.lastRewardAmount, site.currencySymbol)}</strong><small className={site.lastStatus === 'disabled' ? balanceRefreshTimingClass(site.lastBalanceUpdatedAt) : undefined}>{site.lastStatus === 'disabled' ? balanceRefreshTimingLabel(site.lastBalanceUpdatedAt) : hasFreshBalanceRefresh(site, state.recentResults) ? '余额已刷新' : rewardTimingLabel(site.lastRewardAt)}</small></div></td>
+        <td><div className="site-balance-cell"><button type="button" className={`site-balance-button balance-value ${site.lastBalanceAmount === null ? 'empty' : ''}`} title="点击刷新站点余额" disabled={refreshingBalanceSiteId !== null} onClick={(event) => { event.stopPropagation(); void refreshBalance(site) }}>{refreshingBalanceSiteId === site.id ? <RefreshCw size={13} className="spin" /> : null}<span>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></button><small className="balance-refresh-time">{formatBalanceRefreshTime(site.lastBalanceUpdatedAt)}</small></div></td>
         <td><StatusBadge tone={importedSiteIds.includes(site.id) ? 'success' : 'neutral'}>{importedSiteIds.includes(site.id) ? '是' : '否'}</StatusBadge></td>
         <td><div className="switch-control"><button className={`toggle ${site.enabled ? 'on' : ''}`} role="switch" aria-checked={site.enabled} aria-label={`${site.enabled ? '停用' : '启用'} ${site.name} 自动签到`} onClick={() => toggle(site)}><span /></button><small>{site.enabled ? '已启用' : '已禁用'}</small></div></td>
         <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton><IconButton title="立即签到" onClick={() => onRun([site.id])}><Play size={16} /></IconButton><IconButton title={importedSiteIds.includes(site.id) ? '重新导入渠道池' : site.authStatus !== 'valid' ? '点击后先授权，授权成功后继续接入渠道或关联余额' : supportsAutomaticChannelImport(site) ? '导入渠道池' : '关联已有渠道并同步余额'} disabled={importingSiteId === site.id} onClick={() => void prepareImport(site)}><ArrowDownToLine size={16} className={importingSiteId === site.id ? 'spin' : undefined} /></IconButton><IconButton title="删除" danger onClick={() => remove(site)}><Trash2 size={16} /></IconButton></div></td>
@@ -1197,7 +1212,7 @@ function SiteDrawer({ site, results, authEvents, onClose, onRun, onAuthorize }: 
     <aside className="drawer">
       <header><div><SiteAvatar site={site} large /><div><h2>{site.name}</h2><a href={site.baseUrl} target="_blank" rel="noreferrer">{site.baseUrl}<ExternalLink size={13} /></a></div></div><IconButton title="关闭" onClick={onClose}><X size={18} /></IconButton></header>
       <div className="drawer-actions"><button className="button primary" onClick={onRun}><Play size={16} />立即签到</button><button className="button secondary" onClick={onAuthorize}><KeyRound size={16} />重新授权</button></div>
-      <dl className="site-facts"><div><dt>适配器</dt><dd>{site.adapter === 'new-api-modern' ? 'New API 新版' : site.adapter === 'new-api-legacy' ? 'New API 旧版' : site.adapter === 'local-api' ? 'LocalAPI' : site.adapter === 'sub2api' ? 'Sub2API' : site.adapter === 'fengwind-welfare' ? 'Fengwind 福利站' : site.adapter === 'hybgzs-welfare' ? '黑与白福利站' : site.adapter === 'chy-traffic' ? 'CHY 流量签到' : '待检测'}</dd></div><div><dt>登录账号</dt><dd>{site.username || '--'}</dd></div><div><dt>当前余额</dt><dd>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</dd></div><div><dt>最近签到</dt><dd>{formatDateTime(site.lastCheckedAt)}</dd></div></dl>
+      <dl className="site-facts"><div><dt>适配器</dt><dd>{siteAdapterLabel(site)}</dd></div><div><dt>登录账号</dt><dd>{site.username || '--'}</dd></div><div><dt>当前余额</dt><dd>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</dd></div><div><dt>最近签到</dt><dd>{formatDateTime(site.lastCheckedAt)}</dd></div></dl>
       {site.note ? <div className="drawer-note"><h3>站点备注</h3><p>{site.note}</p></div> : null}
       <div className="drawer-section"><h3>最近授权同步</h3>{authEvents.length ? authEvents.slice(0, 5).map((event) => <div className="drawer-result" key={event.id}><StatusBadge tone={event.status === 'success' ? 'success' : event.status === 'failed' ? 'danger' : 'neutral'}>{event.status === 'success' ? '同步成功' : event.status === 'failed' ? '同步失败' : event.status === 'claimed' ? '已连接' : '处理中'}</StatusBadge><span>{event.message}{event.status === 'success' ? `（${event.cookieCount} Cookie / ${event.localStorageCount} 存储）` : ''}</span><time>{formatDateTime(event.completedAt ?? event.startedAt)}</time></div>) : <p className="empty-inline">暂无授权记录</p>}</div>
       <div className="drawer-section"><h3>最近记录</h3>{results.length ? results.slice(0,10).map((result) => <div className="drawer-result" key={result.id}><StatusBadge tone={statusTone(result.status)}>{checkinLabel(result.status)}</StatusBadge><span>{result.message}</span><time>{formatDateTime(result.completedAt)}</time></div>) : <p className="empty-inline">暂无记录</p>}</div>
@@ -1221,6 +1236,42 @@ function Modal({ title, description, onClose, closeDisabled = false, className =
 }
 
 function StatusBadge({ tone, children }: { tone: ReturnType<typeof statusTone>; children: ReactNode }) { return <span className={`status-badge ${tone}`}><span />{children}</span> }
+
+function siteAdapterLabel(site: Site): string {
+  if (site.lastBalanceAmount === null) return '待检测'
+  if (site.adapter === 'new-api-modern') return 'New API 新版'
+  if (site.adapter === 'new-api-legacy') return 'New API 旧版'
+  if (site.adapter === 'local-api') return 'LocalAPI'
+  if (site.adapter === 'sub2api') return 'Sub2API'
+  if (site.adapter === 'fengwind-welfare') return 'Fengwind 福利站'
+  if (site.adapter === 'hybgzs-welfare') return '黑与白福利站'
+  if (site.adapter === 'chy-traffic') return 'CHY 流量签到'
+  return '待检测'
+}
+
+function formatBalanceRefreshTime(value: string | null | undefined): string {
+  return value ? `刷新于 ${formatDateTime(value)}` : '尚未刷新'
+}
+
+function hasFreshBalanceRefresh(site: Site, results: CheckinResult[]): boolean {
+  const latest = results.find((result) => result.siteId === site.id)
+  return Boolean(
+    latest
+      && latest.status === 'disabled'
+      && latest.balanceAfterAmount !== null
+      && /余额已刷新|余额刷新成功|balance.*refresh/i.test(latest.message),
+  )
+}
+
+function balanceRefreshTimingLabel(value: string | null | undefined): string {
+  return value ? `余额刷新于 ${rewardTimingLabel(value)}` : '暂无余额刷新记录'
+}
+
+function balanceRefreshTimingClass(value: string | null | undefined): string {
+  const tone = rewardTimingTone(value)
+  return tone === 'today' ? 'balance-refresh-today' : tone === 'previous' ? 'balance-refresh-previous' : 'balance-refresh-unknown'
+}
+
 function SiteAvatar({ site, large = false }: { site: Site; large?: boolean }) {
   const iconUrl = `/admin/checkin/sites/${site.id}/favicon?v=${encodeURIComponent(site.updatedAt)}`
   const [iconSrc, setIconSrc] = useState<string | null>(null)

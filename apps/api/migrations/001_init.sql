@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS channels (
   min_balance numeric(18, 6),
   current_balance numeric(18, 6),
   balance_currency text,
+  balance_updated_at timestamptz,
   balance_status text NOT NULL DEFAULT 'unknown' CHECK (balance_status IN ('ok', 'low', 'exhausted', 'unknown', 'error')),
   consecutive_failures integer NOT NULL DEFAULT 0,
   cooldown_until timestamptz,
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS channels (
 );
 
 ALTER TABLE channels ADD COLUMN IF NOT EXISTS favicon_url text;
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS balance_updated_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS model_aliases (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

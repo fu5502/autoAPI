@@ -230,13 +230,13 @@ async function insertProvidersAndChannels(client: PoolClient, channels: Channel[
       `INSERT INTO channels
         (id, provider_id, credential_id, name, base_url, favicon_url, protocol, status, enabled,
          priority, weight, min_balance, current_balance, balance_currency, balance_status,
-         consecutive_failures, cooldown_until, isolation_reason, last_checked_at, last_latency_ms,
+         balance_updated_at, consecutive_failures, cooldown_until, isolation_reason, last_checked_at, last_latency_ms,
          available_models, tags, created_at, updated_at)
        VALUES
         ($1, $2, $3, $4, $5, $6, $7, $8, $9,
          $10, $11, $12, $13, $14, $15,
-         $16, $17, $18, $19, $20,
-         $21, $22, $23, $23)`,
+         $16, $17, $18, $19, $20, $21,
+         $22, $23, $24, $24)`,
       [
         channel.id,
         channel.providerId,
@@ -253,6 +253,7 @@ async function insertProvidersAndChannels(client: PoolClient, channels: Channel[
         channel.balance,
         channel.balanceCurrency,
         channel.balanceStatus,
+        channel.balanceUpdatedAt ?? channel.lastCheckedAt,
         channel.consecutiveFailures,
         channel.cooldownUntil,
         channel.isolationReason,

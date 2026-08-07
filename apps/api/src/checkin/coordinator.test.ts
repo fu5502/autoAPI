@@ -66,4 +66,21 @@ describe('CheckinCoordinator manual balance fallback', () => {
     expect(refreshBalanceSite).not.toHaveBeenCalled()
     expect(database.listResults({ siteId: site.id, limit: 1 })[0]).toMatchObject({ status: 'failed', message: '上游请求超时' })
   })
+
+  it('refreshes balance without invoking the check-in endpoint', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('Balance site', 'https://balance.example')
+    const checkinSite = vi.fn()
+    const refreshBalanceSite = vi.fn(async () => result(site.id, 1, 'disabled', 'balance refreshed', 42))
+    const newApi = { checkinSite, refreshBalanceSite } as unknown as NewApiService
+    const coordinator = new CheckinCoordinator(database, newApi, new EventBus(), new TelegramNotifier(database))
+
+    const run = await coordinator.refreshBalance([site.id])
+
+    expect(run.status).toBe('completed')
+    expect(checkinSite).not.toHaveBeenCalled()
+    expect(refreshBalanceSite).toHaveBeenCalledOnce()
+    expect(database.getSite(site.id)).toMatchObject({ lastBalanceAmount: 42, lastStatus: 'disabled' })
+  })
 })

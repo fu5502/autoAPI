@@ -173,11 +173,17 @@ export const api = {
   playgroundSessions: () => adminFetch<PlaygroundSession[]>("/playground/sessions?limit=50"),
   deletePlaygroundSession: (id: string) => adminFetch<void>(`/playground/sessions/${id}`, { method: "DELETE" }),
   probe: (channelId: string) => adminFetch<ProbeResponse>(`/channels/${channelId}/probe`, { method: "POST" }),
+  refreshChannelBalances: () => adminFetch<{
+    refreshedChannelIds: string[];
+    unknownChannelIds: string[];
+    failures: Array<{ channelId?: string; siteId?: number; name: string; message: string }>;
+    summary: { total: number; refreshed: number; unknown: number; failed: number };
+  }>("/channels/balances/refresh", { method: "POST", body: JSON.stringify({}) }),
   discoverChannelModels: (channelId: string, body: Record<string, unknown> = {}) => adminFetch<ModelDiscoveryResult>(`/channels/${channelId}/models`, {
     method: "POST",
     body: JSON.stringify(body),
   }),
-  syncCheckinSiteBalance: (siteId: number) => adminFetch<{ updatedChannelIds: string[]; skippedBecauseBalanceIsUnknown: boolean }>(`/checkin/sites/${siteId}/channel-balance/sync`, {
+  syncCheckinSiteBalance: (siteId: number) => adminFetch<{ updatedChannelIds: string[]; skippedBecauseBalanceIsUnknown: boolean; refreshed: boolean; result: { status: string; message: string; balance: number | null; currency: string | null } | null }>(`/checkin/sites/${siteId}/channel-balance/sync`, {
     method: "POST",
     body: JSON.stringify({}),
   }),

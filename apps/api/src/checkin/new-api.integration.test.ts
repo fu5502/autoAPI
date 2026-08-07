@@ -62,7 +62,7 @@ describe('NewApiService CHY authorization', () => {
 })
 
 describe('NewApiService disabled New API check-in', () => {
-  it('does not rotate the dashboard session when the site has disabled check-in', async () => {
+  it('reads the latest balance without rotating the dashboard session when check-in is disabled', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('ooioo.work', 'https://ooioo.work')
@@ -79,6 +79,14 @@ describe('NewApiService disabled New API check-in', () => {
             contentType: 'application/json',
             success: true,
             data: { checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 7, username: 'test-user', quota: 42 },
           }
         }
         if (input.pathname === '/api/user/auth/refresh') {
@@ -100,8 +108,362 @@ describe('NewApiService disabled New API check-in', () => {
 
     const result = await service.checkinSite(site, run.id)
 
-    expect(result).toMatchObject({ status: 'disabled', message: '签到功能未启用' })
-    expect(refreshedPaths).toEqual(['/api/status'])
+    expect(result).toMatchObject({ status: 'disabled', message: '签到功能未启用，余额已刷新', balanceAfterRaw: 42, loginVerified: true })
+    expect(refreshedPaths).toEqual(['/api/status', '/api/user/self'])
+  })
+
+  it('reuses the access token emitted by the page bootstrap without issuing another refresh', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('ooioo.work', 'https://ooioo.work')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 12 })
+    const requestedPaths: string[] = []
+    const responseHandlers: Array<(response: unknown) => void> = []
+    const page = {
+      goto: async () => {
+        for (const handler of [...responseHandlers]) {
+          handler({
+            url: () => 'https://ooioo.work/api/user/auth/refresh',
+            json: async () => ({
+              success: true,
+              data: {
+                access_token: 'page-bootstrap-access-token',
+                access_expires_at: Math.floor(Date.now() / 1000) + 60,
+              },
+            }),
+          })
+        }
+      },
+      on: (event: string, handler: (value: unknown) => void) => {
+        if (event === 'response') responseHandlers.push(handler)
+      },
+      off: (event: string, handler: (value: unknown) => void) => {
+        if (event !== 'response') return
+        const index = responseHandlers.indexOf(handler)
+        if (index >= 0) responseHandlers.splice(index, 1)
+      },
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) return { title: 'ooioo', text: '' }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self') {
+          expect(input.headers?.Authorization).toBe('Bearer page-bootstrap-access-token')
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 7, username: 'test-user', quota: 84 },
+          }
+        }
+        return { httpStatus: 500, contentType: 'application/json', success: false, message: 'refresh must not be called' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.checkinSite(site, run.id)
+
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 84, loginVerified: true })
+    expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
+  })
+})
+
+describe('NewApiService YiAPI balance', () => {
+  it('reads YiAPI profile balance with its dashboard access token', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('yiapi.ai', 'https://yiapi.ai')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 3.5 })
+    const authorizedSite = database.getSite(site.id)!
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          expect(String(callback)).toContain('auth_token')
+          return 'yiapi-dashboard-access-token'
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/v1/user/profile') {
+          expect(input.headers?.Authorization).toBe('Bearer yiapi-dashboard-access-token')
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 42, username: 'yi-user', balance: 12.75 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(authorizedSite, run.id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      balanceBeforeRaw: 3.5,
+      balanceAfterRaw: 12.75,
+      balanceAfterAmount: 12.75,
+      loginVerified: true,
+    })
+    expect(requestedPaths).toEqual(['/api/v1/user/profile'])
+  })
+})
+
+describe('NewApiService dashboard balance fallback', () => {
+  it('opens /dashboard before reading a legacy New API balance', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('New API dashboard', 'https://new-api-dashboard.example')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 1 })
+    const navigatedTo: string[] = []
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async (url: string) => {
+        navigatedTo.push(url)
+      },
+      evaluate: async (callback: unknown, input?: { pathname?: string }) => {
+        if (!input?.pathname) return { title: 'New API dashboard', text: '' }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 7, username: 'fastai-user', quota: 42 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
+
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 42, loginVerified: true })
+    expect(navigatedTo).toEqual(['https://new-api-dashboard.example', 'https://new-api-dashboard.example/dashboard'])
+    expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
+  })
+
+  it('reads the FastAI Token USD balance through its Sub2API auth profile', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('fastaitoken.com', 'https://www.fastaitoken.com')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 1 })
+    const requestedPaths: string[] = []
+    const navigatedTo: string[] = []
+    const page = {
+      goto: async (url: string) => {
+        navigatedTo.push(url)
+      },
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          const source = String(callback)
+          if (source.includes('auth_token')) return 'fastai-v1-access-token'
+          return { title: 'FastAI Token', text: '' }
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/v1/auth/me') {
+          expect(input.headers?.Authorization).toBe('Bearer fastai-v1-access-token')
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 7, username: 'fastai-user', balance: 42.75, quota: 21_375_000 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      balanceAfterRaw: 42.75,
+      balanceAfterAmount: 42.75,
+      loginVerified: true,
+    })
+    expect(requestedPaths).toEqual(['/api/v1/auth/me'])
+    expect(navigatedTo).toEqual(['https://www.fastaitoken.com', 'https://www.fastaitoken.com/dashboard'])
+    expect(database.getSite(site.id)).toMatchObject({
+      adapter: 'sub2api',
+      authStatus: 'valid',
+      lastBalanceRaw: 42.75,
+      lastBalanceAmount: 42.75,
+      currencySymbol: '$',
+      quotaPerUnit: 1,
+    })
+  })
+
+  it('continues from FastAI auth identity to user profile when auth/me has no balance', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('FastAI Token profile', 'https://www.fastaitoken.com')
+    database.updateSiteAuth(site.id, { adapter: 'sub2api', authStatus: 'valid', lastBalanceRaw: 1 })
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          const source = String(callback)
+          if (source.includes('auth_token')) return 'fastai-profile-access-token'
+          return { title: 'FastAI Token', text: '' }
+        }
+        requestedPaths.push(input.pathname)
+        expect(input.headers?.Authorization).toBe('Bearer fastai-profile-access-token')
+        if (input.pathname === '/api/v1/auth/me') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 7, username: 'fastai-user' },
+          }
+        }
+        if (input.pathname === '/api/v1/user/profile') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 7, username: 'fastai-user', balance: 7.69 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
+
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 7.69, balanceAfterAmount: 7.69, loginVerified: true })
+    expect(requestedPaths).toEqual(['/api/v1/auth/me', '/api/v1/user/profile'])
+  })
+})
+
+describe('NewApiService TrueSOTA balance', () => {
+  it('reads the dollar balance from the Sub2API-compatible auth endpoint', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('true-sota.com', 'https://true-sota.com')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 3.5 })
+    const authorizedSite = database.getSite(site.id)!
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string }) => {
+        if (!input?.pathname) {
+          expect(String(callback)).toContain('auth_token')
+          return 'true-sota-access-token'
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/v1/auth/me') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { user: { id: 19, username: 'sota-user', balance: 12.34 } },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(authorizedSite, run.id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      balanceBeforeRaw: 3.5,
+      balanceAfterRaw: 12.34,
+      balanceAfterAmount: 12.34,
+      loginVerified: true,
+    })
+    expect(requestedPaths).toEqual(['/api/v1/auth/me'])
+    expect(database.getSite(site.id)).toMatchObject({
+      adapter: 'sub2api',
+      authStatus: 'valid',
+      lastBalanceRaw: 12.34,
+      lastBalanceAmount: 12.34,
+    })
+  })
+
+  it('uses the TrueSOTA balance path even when the site was previously classified as Sub2API', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('true-sota.com', 'https://true-sota.com')
+    database.updateSiteAuth(site.id, { adapter: 'sub2api', authStatus: 'valid', lastBalanceRaw: 3.5 })
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string }) => {
+        if (!input?.pathname) {
+          const source = String(callback)
+          if (source.includes('document.title')) return { title: '', text: '' }
+          if (source.includes('auth_token')) return 'true-sota-access-token'
+          return null
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/v1/auth/me') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 19, username: 'sota-user', balance: 12.34 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.checkinSite(site, run.id)
+
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 12.34, loginVerified: true })
+    expect(requestedPaths).toEqual(['/api/v1/auth/me'])
   })
 })
 
