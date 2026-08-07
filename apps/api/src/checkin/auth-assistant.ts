@@ -84,6 +84,7 @@ interface Pairing extends AuthAssistantPairingInfo {
 
 interface AssistantUploadPayload {
   siteOrigin?: unknown
+  pageTitle?: unknown
   cookies?: unknown
   localStorage?: unknown
   sentAt?: unknown
@@ -219,6 +220,7 @@ export class AuthAssistantService {
       const site = this.db.getSite(pairing.siteId)
       if (!site) throw new Error('签到站点不存在')
       const snapshot = normalizeSnapshot(payload, site.baseUrl, pairing.domain)
+      const pageTitle = normalizePageTitle(payload.pageTitle)
       if (!snapshot.cookies.length && !Object.keys(snapshot.localStorageByHost).length) {
         throw new Error('当前页面没有读取到 Cookie 或 Local Storage，请先登录目标签到站点')
       }
@@ -230,6 +232,7 @@ export class AuthAssistantService {
       this.db.updateSiteAuth(pairing.siteId, {
         adapter: site.adapter,
         authStatus: 'valid',
+        ...(pageTitle ? { name: pageTitle } : {}),
         lastError: null,
       })
       pairing.status = 'received'
@@ -241,8 +244,8 @@ export class AuthAssistantService {
       this.events.emit({
         type: 'auth_changed',
         title: '本地授权同步成功',
-        message: `${site.name} 已接收 autoAPI 授权助手登录状态`,
-        data: { siteId: site.id, method: 'assistant', cookieCount: pairing.cookieCount, localStorageCount: pairing.localStorageCount },
+        message: `${pageTitle ?? site.name} 已接收 autoAPI 授权助手登录状态`,
+        data: { siteId: site.id, method: 'assistant', pageTitle: pageTitle ?? site.name, cookieCount: pairing.cookieCount, localStorageCount: pairing.localStorageCount },
       })
       const status = this.toStatus(pairing)
       this.clearPairSecrets(pairing)
@@ -416,6 +419,16 @@ function normalizeSnapshot(payload: AssistantUploadPayload, baseUrl: string, all
     if (Object.keys(items).length) localStorageByHost[originHost] = items
   }
   return { siteOrigin: expectedOrigin, cookies, localStorageByHost, updatedAt: nowIso() }
+}
+
+function normalizePageTitle(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80)
+  return normalized || null
 }
 
 function parseSiteOrigin(value: unknown): URL {

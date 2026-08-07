@@ -36,8 +36,8 @@ describe('CheckinCoordinator manual balance fallback', () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('Aixoras', 'https://aixoras.com')
-    const checkinSite = vi.fn(async () => result(site.id, 1, 'failed', 'Not Found'))
-    const refreshBalanceSite = vi.fn(async () => result(site.id, 1, 'disabled', '页面不支持签到，余额已刷新', 42))
+    const checkinSite = vi.fn(async (_site: unknown, runId: number) => result(site.id, runId, 'failed', 'Not Found'))
+    const refreshBalanceSite = vi.fn(async (_site: unknown, runId: number) => result(site.id, runId, 'disabled', '页面不支持签到，余额已刷新', 42))
     const newApi = { checkinSite, refreshBalanceSite } as unknown as NewApiService
     const coordinator = new CheckinCoordinator(database, newApi, new EventBus(), new TelegramNotifier(database))
 
@@ -50,6 +50,12 @@ describe('CheckinCoordinator manual balance fallback', () => {
       message: '页面不支持签到，余额已刷新',
       balanceAfterRaw: 42,
     })
+    expect(database.getSite(site.id)).toMatchObject({ checkinMode: 'balance_only' })
+
+    await coordinator.run('manual', [site.id])
+
+    expect(checkinSite).toHaveBeenCalledOnce()
+    expect(refreshBalanceSite).toHaveBeenCalledTimes(2)
   })
 
   it('does not perform a second browser run for ordinary upstream failures', async () => {
@@ -65,6 +71,23 @@ describe('CheckinCoordinator manual balance fallback', () => {
 
     expect(refreshBalanceSite).not.toHaveBeenCalled()
     expect(database.listResults({ siteId: site.id, limit: 1 })[0]).toMatchObject({ status: 'failed', message: '上游请求超时' })
+  })
+
+  it('does not refresh twice when the check-in adapter already returned a refreshed balance', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('YiAPI', 'https://yiapi.ai')
+    const checkinSite = vi.fn(async (_site: unknown, runId: number) => result(site.id, runId, 'disabled', 'YiAPI 未提供签到接口，余额已刷新', 42))
+    const refreshBalanceSite = vi.fn()
+    const newApi = { checkinSite, refreshBalanceSite } as unknown as NewApiService
+    const coordinator = new CheckinCoordinator(database, newApi, new EventBus(), new TelegramNotifier(database))
+
+    const run = await coordinator.run('manual', [site.id])
+
+    expect(run).toMatchObject({ status: 'completed', successCount: 1, skippedCount: 0 })
+    expect(checkinSite).toHaveBeenCalledOnce()
+    expect(refreshBalanceSite).not.toHaveBeenCalled()
+    expect(database.getSite(site.id)).toMatchObject({ checkinMode: 'balance_only', lastBalanceAmount: 42 })
   })
 
   it('refreshes balance without invoking the check-in endpoint', async () => {

@@ -5,6 +5,7 @@ import type {
   AuthStatus,
   AuthSyncMethod,
   AuthSyncStatus,
+  CheckinMode,
   CheckinResult,
   CheckinRun,
   CheckinStatus,
@@ -87,6 +88,7 @@ function mapSite(row: Row): Site {
     lastBalanceUpdatedAt: row.last_balance_updated_at === null || row.last_balance_updated_at === undefined ? null : String(row.last_balance_updated_at),
     lastCheckedAt: row.last_checked_at === null ? null : String(row.last_checked_at),
     lastStatus: String(row.last_status) as CheckinStatus,
+    checkinMode: (row.checkin_mode === 'balance_only' ? 'balance_only' : 'checkin') as CheckinMode,
     lastRewardAmount: nullableNumber(row.last_reward_amount),
     lastRewardAt: row.last_reward_at === null || row.last_reward_at === undefined ? null : String(row.last_reward_at),
     lastBalanceDeltaAmount: nullableNumber(row.last_balance_delta_amount),
@@ -177,6 +179,7 @@ export class AppDatabase {
         last_balance_updated_at TEXT,
         last_checked_at TEXT,
         last_status TEXT NOT NULL DEFAULT 'never',
+        checkin_mode TEXT NOT NULL DEFAULT 'checkin' CHECK (checkin_mode IN ('checkin', 'balance_only')),
         last_reward_amount REAL,
         last_reward_at TEXT,
         last_balance_delta_amount REAL,
@@ -327,6 +330,14 @@ export class AppDatabase {
     }
     this.addColumnIfMissing('sites', 'last_reward_at', 'TEXT')
     this.addColumnIfMissing('sites', 'last_balance_updated_at', 'TEXT')
+    const checkinModeAdded = this.addColumnIfMissing(
+      'sites',
+      'checkin_mode',
+      "TEXT NOT NULL DEFAULT 'checkin' CHECK (checkin_mode IN ('checkin', 'balance_only'))",
+    )
+    if (checkinModeAdded) {
+      this.db.exec("UPDATE sites SET checkin_mode = 'balance_only' WHERE last_status = 'disabled'")
+    }
     this.addColumnIfMissing('site_models', 'enabled', 'INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))')
     this.db.exec(`
       UPDATE sites
@@ -476,7 +487,8 @@ export class AppDatabase {
         : false
     this.db.prepare(`
       UPDATE sites
-      SET name = ?, base_url = ?, note = ?, favicon_url = ?, favicon_custom = ?, enabled = ?, updated_at = ?
+      SET name = ?, base_url = ?, note = ?, favicon_url = ?, favicon_custom = ?, enabled = ?,
+        checkin_mode = ?, updated_at = ?
       WHERE id = ?
     `).run(
       input.name ?? site.name,
@@ -485,6 +497,7 @@ export class AppDatabase {
       faviconUrl,
       Number(faviconCustom),
       input.enabled === undefined ? Number(site.enabled) : Number(input.enabled),
+      baseUrl === site.baseUrl ? site.checkinMode : 'checkin',
       nowIso(),
       id,
     )
@@ -683,6 +696,12 @@ export class AppDatabase {
     this.db.prepare(`UPDATE sites SET last_status = 'running', last_error = NULL, updated_at = ? WHERE id = ?`).run(nowIso(), id)
   }
 
+  updateSiteCheckinMode(id: number, mode: CheckinMode): Site | null {
+    if (!this.getSite(id)) return null
+    this.db.prepare('UPDATE sites SET checkin_mode = ?, updated_at = ? WHERE id = ?').run(mode, nowIso(), id)
+    return this.getSite(id)
+  }
+
   applyResult(siteId: number, result: Omit<CheckinResult, 'id' | 'siteName'>) {
     const site = this.getSite(siteId)
     if (!site) throw new Error('站点不存在')
@@ -842,7 +861,12 @@ export class AppDatabase {
     return {
       totalSites: sites.length,
       enabledSites: sites.filter((site) => site.enabled).length,
-      successToday: results.filter((result) => ['success', 'already_checked'].includes(result.status)).length,
+      successToday: results.filter((result) =>
+        ['success', 'already_checked'].includes(result.status)
+        || (result.status === 'disabled'
+          && result.balanceAfterAmount !== null
+          && /余额已刷新|余额刷新成功|balance.*refresh/i.test(result.message)),
+      ).length,
       failedToday: results.filter((result) => result.status === 'failed').length,
       manualRequiredToday: results.filter((result) => result.status === 'manual_required').length,
       rewardToday: results.reduce((sum, result) => sum + (result.rewardAmount ?? 0), 0),

@@ -73,4 +73,19 @@ describe('check-in site balance updates', () => {
 
     expect(database.getSite(site.id)).toMatchObject({ lastBalanceRaw: 0, lastBalanceAmount: 0 })
   })
+
+  it('keeps balance-only mode until the site Base URL changes', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('余额站点', 'https://balance.example')
+
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    expect(database.getSite(site.id)).toMatchObject({ checkinMode: 'balance_only' })
+
+    database.updateSite(site.id, { name: '余额站点新名称' })
+    expect(database.getSite(site.id)).toMatchObject({ checkinMode: 'balance_only' })
+
+    database.updateSite(site.id, { baseUrl: 'https://new-balance.example' })
+    expect(database.getSite(site.id)).toMatchObject({ checkinMode: 'checkin' })
+  })
 })

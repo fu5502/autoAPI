@@ -57,6 +57,7 @@ function makeSite(overrides: Partial<Site> = {}): Site {
     lastBalanceAmount: 3.5,
     lastCheckedAt: "2026-01-01T00:00:00.000Z",
     lastStatus: "success",
+    checkinMode: "checkin",
     lastRewardAmount: 0,
     lastRewardAt: null,
     lastBalanceDeltaAmount: 0,
