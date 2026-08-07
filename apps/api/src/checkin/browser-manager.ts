@@ -128,6 +128,9 @@ export class BrowserManager {
     }
 
     const debugPort = await findAvailablePort()
+    // Chrome leaves this file behind after an interrupted launch. It is not
+    // used by our CDP bookkeeping, so remove it before starting a new session.
+    await fs.rm(path.join(browserProfileDir, 'DevToolsActivePort'), { force: true }).catch(() => undefined)
     const chromeProcess = spawn(findChromeExecutable(), [
       `--remote-debugging-port=${debugPort}`,
       '--remote-debugging-address=127.0.0.1',
@@ -141,15 +144,20 @@ export class BrowserManager {
       'about:blank',
     ], {
       detached: false,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
+    })
+    let launchDiagnostics = ''
+    chromeProcess.stderr?.setEncoding('utf8')
+    chromeProcess.stderr?.on('data', (chunk) => {
+      launchDiagnostics = `${launchDiagnostics}${String(chunk)}`.slice(-2_000)
     })
     this.chromeProcess = chromeProcess
     this.chromeProcessId = chromeProcess.pid ?? null
     chromeProcess.unref()
 
     try {
-      const context = await this.waitForChrome(debugPort, chromeProcess)
+      const context = await this.waitForChrome(debugPort, chromeProcess, () => launchDiagnostics)
       await fs.writeFile(debugPortFile, JSON.stringify({ port: debugPort, pid: chromeProcess.pid ?? null }), 'utf8')
       return context
     } catch (error) {
@@ -160,16 +168,20 @@ export class BrowserManager {
     }
   }
 
-  private async waitForChrome(port: number, chromeProcess: ChildProcess): Promise<BrowserContext> {
+  private async waitForChrome(port: number, chromeProcess: ChildProcess, getDiagnostics: () => string): Promise<BrowserContext> {
     let launchError: Error | null = null
     chromeProcess.once('error', (error) => { launchError = error })
     const deadline = Date.now() + 15_000
     while (Date.now() < deadline) {
       if (launchError) throw launchError
-      if (chromeProcess.exitCode !== null) throw new Error('Chrome 启动后立即退出')
       try {
         return await this.connectToChrome(port, 500)
       } catch {
+        if (launchError) throw launchError
+        if (chromeProcess.exitCode !== null) {
+          const diagnostics = getDiagnostics().replace(/\s+/g, ' ').trim()
+          throw new Error(`Chrome 启动后立即退出${diagnostics ? `：${diagnostics}` : ''}`)
+        }
         await new Promise((resolve) => setTimeout(resolve, 100))
       }
     }

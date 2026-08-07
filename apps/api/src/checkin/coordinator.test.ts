@@ -1,0 +1,69 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CheckinCoordinator } from './coordinator.js'
+import { AppDatabase } from './db.js'
+import { EventBus } from './events.js'
+import { NewApiService } from './new-api.js'
+import { TelegramNotifier } from './telegram.js'
+
+const databases: AppDatabase[] = []
+
+afterEach(() => {
+  for (const database of databases.splice(0)) database.close()
+})
+
+function result(siteId: number, runId: number, status: 'failed' | 'disabled', message: string, afterRaw: number | null = null) {
+  return {
+    id: 0,
+    runId,
+    siteId,
+    siteName: 'Aixoras',
+    status,
+    rewardRaw: null,
+    rewardAmount: null,
+    balanceBeforeRaw: null,
+    balanceBeforeAmount: null,
+    balanceAfterRaw: afterRaw,
+    balanceAfterAmount: afterRaw,
+    balanceDeltaAmount: null,
+    message,
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+  } as const
+}
+
+describe('CheckinCoordinator manual balance fallback', () => {
+  it('refreshes balance when a manual check-in endpoint is missing', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('Aixoras', 'https://aixoras.com')
+    const checkinSite = vi.fn(async () => result(site.id, 1, 'failed', 'Not Found'))
+    const refreshBalanceSite = vi.fn(async () => result(site.id, 1, 'disabled', '页面不支持签到，余额已刷新', 42))
+    const newApi = { checkinSite, refreshBalanceSite } as unknown as NewApiService
+    const coordinator = new CheckinCoordinator(database, newApi, new EventBus(), new TelegramNotifier(database))
+
+    await coordinator.run('manual', [site.id])
+
+    expect(checkinSite).toHaveBeenCalledOnce()
+    expect(refreshBalanceSite).toHaveBeenCalledOnce()
+    expect(database.listResults({ siteId: site.id, limit: 1 })[0]).toMatchObject({
+      status: 'disabled',
+      message: '页面不支持签到，余额已刷新',
+      balanceAfterRaw: 42,
+    })
+  })
+
+  it('does not perform a second browser run for ordinary upstream failures', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('普通站点', 'https://example.com')
+    const checkinSite = vi.fn(async () => result(site.id, 1, 'failed', '上游请求超时'))
+    const refreshBalanceSite = vi.fn(async () => result(site.id, 1, 'disabled', '余额已刷新', 1))
+    const newApi = { checkinSite, refreshBalanceSite } as unknown as NewApiService
+    const coordinator = new CheckinCoordinator(database, newApi, new EventBus(), new TelegramNotifier(database))
+
+    await coordinator.run('manual', [site.id])
+
+    expect(refreshBalanceSite).not.toHaveBeenCalled()
+    expect(database.listResults({ siteId: site.id, limit: 1 })[0]).toMatchObject({ status: 'failed', message: '上游请求超时' })
+  })
+})

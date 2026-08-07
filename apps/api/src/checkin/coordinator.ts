@@ -41,10 +41,17 @@ export class CheckinCoordinator {
 
     try {
       for (const site of candidates) {
-        const balanceOnly = trigger !== 'manual' && !site.enabled
-        const result = balanceOnly
+      const balanceOnly = trigger !== 'manual' && !site.enabled
+        let result = balanceOnly
           ? await this.newApi.refreshBalanceSite(site, run.id)
           : await this.newApi.checkinSite(site, run.id)
+        // A manual click should still refresh the account balance when the
+        // site does not expose a usable check-in endpoint. This covers New
+        // API installations such as aixoras.com where /api/user/checkin is
+        // absent or check-in is disabled, without changing scheduled runs.
+        if (!balanceOnly && shouldRefreshBalanceAfterCheckin(result)) {
+          result = await this.newApi.refreshBalanceSite(site, run.id)
+        }
         const { id: _id, siteName: _siteName, ...storedResult } = result
         this.db.applyResult(site.id, storedResult)
         await this.balanceSync?.syncSite(site.id).catch((error) => {
@@ -115,4 +122,11 @@ function resultTitle(result: CheckinResult): string {
   if (result.status === 'manual_required') return '需要人工处理'
   if (result.status === 'disabled') return '站点未启用签到'
   return '签到失败'
+}
+
+function shouldRefreshBalanceAfterCheckin(result: CheckinResult): boolean {
+  if (result.status === 'disabled') return true
+  if (result.status !== 'failed') return false
+  return /^(?:not found|method not allowed|未找到|不存在)$/i.test(result.message.trim())
+    || /(?:签到|check[-_ ]?in).*(?:404|不存在|未启用|不支持|未开放|不可用)/i.test(result.message)
 }
