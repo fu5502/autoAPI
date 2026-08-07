@@ -569,7 +569,11 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
 }
 
 function PoolRouteSiteIcon({ route }: { route: Pool["routes"][number] }) {
-  const iconUrl = `/admin/channels/${encodeURIComponent(route.channelId)}/favicon`;
+  return <ChannelSiteIcon channelId={route.channelId} channelName={route.channelName} className="pool-route-site-icon" />;
+}
+
+function ChannelSiteIcon({ channelId, channelName, className }: { channelId: string | null; channelName: string; className: string }) {
+  const iconUrl = channelId ? `/admin/channels/${encodeURIComponent(channelId)}/favicon` : null;
   const [iconSrc, setIconSrc] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
 
@@ -578,7 +582,12 @@ function PoolRouteSiteIcon({ route }: { route: Pool["routes"][number] }) {
     let objectUrl: string | null = null;
     const controller = new AbortController();
     setIconSrc(null);
-    setUnavailable(false);
+    setUnavailable(!iconUrl);
+
+    if (!iconUrl) return () => {
+      active = false;
+      controller.abort();
+    };
 
     void fetch(iconUrl, {
       cache: "force-cache",
@@ -606,10 +615,12 @@ function PoolRouteSiteIcon({ route }: { route: Pool["routes"][number] }) {
     };
   }, [iconUrl]);
 
+  if (!channelId) return null;
+
   return (
-    <span className="pool-route-site-icon" title={`${route.channelName} 站点图标`} aria-hidden="true">
+    <span className={className} title={`${channelName} 站点图标`} aria-hidden="true">
       {unavailable || !iconSrc
-        ? <span>{route.channelName.slice(0, 1).toUpperCase()}</span>
+        ? <span>{channelName.slice(0, 1).toUpperCase()}</span>
         : <img src={iconSrc} alt="" loading="lazy" decoding="async" onError={() => { setIconSrc(null); setUnavailable(true); }} />}
     </span>
   );
@@ -703,11 +714,17 @@ function RequestRow({ item }: { item: RequestLogEntry }) {
   const success = item.statusCode < 400;
   const date = new Date(item.createdAt);
   const clientLabel = item.clientName === "unknown" ? "未知客户端" : item.clientName;
+  const channelLabel = item.channelName ?? item.providerName ?? "未路由";
   return <tr className={success ? "" : "request-row-error"}>
     <td data-label="时间" className="request-time">{formatRequestTime(date)}</td>
     <td data-label="客户端"><span className={`request-client request-client-${clientLabel.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`} title={clientLabel}>{clientLabel}</span></td>
     <td data-label="来源 IP" title={item.sourceIp ?? "—"}><span className="request-source-ip">{item.sourceIp ?? "—"}</span></td>
-    <td data-label="渠道" title={item.channelName ?? item.providerName ?? "未路由"}><span className="request-channel">{item.channelName ?? item.providerName ?? "未路由"}</span></td>
+    <td data-label="渠道" title={channelLabel}>
+      <span className="request-channel-with-icon">
+        <ChannelSiteIcon channelId={item.channelId} channelName={channelLabel} className="request-channel-icon" />
+        <span className="request-channel">{channelLabel}</span>
+      </span>
+    </td>
     <td data-label="密钥" title={item.gatewayKeyName ?? item.keyName ?? "未记录"}><span className="request-key-name">{item.gatewayKeyName ?? item.keyName ?? "未记录"}</span></td>
     <td data-label="流式"><span className={item.streamed ? "request-pill stream" : "request-pill non-stream"}>{item.streamed ? "流式" : "非流式"}</span></td>
     <td data-label="请求模型" title={item.modelAlias}><strong className="request-model-name">{item.modelAlias}</strong></td>

@@ -3601,7 +3601,40 @@ th:last-child {
 }
 
 .request-channel {
+  min-width: 0;
   max-width: 100%;
+}
+
+.request-channel-with-icon {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  gap: 5px;
+}
+
+.request-channel-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: #2d715d;
+  background: #f5f8f7;
+  border: 1px solid #d9e3df;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.request-channel-icon img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .request-key-name {
@@ -4031,6 +4064,12 @@ th:last-child {
 :root[data-theme="dark"] .request-model-name,
 :root[data-theme="dark"] .request-time {
   color: #c4d1cb !important;
+}
+
+:root[data-theme="dark"] .request-channel-icon {
+  color: #a8dcc8;
+  background: #23332d;
+  border-color: #3f5a50;
 }
 
 :root[data-theme="dark"] .pool-health-toolbar,
