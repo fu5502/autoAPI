@@ -38,6 +38,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       REDIS_URL: redis://redis:6379
       TZ: ${TZ:-Asia/Shanghai}
+      DISPLAY: ${DISPLAY:-:99}
+      XDG_RUNTIME_DIR: /tmp/autoapi-runtime
       AUTOAPI_CHECKIN_DATA_DIR: /data/checkin
       CHECKIN_ENABLE_NOVNC: ${CHECKIN_ENABLE_NOVNC:-false}
     depends_on:
