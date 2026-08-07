@@ -1,6 +1,9 @@
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { BrowserContext, Page } from 'playwright-core'
-import { BrowserManager, closeStartupBlankPages } from './browser-manager.js'
+import { BrowserManager, closeStartupBlankPages, removeStaleChromeLockFiles } from './browser-manager.js'
 
 describe('closeStartupBlankPages', () => {
   it('closes only browser startup pages and keeps existing site tabs', async () => {
@@ -88,5 +91,35 @@ describe('BrowserManager connection recovery', () => {
     expect(freshContext.newPage).toHaveBeenCalledTimes(1)
     expect(browser.close).toHaveBeenCalledTimes(1)
     expect(taskPage.close).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Chrome profile lock recovery', () => {
+  it('removes stale singleton locks when no Chromium process owns the profile', async () => {
+    const profileDir = await fs.mkdtemp(path.join(os.tmpdir(), 'autoapi-browser-profile-'))
+    try {
+      await Promise.all(['SingletonLock', 'SingletonCookie', 'SingletonSocket'].map((name) => fs.writeFile(path.join(profileDir, name), 'stale')))
+
+      await removeStaleChromeLockFiles(profileDir, false)
+
+      await expect(fs.access(path.join(profileDir, 'SingletonLock'))).rejects.toThrow()
+      await expect(fs.access(path.join(profileDir, 'SingletonCookie'))).rejects.toThrow()
+      await expect(fs.access(path.join(profileDir, 'SingletonSocket'))).rejects.toThrow()
+    } finally {
+      await fs.rm(profileDir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps singleton locks when a Chromium process still owns the profile', async () => {
+    const profileDir = await fs.mkdtemp(path.join(os.tmpdir(), 'autoapi-browser-profile-'))
+    try {
+      await fs.writeFile(path.join(profileDir, 'SingletonLock'), 'active')
+
+      await removeStaleChromeLockFiles(profileDir, true)
+
+      await expect(fs.access(path.join(profileDir, 'SingletonLock'))).resolves.toBeUndefined()
+    } finally {
+      await fs.rm(profileDir, { recursive: true, force: true })
+    }
   })
 })

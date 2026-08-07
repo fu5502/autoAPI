@@ -6,6 +6,22 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import { browserProfileDir, findChromeExecutable } from './config.js'
 
 const debugPortFile = path.join(browserProfileDir, 'DebugPort')
+const chromeSingletonLockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket']
+
+/** Remove Chromium's stale profile locks without touching a profile in use. */
+export async function removeStaleChromeLockFiles(profileDir: string, profileInUse: boolean): Promise<boolean> {
+  if (profileInUse) return false
+  let removed = false
+  await Promise.all(chromeSingletonLockFiles.map(async (name) => {
+    try {
+      await fs.rm(path.join(profileDir, name), { force: true })
+      removed = true
+    } catch {
+      // A lock can disappear between the process check and cleanup.
+    }
+  }))
+  return removed
+}
 
 export class BrowserManager {
   private queue: Promise<void> = Promise.resolve()
@@ -161,6 +177,9 @@ export class BrowserManager {
     // Chrome leaves this file behind after an interrupted launch. It is not
     // used by our CDP bookkeeping, so remove it before starting a new session.
     await fs.rm(path.join(browserProfileDir, 'DevToolsActivePort'), { force: true }).catch(() => undefined)
+    if (process.platform === 'linux') {
+      await removeStaleChromeLockFiles(browserProfileDir, await isChromeProfileInUse(browserProfileDir))
+    }
     const chromeProcess = spawn(findChromeExecutable(), [
       `--remote-debugging-port=${debugPort}`,
       '--remote-debugging-address=127.0.0.1',
@@ -240,6 +259,29 @@ export class BrowserManager {
     await closeStartupBlankPages(context)
     return context
   }
+}
+
+async function isChromeProfileInUse(profileDir: string): Promise<boolean> {
+  if (process.platform !== 'linux') return true
+  let entries: string[]
+  try {
+    entries = await fs.readdir('/proc')
+  } catch {
+    // Fail closed when process inspection is unavailable.
+    return true
+  }
+
+  const profileArgument = `--user-data-dir=${profileDir}`
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue
+    try {
+      const commandLine = await fs.readFile(path.join('/proc', entry, 'cmdline'), 'utf8')
+      if (commandLine.includes(profileArgument)) return true
+    } catch {
+      // Processes can exit while /proc is being scanned.
+    }
+  }
+  return false
 }
 
 /** Remove tabs opened by Chrome itself while preserving existing user tabs. */
