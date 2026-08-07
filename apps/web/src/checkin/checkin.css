@@ -87,6 +87,9 @@
 .checkin-module .management-table{ min-width: 1220px; }
 .checkin-module .management-table th:first-child, .checkin-module .management-table td:first-child{ width: 26%; }
 .checkin-module .management-table th:last-child, .checkin-module .management-table td:last-child{ width: 154px; }
+.checkin-module .site-auth-cell{ display:grid; gap:3px; justify-items:start; }
+.checkin-module .auth-sync-meta{ color:var(--subtle); font-size:9px; white-space:nowrap; }
+.checkin-module .danger-text{ color:var(--red); }
 .checkin-module .site-cell{ max-width: 100%; border: 0; background: transparent; padding: 0; display: flex; align-items: center; gap: 10px; text-align: left; cursor: pointer; }
 .checkin-module .site-cell.static{ cursor: default; }
 .checkin-module .site-cell > span:last-child{ min-width: 0; display: grid; gap: 3px; }
@@ -140,6 +143,7 @@
 .checkin-module .activity-icon.danger{ color: var(--red); background: var(--red-bg); }
 .checkin-module .activity-icon.neutral, .checkin-module .activity-icon.running{ color: var(--brand-strong); background: var(--violet-bg); }
 .checkin-module .activity-reward{ color: var(--green); font-size: 10px; font-weight: 650; }
+.checkin-module .activity-site-url{ display: block; margin-top: 2px; color: var(--subtle); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .checkin-module .toolbar{ min-height: 48px; display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
 .checkin-module .search-field{ width: min(320px, 45vw); height: 34px; border: 1px solid var(--border-strong); border-radius: 8px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted); background: white; }
@@ -1192,13 +1196,13 @@
   width: min(560px, calc(100vw - 36px)) !important;
 }
 
-.checkin-module .cookiecloud-auth-modal {
+.checkin-module .assistant-auth-modal {
   display: grid;
   gap: 14px;
   padding: 16px;
 }
 
-.checkin-module .cookiecloud-status {
+.checkin-module .assistant-status-panel {
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -1208,7 +1212,7 @@
   background: var(--surface-soft);
 }
 
-.checkin-module .cookiecloud-status-dot {
+.checkin-module .assistant-status-dot {
   width: 8px;
   height: 8px;
   flex: 0 0 auto;
@@ -1218,28 +1222,41 @@
   box-shadow: 0 0 0 3px var(--amber-bg);
 }
 
-.checkin-module .cookiecloud-status.received .cookiecloud-status-dot {
+.checkin-module .assistant-status-panel.received .assistant-status-dot {
   background: var(--green);
   box-shadow: 0 0 0 3px var(--green-bg);
 }
 
-.checkin-module .cookiecloud-status.failed .cookiecloud-status-dot,
-.checkin-module .cookiecloud-status.expired .cookiecloud-status-dot,
-.checkin-module .cookiecloud-status.cancelled .cookiecloud-status-dot {
+.checkin-module .assistant-launch-status.opened .assistant-status-dot,
+.checkin-module .assistant-launch-status.synced .assistant-status-dot {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-bg);
+}
+
+.checkin-module .assistant-launch-status.checking .assistant-status-dot {
+  background: var(--blue);
+  box-shadow: 0 0 0 3px var(--blue-bg);
+}
+
+.checkin-module .assistant-status-panel.failed .assistant-status-dot,
+.checkin-module .assistant-status-panel.expired .assistant-status-dot,
+.checkin-module .assistant-status-panel.cancelled .assistant-status-dot,
+.checkin-module .assistant-launch-status.unavailable .assistant-status-dot,
+.checkin-module .assistant-launch-status.failed .assistant-status-dot {
   background: var(--red);
   box-shadow: 0 0 0 3px var(--red-bg);
 }
 
-.checkin-module .cookiecloud-status strong {
+.checkin-module .assistant-status-panel strong {
   display: block;
   color: var(--text);
   font-size: 11px;
 }
 
-.checkin-module .cookiecloud-status p,
-.checkin-module .cookiecloud-steps > p,
-.checkin-module .cookiecloud-security-note,
-.checkin-module .cookiecloud-result {
+.checkin-module .assistant-status-panel p,
+.checkin-module .assistant-auth-steps,
+.checkin-module .assistant-security-note,
+.checkin-module .assistant-result {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 10px;
@@ -1247,16 +1264,8 @@
   overflow-wrap: anywhere;
 }
 
-.checkin-module .cookiecloud-steps {
-  display: grid;
-  gap: 9px;
-}
-
-.checkin-module .cookiecloud-steps > p {
-  margin: 0 0 2px;
-}
-
-.checkin-module .cookiecloud-steps code {
+.checkin-module .assistant-auth-steps code,
+.checkin-module .assistant-auth-code code {
   padding: 1px 4px;
   border-radius: 3px;
   background: var(--surface-soft);
@@ -1265,73 +1274,106 @@
   font-size: 10px;
 }
 
-.checkin-module .cookiecloud-value {
+.checkin-module .assistant-auth-code {
   display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
+  gap: 4px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-soft);
 }
 
-.checkin-module .cookiecloud-value > span {
+.checkin-module .assistant-auth-code > span,
+.checkin-module .assistant-auth-facts span {
   color: var(--muted);
   font-size: 10px;
 }
 
-.checkin-module .cookiecloud-value > div {
-  display: flex;
-  min-width: 0;
-  gap: 6px;
+.checkin-module .assistant-auth-code strong {
+  color: var(--brand-strong);
+  font: 700 30px/1.1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 3px;
 }
 
-.checkin-module .cookiecloud-value input {
-  width: 100%;
-  min-width: 0;
-  height: 32px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  outline: 0;
-  color: var(--text);
-  background: var(--surface-soft);
+.checkin-module .assistant-auth-code small {
+  color: var(--muted);
   font-size: 10px;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
-.checkin-module .cookiecloud-value input:focus {
-  border-color: var(--focus);
-  box-shadow: 0 0 0 3px rgba(77, 129, 117, .12);
+.checkin-module .assistant-auth-fallback {
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  background: var(--surface-soft);
 }
 
-.checkin-module .cookiecloud-value .icon-button {
-  width: 32px;
-  height: 32px;
-  flex: 0 0 auto;
+.checkin-module .assistant-auth-fallback summary {
+  padding: 10px 12px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
 }
 
-.checkin-module .cookiecloud-security-note {
+.checkin-module .assistant-auth-fallback[open] summary {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.checkin-module .assistant-auth-fallback .assistant-auth-code {
+  margin: 10px;
+  padding: 12px;
+}
+
+.checkin-module .assistant-auth-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.checkin-module .assistant-auth-facts > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.checkin-module .assistant-auth-facts strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checkin-module .assistant-auth-steps {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.checkin-module .assistant-auth-steps li {
+  margin: 5px 0;
+}
+
+.checkin-module .assistant-security-note {
   padding-top: 2px;
   color: var(--subtle);
 }
 
-.checkin-module .cookiecloud-result {
+.checkin-module .assistant-result {
   margin: 0;
   color: var(--brand-strong);
   font-weight: 650;
 }
 
-:root[data-theme="dark"] .checkin-module .cookiecloud-status,
-:root[data-theme="dark"] .checkin-module .cookiecloud-value input,
-:root[data-theme="dark"] .checkin-module .cookiecloud-steps code {
+:root[data-theme="dark"] .checkin-module .assistant-status-panel,
+:root[data-theme="dark"] .checkin-module .assistant-auth-code,
+:root[data-theme="dark"] .checkin-module .assistant-auth-steps code {
   border-color: var(--line);
   background: var(--surface-soft);
   color: var(--ink);
 }
 
 @media (max-width: 600px) {
-  .checkin-module .cookiecloud-value {
+  .checkin-module .assistant-auth-facts {
     grid-template-columns: 1fr;
-    gap: 5px;
   }
 }
 
@@ -1479,84 +1521,4 @@
 
 :root[data-theme="dark"] .checkin-module .channel-expand-button:hover {
   background: #17383b;
-}
-
-.checkin-modal-dialog.auth-browser-modal {
-  width: min(900px, calc(100vw - 36px)) !important;
-}
-
-.checkin-module .auth-browser-shell {
-  margin-top: 16px;
-  text-align: left;
-}
-
-.checkin-module .checkin-browser-frame,
-.checkin-module .checkin-browser-loading {
-  display: block;
-  width: 100%;
-  height: min(58vh, 620px);
-  min-height: 320px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #0b1117;
-}
-
-.checkin-module .checkin-browser-frame {
-  color-scheme: dark;
-}
-
-.checkin-module .checkin-browser-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: #b6c4ce;
-  font-size: 11px;
-}
-
-.checkin-module .auth-browser-toolbar {
-  min-height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.checkin-module .auth-browser-toolbar .checkin-browser-link {
-  flex: 0 0 auto;
-  color: var(--green);
-  text-decoration: none;
-}
-
-.checkin-module .auth-browser-toolbar .checkin-browser-link:hover {
-  text-decoration: underline;
-}
-
-.checkin-module .auth-browser-error {
-  margin: 0;
-  color: var(--red);
-  font-size: 10px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-@media (max-width: 600px) {
-  .checkin-modal-dialog.auth-browser-modal {
-    width: min(100%, calc(100vw - 20px)) !important;
-  }
-
-  .checkin-module .checkin-browser-frame,
-  .checkin-module .checkin-browser-loading {
-    height: min(50vh, 440px);
-    min-height: 250px;
-  }
-
-  .checkin-module .auth-browser-toolbar {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 4px;
-    padding: 6px 0 2px;
-  }
 }

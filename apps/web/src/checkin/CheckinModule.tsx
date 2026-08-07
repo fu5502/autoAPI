@@ -10,7 +10,6 @@ import {
   ChevronDown,
   CircleAlert,
   Clock3,
-  Copy,
   Download,
   ExternalLink,
   KeyRound,
@@ -32,7 +31,7 @@ import {
 import type {
   AppEvent,
 } from './local-types'
-import type { AppSettings, AppState, AuthSessionState, ChannelImportPreview, ChannelImportResult, CheckinResult, CookieCloudPairing, CookieCloudPairingStatus, Site } from './shared/types'
+import type { AppSettings, AppState, AuthAssistantPairing, AuthAssistantPairingStatus, ChannelImportPreview, ChannelImportResult, CheckinResult, Site, SiteDeletionLog } from './shared/types'
 import { api } from './api'
 import { api as gatewayApi } from '../api'
 import type { Channel } from '../types'
@@ -54,6 +53,7 @@ import './checkin.css'
 export type CheckinView = 'dashboard' | 'history' | 'settings'
 type Toast = { id: number; title: string; message: string; tone: 'default' | 'success' | 'danger' | 'warning' }
 type AuthorizationFlow = 'standalone' | 'channel-import'
+type AssistantLaunchPhase = 'starting' | 'opened' | 'checking' | 'waiting-login' | 'synced' | 'unavailable' | 'failed'
 type ChannelImportStatus = {
   site: Site
   phase: 'preparing' | 'confirming' | 'success' | 'error'
@@ -61,6 +61,7 @@ type ChannelImportStatus = {
   authorizationFlow?: AuthorizationFlow
   message?: string
   channel?: ChannelImportResult['channel']
+  channelAction?: ChannelImportResult['action']
 }
 
 const navItems: Array<{ id: CheckinView; label: string; icon: typeof LayoutDashboard }> = [
@@ -70,7 +71,7 @@ const navItems: Array<{ id: CheckinView; label: string; icon: typeof LayoutDashb
 ]
 
 function supportsAutomaticChannelImport(site: Site) {
-  return ['new-api-modern', 'new-api-legacy', 'sub2api'].includes(site.adapter)
+  return !['local-api', 'fengwind-welfare', 'hybgzs-welfare', 'chy-traffic'].includes(site.adapter)
 }
 
 function channelMatchesSite(channelBaseUrl: string, siteBaseUrl: string) {
@@ -100,6 +101,10 @@ function formatChannelProtocol(protocol: string) {
   } as Record<string, string>)[protocol] ?? protocol
 }
 
+function isAssistantLaunchPhase(value: unknown): value is AssistantLaunchPhase {
+  return ['starting', 'opened', 'checking', 'waiting-login', 'synced', 'unavailable', 'failed'].includes(String(value))
+}
+
 export function CheckinTabs({ view, onChange, className = '' }: { view: CheckinView; onChange: (view: CheckinView) => void; className?: string }) {
   return <nav className={`checkin-tabs ${className}`.trim()} aria-label="签到模块导航">
     {navItems.map((item) => {
@@ -114,8 +119,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [addOpen, setAddOpen] = useState(false)
-  const [authSession, setAuthSession] = useState<AuthSessionState | null>(null)
-  const [cookieCloudPair, setCookieCloudPair] = useState<{ site: Site; pairing: CookieCloudPairing } | null>(null)
+  const [authAssistantPair, setAuthAssistantPair] = useState<{ site: Site; pairing: AuthAssistantPairing } | null>(null)
   const [selectedSite, setSelectedSite] = useState<Site | null>(null)
   const [channelImport, setChannelImport] = useState<{ site: Site; candidates: ChannelImportPreview[] } | null>(null)
   const [channelImportStatus, setChannelImportStatus] = useState<ChannelImportStatus | null>(null)
@@ -226,65 +230,11 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
     return () => controller.abort()
   }, [notify, refresh])
 
-  useEffect(() => {
-    if (!authSession || authSession.status !== 'waiting') return
-    const timer = window.setInterval(async () => {
-      try {
-        const next = await api.getAuthSession(authSession.id)
-        setAuthSession(next)
-        if (next.status !== 'waiting') {
-          window.clearInterval(timer)
-          void refresh(true)
-          const pendingSite = pendingChannelImportSite
-          if (pendingSite && pendingSite.id === next.siteId) {
-            setPendingChannelImportSite(null)
-            setAuthSession(null)
-            if (next.status === 'success') {
-              void continueChannelImport({ ...pendingSite, authStatus: 'valid' })
-            } else {
-              setChannelImportStatus({
-                site: pendingSite,
-                phase: 'error',
-                operation: 'authorize',
-                authorizationFlow: 'channel-import',
-                message: `授权未完成：${next.message}`,
-              })
-            }
-            return
-          }
-          notify(next.status === 'success' ? '授权完成' : '授权未完成', next.message, next.status === 'success' ? 'success' : 'warning')
-        }
-      } catch (cause) {
-        window.clearInterval(timer)
-        notify('授权状态读取失败', cause instanceof Error ? cause.message : '未知错误', 'danger')
-      }
-    }, 1800)
-    return () => window.clearInterval(timer)
-  }, [authSession, notify, pendingChannelImportSite, refresh])
-
-  const authorize = async (site: Site, flow: AuthorizationFlow = 'standalone') => {
+  const openAuthAssistant = async (site: Site, flow: AuthorizationFlow = 'standalone') => {
     try {
-      const session = await api.authorizeSite(site.id)
-      setAuthSession(session)
-      return session
-    } catch (cause) {
-      if (flow === 'channel-import') setPendingChannelImportSite(null)
-      setChannelImportStatus({
-        site,
-        phase: 'error',
-        operation: 'authorize',
-        authorizationFlow: flow,
-        message: cause instanceof Error ? cause.message : '无法启动站点授权',
-      })
-      return null
-    }
-  }
-
-  const openCookieCloudAuth = async (site: Site, flow: AuthorizationFlow = 'standalone') => {
-    try {
-      const pairing = await api.createCookieCloudPair(site.id)
+      const pairing = await api.createAuthAssistantPair(site.id)
       if (flow === 'channel-import') setPendingChannelImportSite(site)
-      setCookieCloudPair({ site, pairing })
+      setAuthAssistantPair({ site, pairing })
       return true
     } catch (cause) {
       if (flow === 'channel-import') setPendingChannelImportSite(null)
@@ -299,25 +249,25 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
     }
   }
 
-  const closeCookieCloudAuth = async () => {
-    if (cookieCloudPair) await api.cancelCookieCloudPair(cookieCloudPair.site.id, cookieCloudPair.pairing.pairId).catch(() => undefined)
-    setCookieCloudPair(null)
+  const closeAuthAssistant = async () => {
+    if (authAssistantPair) await api.cancelAuthAssistantPair(authAssistantPair.site.id, authAssistantPair.pairing.pairId).catch(() => undefined)
+    setAuthAssistantPair(null)
     setPendingChannelImportSite(null)
   }
 
-  const completeCookieCloudAuth = async (status: CookieCloudPairingStatus) => {
-    const activePair = cookieCloudPair
+  const completeAuthAssistant = async (status: AuthAssistantPairingStatus) => {
+    const activePair = authAssistantPair
     if (!activePair || status.status !== 'received') return
     const site = activePair.site
-    setCookieCloudPair(null)
     await refresh(true)
     const pendingSite = pendingChannelImportSite
-    setPendingChannelImportSite(null)
     if (pendingSite?.id === site.id) {
+      setAuthAssistantPair(null)
+      setPendingChannelImportSite(null)
       await continueChannelImport({ ...site, authStatus: 'valid' })
       return
     }
-    notify('本地授权同步成功', `${site.name} 已接收 CookieCloud 登录状态`, 'success')
+    notify('本地授权同步成功', `${site.name} 已记录本次授权，已同步 ${status.cookieCount} 个 Cookie、${status.localStorageCount} 个存储项`, 'success')
   }
 
   const runCheckin = async (siteIds?: number[]) => {
@@ -372,7 +322,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
       return
     }
 
-    await openCookieCloudAuth(site, 'channel-import')
+    await openAuthAssistant(site, 'channel-import')
   }
 
   const confirmChannelImport = async (input: { candidateId: string; name: string; models: string[]; priority: number; weight: number; tags: string[] }) => {
@@ -383,7 +333,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
       const result = await api.confirmChannelImport(site.id, input)
       setImportedSiteIds((items) => items.includes(site.id) ? items : [...items, site.id])
       setChannelImport(null)
-      setChannelImportStatus({ site, phase: 'success', operation: 'confirm', channel: result.channel })
+      setChannelImportStatus({ site, phase: 'success', operation: 'confirm', channel: result.channel, channelAction: result.action })
     } catch (cause) {
       setChannelImportStatus({
         site,
@@ -461,16 +411,15 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
       <div className="checkin-main-area">
         {loading && !state ? <LoadingScreen /> : error && !state ? <ErrorScreen message={error} retry={() => void refresh()} /> : state ? (
           <>
-            {view === 'dashboard' && <Dashboard state={state} onAdd={() => setAddOpen(true)} onRun={runCheckin} onAuthorize={openCookieCloudAuth} onImport={startChannelImport} importedSiteIds={importedSiteIds} onSelect={setSelectedSite} onRefresh={() => refresh(true)} notify={notify} />}
+            {view === 'dashboard' && <Dashboard state={state} onAdd={() => setAddOpen(true)} onRun={runCheckin} onAuthorize={openAuthAssistant} onImport={startChannelImport} importedSiteIds={importedSiteIds} onSelect={setSelectedSite} onRefresh={() => refresh(true)} notify={notify} />}
             {view === 'history' && <HistoryView state={state} />}
             {view === 'settings' && <SettingsView settings={state.settings} onSaved={() => refresh(true)} notify={notify} />}
           </>
         ) : null}
       </div>
 
-      {addOpen && <AddSiteModal onClose={() => setAddOpen(false)} onAdded={async (sites) => { setAddOpen(false); await refresh(true); if (sites.length === 1) void openCookieCloudAuth(sites[0]!) }} notify={notify} />}
-      {cookieCloudPair && <CookieCloudAuthModal site={cookieCloudPair.site} pairing={cookieCloudPair.pairing} onClose={() => void closeCookieCloudAuth()} onStatus={completeCookieCloudAuth} />}
-      {authSession && state?.sites.find((site) => site.id === authSession.siteId) ? <AuthModal session={authSession} site={state.sites.find((site) => site.id === authSession.siteId)!} channelImportMode={pendingChannelImportSite?.id === authSession.siteId} onClose={() => { setPendingChannelImportSite(null); setAuthSession(null) }} onCancel={async () => { const cancelled = await api.cancelAuthSession(authSession.id); setPendingChannelImportSite(null); setAuthSession(cancelled) }} /> : null}
+      {addOpen && <AddSiteModal onClose={() => setAddOpen(false)} onAdded={async (sites) => { setAddOpen(false); await refresh(true); if (sites.length === 1) void openAuthAssistant(sites[0]!) }} notify={notify} />}
+      {authAssistantPair && <AuthAssistantModal site={authAssistantPair.site} pairing={authAssistantPair.pairing} onClose={() => void closeAuthAssistant()} onStatus={completeAuthAssistant} />}
       {channelImport && <ChannelImportModal site={channelImport.site} candidates={channelImport.candidates} onClose={() => setChannelImport(null)} onDiscoverModels={(candidateId) => api.discoverChannelImportModels(channelImport.site.id, candidateId)} onConfirm={confirmChannelImport} />}
       {channelBalanceLink && <ChannelBalanceLinkModal site={channelBalanceLink.site} channels={channelBalanceLink.channels} reason={channelBalanceLink.reason} onClose={() => setChannelBalanceLink(null)} onConfirm={confirmChannelBalanceLink} onCreate={createManualChannel} />}
       {channelImportStatus && <ChannelImportStatusModal status={channelImportStatus} onClose={() => setChannelImportStatus(null)} onRetry={() => {
@@ -479,7 +428,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
           if (channelImportStatus.authorizationFlow === 'channel-import') {
             void startChannelImport(channelImportStatus.site)
           } else {
-            void openCookieCloudAuth(channelImportStatus.site)
+            void openAuthAssistant(channelImportStatus.site)
           }
         } else if (channelImportStatus.operation === 'prepare') {
           const site = channelImportStatus.site
@@ -488,7 +437,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
           setChannelImportStatus(null)
         }
       }} />}
-      {selectedSite && state && <SiteDrawer site={selectedSite} results={state.recentResults.filter((result) => result.siteId === selectedSite.id)} onClose={() => setSelectedSite(null)} onRun={() => runCheckin([selectedSite.id])} onAuthorize={() => void openCookieCloudAuth(selectedSite)} />}
+      {selectedSite && state && <SiteDrawer site={selectedSite} results={state.recentResults.filter((result) => result.siteId === selectedSite.id)} authEvents={state.authSyncEvents.filter((event) => event.siteId === selectedSite.id)} onClose={() => setSelectedSite(null)} onRun={() => runCheckin([selectedSite.id])} onAuthorize={() => void openAuthAssistant(selectedSite)} />}
       <ToastRegion toasts={toasts} dismiss={(id) => setToasts((items) => items.filter((item) => item.id !== id))} />
     </section>
   )
@@ -527,7 +476,7 @@ function Dashboard({ state, onAdd, onRun, onAuthorize, onImport, importedSiteIds
       />
       <SummaryBand state={state} />
       <SitesView state={state} onRun={onRun} onAuthorize={onAuthorize} onImport={onImport} importedSiteIds={importedSiteIds} onSelect={onSelect} onRefresh={onRefresh} notify={notify} />
-      <RecentActivity results={state.recentResults.slice(0, 8)} sites={state.sites} />
+      <RecentActivityWithDeletions results={state.recentResults} deletions={state.recentDeletions ?? []} sites={state.sites} />
     </div>
   )
 }
@@ -568,6 +517,33 @@ function AttentionModal({ sites, onClose }: { sites: Site[]; onClose: () => void
     </div>)}</div> : <EmptyState title="暂无需处理站点" description="当前登录与签到状态均正常。" />}
     <div className="modal-actions"><button className="button primary" onClick={onClose}>完成</button></div>
   </Modal>
+}
+
+function RecentActivityWithDeletions({ results, deletions, sites }: { results: CheckinResult[]; deletions: SiteDeletionLog[]; sites: Site[] }) {
+  const siteById = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites])
+  const activities = useMemo(() => [
+    ...results.map((result) => ({ kind: 'checkin' as const, timestamp: result.completedAt, result })),
+    ...deletions.map((deletion) => ({ kind: 'deleted' as const, timestamp: deletion.deletedAt, deletion })),
+  ].sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp)).slice(0, 8), [deletions, results])
+  return (
+    <section className="section-block activity-section">
+      <div className="section-heading"><div><h2>最近执行</h2><p>签到任务的逐站结果与站点变更</p></div></div>
+      {activities.length ? <div className="activity-list">{activities.map((activity) => activity.kind === 'deleted' ? (
+        <div className="activity-row" key={`deleted-${activity.deletion.id}`}>
+          <span className="activity-icon danger"><Trash2 size={14} /></span>
+          <div><strong>{activity.deletion.siteName}</strong><p>{activity.deletion.message}</p><small className="activity-site-url">{activity.deletion.baseUrl}</small></div>
+          <time>{formatDateTime(activity.deletion.deletedAt)}</time>
+        </div>
+      ) : (
+        <div className="activity-row" key={`checkin-${activity.result.id}`}>
+          <span className={`activity-icon ${statusTone(activity.result.status)}`}>{['success', 'already_checked'].includes(activity.result.status) ? <Check size={14} /> : activity.result.status === 'manual_required' ? <KeyRound size={14} /> : <CircleAlert size={14} />}</span>
+          <div><strong>{activity.result.siteName}</strong><p>{activity.result.message}</p></div>
+          {activity.result.rewardAmount !== null && <span className="activity-reward">{formatAmount(activity.result.rewardAmount, siteById.get(activity.result.siteId)?.currencySymbol ?? '$')}</span>}
+          <time>{formatDateTime(activity.result.completedAt)}</time>
+        </div>
+      ))}</div> : <EmptyState title="暂无执行记录" description="完成首次签到后，结果会显示在这里。" />}
+    </section>
+  )
 }
 
 function RecentActivity({ results, sites }: { results: CheckinResult[]; sites: Site[] }) {
@@ -618,7 +594,17 @@ function SitesView({ state, onRun, onAuthorize, onImport, importedSiteIds, onSel
   }
   const remove = async (site: Site) => {
     if (!window.confirm(`确定删除“${site.name}”及其签到记录吗？`)) return
-    try { await api.deleteSite(site.id); await onRefresh(); notify('站点已删除', site.name) } catch (cause) { notify('删除失败', cause instanceof Error ? cause.message : '未知错误', 'danger') }
+    try {
+      const result = await api.deleteSite(site.id)
+      await onRefresh()
+      if (result.warnings?.length) {
+        notify('站点已删除', `${site.name}，部分运行时清理未完成，但站点数据已删除`, 'default')
+      } else {
+        notify('站点已删除', site.name)
+      }
+    } catch (cause) {
+      notify('删除失败', cause instanceof Error ? cause.message : '未知错误', 'danger')
+    }
   }
 
   const prepareImport = async (site: Site) => {
@@ -641,13 +627,13 @@ function SitesView({ state, onRun, onAuthorize, onImport, importedSiteIds, onSel
       <div className="table-wrap"><table className="data-table management-table"><thead><tr><th>站点</th><th>适配器</th><th>登录</th><th>签到</th><th>签到金额</th><th>当前余额</th><th>加入渠道</th><th>自动签到</th><th>操作</th></tr></thead><tbody>{sites.map((site) => <tr key={site.id}>
         <td><button className="site-cell" onClick={() => onSelect(site)}><SiteAvatar site={site} /><span><strong>{site.name}</strong><small>{site.baseUrl}</small>{site.note ? <small className="site-note" title={site.note}>备注：{site.note}</small> : null}</span></button></td>
         <td><span className="adapter-label">{site.adapter === 'new-api-modern' ? 'New API 新版' : site.adapter === 'new-api-legacy' ? 'New API 旧版' : site.adapter === 'local-api' ? 'LocalAPI' : site.adapter === 'sub2api' ? 'Sub2API' : site.adapter === 'fengwind-welfare' ? 'Fengwind 福利站' : site.adapter === 'hybgzs-welfare' ? '黑与白福利站' : site.adapter === 'chy-traffic' ? 'CHY 流量签到' : '待检测'}</span></td>
-        <td><StatusBadge tone={statusTone(site.authStatus)}>{authLabel(site.authStatus)}</StatusBadge></td>
+        <td><div className="site-auth-cell"><StatusBadge tone={statusTone(site.authStatus)}>{authLabel(site.authStatus)}</StatusBadge>{site.authSyncStatus === 'success' && site.authSyncedAt ? <small className="auth-sync-meta">已同步 {formatDateTime(site.authSyncedAt)}</small> : site.authSyncStatus === 'failed' ? <small className="auth-sync-meta danger-text" title={site.authSyncMessage ?? undefined}>同步失败</small> : null}</div></td>
         <td><StatusBadge tone={statusTone(site.lastStatus)}>{checkinLabel(site.lastStatus)}</StatusBadge></td>
         <td><div className="reward-cell"><strong className={rewardTimingTone(site.lastRewardAt)}>{formatAmount(site.lastRewardAmount, site.currencySymbol)}</strong><small>{rewardTimingLabel(site.lastRewardAt)}</small></div></td>
         <td><span className={`balance-value ${site.lastBalanceAmount === null ? 'empty' : ''}`}>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></td>
         <td><StatusBadge tone={importedSiteIds.includes(site.id) ? 'success' : 'neutral'}>{importedSiteIds.includes(site.id) ? '是' : '否'}</StatusBadge></td>
         <td><div className="switch-control"><button className={`toggle ${site.enabled ? 'on' : ''}`} role="switch" aria-checked={site.enabled} aria-label={`${site.enabled ? '停用' : '启用'} ${site.name} 自动签到`} onClick={() => toggle(site)}><span /></button><small>{site.enabled ? '已启用' : '已禁用'}</small></div></td>
-        <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton><IconButton title="立即签到" onClick={() => onRun([site.id])}><Play size={16} /></IconButton><IconButton title={importedSiteIds.includes(site.id) ? '已在渠道池' : site.authStatus !== 'valid' ? '点击后先授权，授权成功后继续接入渠道或关联余额' : supportsAutomaticChannelImport(site) ? '导入渠道池' : '关联已有渠道并同步余额'} disabled={importedSiteIds.includes(site.id) || importingSiteId === site.id} onClick={() => void prepareImport(site)}><ArrowDownToLine size={16} className={importingSiteId === site.id ? 'spin' : undefined} /></IconButton><IconButton title="删除" danger onClick={() => remove(site)}><Trash2 size={16} /></IconButton></div></td>
+        <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton><IconButton title="立即签到" onClick={() => onRun([site.id])}><Play size={16} /></IconButton><IconButton title={importedSiteIds.includes(site.id) ? '重新导入渠道池' : site.authStatus !== 'valid' ? '点击后先授权，授权成功后继续接入渠道或关联余额' : supportsAutomaticChannelImport(site) ? '导入渠道池' : '关联已有渠道并同步余额'} disabled={importingSiteId === site.id} onClick={() => void prepareImport(site)}><ArrowDownToLine size={16} className={importingSiteId === site.id ? 'spin' : undefined} /></IconButton><IconButton title="删除" danger onClick={() => remove(site)}><Trash2 size={16} /></IconButton></div></td>
       </tr>)}</tbody></table></div>
     </section>
     {editingSite ? <EditSiteModal site={editingSite} onClose={() => setEditingSite(null)} onSaved={async () => { setEditingSite(null); await onRefresh() }} notify={notify} /> : null}
@@ -706,7 +692,7 @@ function SettingsView({ settings, onSaved, notify }: { settings: AppSettings; on
         <SettingRow label="重试间隔" hint="每次失败后的等待时间"><NumberInput value={draft.retryDelayMinutes} min={1} max={120} onChange={(value) => setDraft({ ...draft, retryDelayMinutes: value })} suffix="分钟" /></SettingRow>
         <SettingRow label="单次请求超时" hint="网络较慢时可适当增大"><NumberInput value={draft.requestTimeoutSeconds} min={10} max={120} onChange={(value) => setDraft({ ...draft, requestTimeoutSeconds: value })} suffix="秒" /></SettingRow>
       </div></section>
-      <section className="settings-section"><div className="settings-intro"><Bell size={19} /><div><h2>通知与数据</h2><p>所有站点凭据均保存在专用 Chrome 配置中</p></div></div><div className="settings-fields">
+      <section className="settings-section"><div className="settings-intro"><Bell size={19} /><div><h2>通知与数据</h2><p>登录状态通过本地授权助手同步，并以加密快照保存</p></div></div><div className="settings-fields">
         <SettingRow label="浏览器通知" hint="页面打开时实时提示签到结果"><div className="inline-actions"><button type="button" className={`toggle ${draft.browserNotifications ? 'on' : ''}`} role="switch" aria-label="浏览器通知" aria-checked={draft.browserNotifications} onClick={() => setDraft({ ...draft, browserNotifications: !draft.browserNotifications })}><span /></button><button type="button" className="text-button" onClick={requestNotifications}>授权通知</button></div></SettingRow>
         <SettingRow label="历史记录保留" hint="过期记录会在保存设置时清理"><NumberInput value={draft.historyRetentionDays} min={30} max={3650} onChange={(value) => setDraft({ ...draft, historyRetentionDays: value })} suffix="天" /></SettingRow>
       </div></section>
@@ -752,7 +738,7 @@ function AddSiteModal({ onClose, onAdded, notify }: { onClose: () => void; onAdd
   return <Modal title="添加站点" description="支持 New API 新版和旧版面板" onClose={onClose}>
     <div className="segmented"><button className={mode === 'single' ? 'active' : ''} onClick={() => setMode('single')}>单个添加</button><button className={mode === 'bulk' ? 'active' : ''} onClick={() => setMode('bulk')}>批量导入</button></div>
     <form onSubmit={submit} className="modal-form">
-      {mode === 'single' ? <><label><span>站点地址</span><input autoFocus required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://example.com" /></label><label><span>站点名称 <small>可选</small></span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="授权后会自动读取站点名称" /></label><label><span>站点图标地址 <small>可选，留空自动获取</small></span><input type="url" value={faviconUrl} onChange={(event) => setFaviconUrl(event.target.value)} placeholder="https://example.com/favicon.ico" /></label><label><span>站点备注 <small>可选</small></span><textarea rows={3} maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：仅手动签到、额度上限、账号用途" /></label><div className="info-note"><ShieldCheck size={17} /><p>添加后会打开专用 Chrome 窗口。请按站点提供的方式完成登录；登录凭据只保留在专用浏览器中。</p></div></> : <><label><span>站点地址，每行一个</span><textarea autoFocus required rows={9} value={bulk} onChange={(event) => setBulk(event.target.value)} placeholder={'https://site-one.example\nhttps://site-two.example'} /></label><div className="info-note"><ListChecks size={17} /><p>批量导入只创建站点。导入后请在站点管理中逐个完成首次授权。</p></div></>}
+      {mode === 'single' ? <><label><span>站点地址</span><input autoFocus required value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://example.com" /></label><label><span>站点名称 <small>可选</small></span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="授权后会自动读取站点名称" /></label><label><span>站点图标地址 <small>可选，留空自动获取</small></span><input type="url" value={faviconUrl} onChange={(event) => setFaviconUrl(event.target.value)} placeholder="https://example.com/favicon.ico" /></label><label><span>站点备注 <small>可选</small></span><textarea rows={3} maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：仅手动签到、额度上限、账号用途" /></label><div className="info-note"><ShieldCheck size={17} /><p>添加后请在本地已登录目标站点的 Chrome/Edge 中使用 autoAPI 授权助手同步会话；服务端只保存加密后的登录快照。</p></div></> : <><label><span>站点地址，每行一个</span><textarea autoFocus required rows={9} value={bulk} onChange={(event) => setBulk(event.target.value)} placeholder={'https://site-one.example\nhttps://site-two.example'} /></label><div className="info-note"><ListChecks size={17} /><p>批量导入只创建站点。导入后请在站点管理中逐个完成首次授权。</p></div></>}
       <div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>取消</button><button className="button primary" disabled={submitting}>{submitting ? <LoaderCircle size={17} className="spin" /> : <Plus size={17} />}{mode === 'single' ? '添加并授权' : '导入站点'}</button></div>
     </form>
   </Modal>
@@ -824,8 +810,10 @@ function ChannelImportModal({ site, candidates, onClose, onDiscoverModels, onCon
     }
   }
   const protocolLabel = formatChannelProtocol(preview.protocol)
+  const matchedChannel = preview.matchedChannel
   return <Modal title="导入渠道池" description="选择官方 API Key 基础信息，确认后直接写入渠道池，不执行模型或对话探测" onClose={onClose}>
     <form onSubmit={submit} className="modal-form channel-import-form">
+      {matchedChannel ? <div className="channel-import-match matched"><CheckCircle2 size={16} /><div><strong>已按域名匹配现有渠道</strong><span>{matchedChannel.name} · {matchedChannel.baseUrl}</span><small>确认后将更新该渠道的 API Key、模型和渠道配置，不会新建重复渠道。</small></div></div> : <div className="channel-import-match pending"><Plus size={16} /><div><strong>未找到同域渠道</strong><span>确认后将按下面的基础信息新建渠道。</span><small>API Key 仍只会加密保存，导入不会自动执行探测请求。</small></div></div>}
       {candidates.length > 1 ? <fieldset className="key-choice-list"><legend>选择 API Key <small>{candidates.length} 条 Key 可用</small></legend>{candidates.map((candidate) => <label key={candidate.candidateId} className={`key-choice-item ${candidate.candidateId === preview.candidateId ? 'active' : ''}`}><input type="radio" name="channel-import-key" checked={candidate.candidateId === preview.candidateId} onChange={() => { setSelectedCandidateId(candidate.candidateId); setModelError(null) }} /><span><strong>{candidate.keyName}</strong><small>•••• {candidate.keyLast4}</small></span><CheckCircle2 size={16} /></label>)}</fieldset> : null}
       <div className="channel-import-summary">
         <div><span>渠道名称</span><strong>{site.name}</strong></div>
@@ -841,7 +829,7 @@ function ChannelImportModal({ site, candidates, onClose, onDiscoverModels, onCon
       <div className="channel-import-grid"><label><span>优先级</span><input type="number" min={-100} max={100} value={priority} onChange={(event) => setPriority(Number(event.target.value))} /></label><label><span>权重</span><input type="number" min={1} max={10000} value={weight} onChange={(event) => setWeight(Number(event.target.value))} /></label></div>
       <label><span>标签 <small>多个标签用逗号分隔</small></span><input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="签到站点" /></label>
       <div className="info-note"><ShieldCheck size={17} /><p>原始 API Key 只会加密保存到渠道库，页面和日志只显示尾号。导入不会调用上游模型接口，候选凭据将在 {new Date(preview.expiresAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 过期。</p></div>
-      <div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>取消</button><button className="button primary" disabled={saving || !name.trim() || (availableModels.length > 0 && chosenModels.length === 0)}>{saving ? <LoaderCircle size={17} className="spin" /> : <ArrowDownToLine size={17} />}{saving ? '导入中' : '确认导入'}</button></div>
+      <div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>取消</button><button className="button primary" disabled={saving || !name.trim() || (availableModels.length > 0 && chosenModels.length === 0)}>{saving ? <LoaderCircle size={17} className="spin" /> : matchedChannel ? <RefreshCw size={17} /> : <ArrowDownToLine size={17} />}{saving ? (matchedChannel ? '更新中' : '导入中') : (matchedChannel ? '确认更新渠道' : '确认新建渠道')}</button></div>
     </form>
   </Modal>
 }
@@ -966,18 +954,19 @@ function ChannelImportStatusModal({ status, onClose, onRetry }: {
 }) {
   const active = status.phase === 'preparing' || status.phase === 'confirming'
   const success = status.phase === 'success'
+  const channelUpdated = status.channelAction === 'updated'
   const balanceLink = status.operation === 'link'
   const manualCreate = status.operation === 'create'
   const standaloneAuthorization = status.operation === 'authorize' && status.authorizationFlow !== 'channel-import'
   const title = active
     ? (balanceLink ? '正在关联渠道余额' : manualCreate ? '正在创建渠道' : status.operation === 'prepare' ? '正在准备导入' : '正在写入渠道池')
     : success
-      ? (balanceLink ? '渠道余额已关联' : manualCreate ? '渠道创建成功' : '渠道导入成功')
+      ? (balanceLink ? '渠道余额已关联' : manualCreate ? '渠道创建成功' : channelUpdated ? '渠道更新成功' : '渠道导入成功')
       : status.operation === 'authorize' ? '站点授权失败' : balanceLink ? '渠道余额关联失败' : manualCreate ? '渠道创建失败' : '渠道导入失败'
   const description = active
     ? '请求正在处理，请稍候，不要重复点击导入按钮。'
     : success
-      ? (balanceLink ? '签到站余额已绑定到所选渠道；后续签到完成后会继续同步。' : manualCreate ? '渠道基础信息和所选模型已保存，签到余额已完成关联。' : '基础信息和所选模型已保存，后续可在渠道管理中手动探测。')
+      ? (balanceLink ? '签到站余额已绑定到所选渠道；后续签到完成后会继续同步。' : manualCreate ? '渠道基础信息和所选模型已保存，签到余额已完成关联。' : channelUpdated ? '已按站点域名匹配并更新原有渠道，没有创建重复渠道。' : '已创建新的渠道基础信息和模型配置，后续可在渠道管理中手动探测。')
     : standaloneAuthorization
       ? '本次授权没有完成，现有签到和渠道数据未被修改。'
       : '本次操作没有完成，现有签到数据和渠道数据未被清空。'
@@ -1102,137 +1091,107 @@ function EditSiteModal({ site, onClose, onSaved, notify }: {
   </Modal>
 }
 
-function AuthModal({ session, site, channelImportMode = false, onClose, onCancel }: { session: AuthSessionState; site?: Site; channelImportMode?: boolean; onClose: () => void; onCancel: () => void }) {
-  const waiting = session.status === 'waiting'
-  const accountPasswordLogin = site?.adapter === 'sub2api' || site?.baseUrl === 'https://token.dialoguedui.com'
-  return <Modal className={waiting ? 'auth-browser-modal' : ''} title={waiting ? (channelImportMode ? '授权登录后导入渠道池' : '等待站点授权') : session.status === 'success' ? '授权成功' : '授权未完成'} description={channelImportMode ? '授权成功后会自动读取 API Key，并打开导入信息窗口' : '授权在隔离的 Chrome 配置中进行'} onClose={waiting ? onCancel : onClose}>
-    <div className={`auth-state ${session.status}`}>
-      <div className="auth-state-icon">{waiting ? <LoaderCircle className="spin" /> : session.status === 'success' ? <CheckCircle2 /> : <CircleAlert />}</div>
-      <h3>{waiting ? (channelImportMode ? '完成登录后会自动继续导入' : '请在浏览器窗口中继续') : session.status === 'success' ? '站点已可以自动签到' : '需要重新尝试'}</h3>
-      <p>{session.message}</p>
-      {waiting && channelImportMode ? <p className="auth-import-note">无需再次点击导入按钮，授权完成后会自动显示 Key、Base URL 和导入结果。</p> : null}
-      {waiting ? <EmbeddedBrowser /> : null}
-      {waiting && (accountPasswordLogin
-        ? <ol><li>在打开的页面输入站点账号和密码</li><li>完成人机验证并登录</li><li>登录成功后保持页面片刻，程序会自动识别</li></ol>
-        : <ol><li>在打开的站点中点击站点提供的登录方式（Linux.do、GitHub 等）</li><li>完成第三方授权或人机验证</li><li>登录成功后保持页面片刻，程序会自动识别</li></ol>)}
-    </div>
-    <div className="modal-actions"><button className={`button ${waiting ? 'secondary' : 'primary'}`} onClick={waiting ? onCancel : onClose}>{waiting ? '取消授权' : '完成'}</button></div>
-  </Modal>
-}
-
-function CookieCloudAuthModal({ site, pairing, onClose, onStatus }: { site: Site; pairing: CookieCloudPairing; onClose: () => void; onStatus: (status: CookieCloudPairingStatus) => void }) {
-  const [status, setStatus] = useState<CookieCloudPairingStatus>({
+function AuthAssistantModal({ site, pairing, onClose, onStatus }: { site: Site; pairing: AuthAssistantPairing; onClose: () => void; onStatus: (status: AuthAssistantPairingStatus) => void }) {
+  const onStatusRef = useRef(onStatus)
+  const [assistantLaunch, setAssistantLaunch] = useState<{ phase: AssistantLaunchPhase; message: string }>({
+    phase: 'starting',
+    message: '正在唤起本地授权助手并打开浏览器登录页…',
+  })
+  const [status, setStatus] = useState<AuthAssistantPairingStatus>({
     pairId: pairing.pairId,
     siteId: site.id,
     status: 'waiting',
+    code: pairing.code,
+    domain: pairing.domain,
     expiresAt: pairing.expiresAt,
+    claimedAt: null,
     receivedAt: null,
     cookieCount: 0,
     localStorageCount: 0,
-    message: '等待本地 CookieCloud 上传…',
+    message: '等待本地 autoAPI 授权助手连接…',
   })
-  const [copied, setCopied] = useState<string | null>(null)
+
+  useEffect(() => { onStatusRef.current = onStatus }, [onStatus])
+
+  useEffect(() => {
+    let active = true
+    let receivedAssistantResponse = false
+    const requestId = pairing.pairId
+    const handleAssistantStatus = (event: MessageEvent<unknown>) => {
+      if (event.source !== window || event.origin !== window.location.origin || !event.data || typeof event.data !== 'object') return
+      const data = event.data as { type?: unknown; requestId?: unknown; phase?: unknown; message?: unknown }
+      if (data.type !== 'autoapi-auth-assistant-status' || data.requestId !== requestId || !isAssistantLaunchPhase(data.phase) || typeof data.message !== 'string') return
+      receivedAssistantResponse = true
+      if (active) setAssistantLaunch({ phase: data.phase, message: data.message })
+    }
+    const unavailableTimer = window.setTimeout(() => {
+      if (!active || receivedAssistantResponse) return
+      setAssistantLaunch({
+        phase: 'unavailable',
+        message: '未检测到本地授权助手扩展。请确认已在当前 Chrome/Edge 配置文件中加载 autoAPI 授权助手。',
+      })
+    }, 2_500)
+
+    window.addEventListener('message', handleAssistantStatus)
+    window.postMessage({
+      type: 'autoapi-auth-assistant-start',
+      requestId,
+      code: pairing.code,
+      siteUrl: site.baseUrl,
+      adapter: site.adapter,
+    }, window.location.origin)
+
+    return () => {
+      active = false
+      window.clearTimeout(unavailableTimer)
+      window.removeEventListener('message', handleAssistantStatus)
+    }
+  }, [pairing.code, pairing.pairId, site.adapter, site.baseUrl])
 
   useEffect(() => {
     let active = true
     let completed = false
+    let timer: number | null = null
     const poll = async () => {
       try {
-        const next = await api.getCookieCloudPair(site.id, pairing.pairId)
+        const next = await api.getAuthAssistantPair(site.id, pairing.pairId)
         if (!active) return
         setStatus(next)
-        if (!completed && next.status !== 'waiting') {
+        if (!completed && ['received', 'failed', 'expired', 'cancelled'].includes(next.status)) {
           completed = true
-          onStatus(next)
+          if (timer !== null) window.clearInterval(timer)
+          onStatusRef.current(next)
         }
       } catch (cause) {
         if (active) setStatus((current) => ({ ...current, status: 'failed', message: cause instanceof Error ? cause.message : '无法读取本地授权状态' }))
       }
     }
     void poll()
-    const timer = window.setInterval(() => void poll(), 1500)
+    timer = window.setInterval(() => void poll(), 1500)
     return () => { active = false; window.clearInterval(timer) }
-  }, [pairing.pairId, site.id, onStatus])
+  }, [pairing.pairId, site.id])
 
-  const copyValue = async (label: string, value: string) => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(value)
-      } else {
-        const input = document.createElement('textarea')
-        input.value = value
-        input.style.position = 'fixed'
-        input.style.opacity = '0'
-        document.body.appendChild(input)
-        try {
-          input.focus()
-          input.select()
-          if (!document.execCommand('copy')) throw new Error('clipboard unavailable')
-        } finally {
-          input.remove()
-        }
-      }
-      setCopied(label)
-      window.setTimeout(() => setCopied((current) => current === label ? null : current), 1600)
-    } catch {
-      setCopied(null)
-    }
-  }
-
-  const expired = status.status === 'expired' || status.status === 'cancelled' || status.status === 'failed'
-  return <Modal title="本地浏览器授权" description="使用 CookieCloud 将本地浏览器的登录状态安全同步到服务器" onClose={onClose}>
-    <div className="cookiecloud-auth-modal">
-      <div className={`cookiecloud-status ${status.status}`}><span className="cookiecloud-status-dot" /><div><strong>{status.status === 'received' ? '授权同步成功' : expired ? '授权未完成' : '等待本地浏览器上传'}</strong><p>{status.message}</p></div></div>
-      <div className="cookiecloud-steps">
-        <p>在 Chrome/Edge 安装 CookieCloud 后，将下面信息填入插件。同步方向选择“上传”，域名填写 <code>{pairing.domain}</code>，并开启 Local Storage 同步。</p>
-        <CookieCloudValue label="服务地址 Endpoint" value={pairing.endpoint} copied={copied === 'endpoint'} onCopy={() => void copyValue('endpoint', pairing.endpoint)} />
-        <CookieCloudValue label="UUID" value={pairing.uuid} copied={copied === 'uuid'} onCopy={() => void copyValue('uuid', pairing.uuid)} />
-        <CookieCloudValue label="密码" value={pairing.password} copied={copied === 'password'} onCopy={() => void copyValue('password', pairing.password)} />
-        <CookieCloudValue label="域名" value={pairing.domain} copied={copied === 'domain'} onCopy={() => void copyValue('domain', pairing.domain)} />
-        <CookieCloudValue label="自定义请求头" value={`${pairing.headerName}: ${pairing.uploadToken}`} copied={copied === 'header'} onCopy={() => void copyValue('header', `${pairing.headerName}: ${pairing.uploadToken}`)} />
-      </div>
-      {status.status === 'received' ? <p className="cookiecloud-result">已接收 {status.cookieCount} 个 Cookie，{status.localStorageCount} 个 Local Storage 项。</p> : null}
-      <p className="cookiecloud-security-note">配对信息仅在短时间内有效，上传 Token 只能用于本次站点授权，不会写入日志。</p>
+  const expired = ['expired', 'cancelled', 'failed'].includes(status.status)
+  const title = status.status === 'received' ? '授权同步成功' : expired ? '授权未完成' : '本地授权助手'
+  const statusLabel = status.status === 'received' ? '已同步并记录' : status.status === 'claimed' ? '助手已连接，等待上传' : expired ? '需要重新授权' : '等待授权助手连接'
+  return <Modal title={title} description="使用 autoAPI 授权助手同步当前浏览器的站点登录状态" onClose={onClose}>
+    <div className="assistant-auth-modal">
+      <div className={`assistant-status assistant-status-panel ${status.status}`}><span className="assistant-status-dot" /><div><strong>{statusLabel}</strong><p>{status.message}</p></div></div>
+      {status.status !== 'received' && !expired ? <div className={`assistant-status assistant-status-panel assistant-launch-status ${assistantLaunch.phase}`}><span className="assistant-status-dot" /><div><strong>{assistantLaunch.phase === 'opened' ? '已打开本地浏览器登录页' : assistantLaunch.phase === 'checking' ? '正在检查登录状态' : assistantLaunch.phase === 'waiting-login' ? '等待完成站点登录' : assistantLaunch.phase === 'synced' ? '登录状态已同步' : assistantLaunch.phase === 'unavailable' ? '未检测到本地授权助手' : assistantLaunch.phase === 'failed' ? '本地授权助手未能启动' : '正在启动本地授权助手'}</strong><p>{assistantLaunch.message}</p></div></div> : null}
+      <div className="assistant-auth-facts"><div><span>目标站点</span><strong>{site.name}</strong></div><div><span>域名</span><strong>{pairing.domain}</strong></div><div><span>同步范围</span><strong>当前站点 Cookie + Local Storage</strong></div></div>
+      <ol className="assistant-auth-steps"><li>本地授权助手会自动打开 {site.name} 的登录页。</li><li>在新打开的 Chrome/Edge 标签页完成登录，登录回跳后助手会自动同步。</li><li>保持此窗口打开，后台会自动记录同步成功或失败原因。</li></ol>
+      <details className="assistant-auth-fallback">
+        <summary>没有自动完成？在登录页手动同步</summary>
+        <div className="assistant-auth-code"><span>备用授权码</span><strong>{pairing.code}</strong><small>在自动打开的登录页中打开扩展并点击“同步当前站点”。若助手未启动，可填写此码进行手动配对，有效期至 {formatDateTime(pairing.expiresAt)}</small></div>
+      </details>
+      {status.status === 'received' ? <p className="assistant-result">本次已同步 {status.cookieCount} 个 Cookie、{status.localStorageCount} 个 Local Storage 项，记录时间：{formatDateTime(status.receivedAt)}</p> : null}
+      <p className="assistant-security-note">授权码和临时密钥仅用于本次配对，服务端不会保存明文 Cookie。</p>
     </div>
-    <div className="modal-actions"><button type="button" className={`button ${expired || status.status === 'received' ? 'primary' : 'secondary'}`} onClick={onClose}>{status.status === 'waiting' ? '取消授权' : '关闭'}</button></div>
+    <div className="modal-actions"><button type="button" className={`button ${expired || status.status === 'received' ? 'primary' : 'secondary'}`} onClick={onClose}>{status.status === 'waiting' || status.status === 'claimed' ? '取消授权' : '关闭'}</button></div>
   </Modal>
 }
 
-function CookieCloudValue({ label, value, copied, onCopy }: { label: string; value: string; copied: boolean; onCopy: () => void }) {
-  return <label className="cookiecloud-value"><span>{label}</span><div><input readOnly value={value} onFocus={(event) => event.currentTarget.select()} /><button type="button" className="icon-button" title={`复制${label}`} aria-label={`复制${label}`} onClick={onCopy}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div></label>
-}
-
-function EmbeddedBrowser() {
-  const [browserUrl, setBrowserUrl] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let active = true
-    setBrowserUrl(null)
-    setError(null)
-    void api.createBrowserSession()
-      .then((result) => {
-        if (active) setBrowserUrl(result.url)
-      })
-      .catch((cause) => {
-        if (active) setError(cause instanceof Error ? cause.message : '无法打开服务器浏览器')
-      })
-    return () => { active = false }
-  }, [])
-
-  return <div className="auth-browser-shell">
-    {browserUrl
-      ? <iframe title="服务器浏览器授权" className="checkin-browser-frame" src={browserUrl} />
-      : <div className="checkin-browser-loading"><LoaderCircle size={17} className="spin" /><span>{error ?? '正在连接服务器浏览器…'}</span></div>}
-    <div className="auth-browser-toolbar">
-      <span>{browserUrl ? '服务器浏览器已嵌入当前窗口' : error ? '嵌入浏览器连接失败，可使用备用入口' : '正在准备授权浏览器'}</span>
-      {browserUrl ? <a className="checkin-browser-link" href={browserUrl} target="_blank" rel="noreferrer">在新窗口打开授权浏览器</a> : null}
-    </div>
-    {error ? <p className="auth-browser-error">{error}</p> : null}
-  </div>
-}
-
-function SiteDrawer({ site, results, onClose, onRun, onAuthorize }: { site: Site; results: CheckinResult[]; onClose: () => void; onRun: () => void; onAuthorize: () => void }) {
+function SiteDrawer({ site, results, authEvents, onClose, onRun, onAuthorize }: { site: Site; results: CheckinResult[]; authEvents: AppState['authSyncEvents']; onClose: () => void; onRun: () => void; onAuthorize: () => void }) {
   return <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={`${site.name} 详情`}>
     <button className="drawer-backdrop" onClick={onClose} aria-label="关闭" />
     <aside className="drawer">
@@ -1240,6 +1199,7 @@ function SiteDrawer({ site, results, onClose, onRun, onAuthorize }: { site: Site
       <div className="drawer-actions"><button className="button primary" onClick={onRun}><Play size={16} />立即签到</button><button className="button secondary" onClick={onAuthorize}><KeyRound size={16} />重新授权</button></div>
       <dl className="site-facts"><div><dt>适配器</dt><dd>{site.adapter === 'new-api-modern' ? 'New API 新版' : site.adapter === 'new-api-legacy' ? 'New API 旧版' : site.adapter === 'local-api' ? 'LocalAPI' : site.adapter === 'sub2api' ? 'Sub2API' : site.adapter === 'fengwind-welfare' ? 'Fengwind 福利站' : site.adapter === 'hybgzs-welfare' ? '黑与白福利站' : site.adapter === 'chy-traffic' ? 'CHY 流量签到' : '待检测'}</dd></div><div><dt>登录账号</dt><dd>{site.username || '--'}</dd></div><div><dt>当前余额</dt><dd>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</dd></div><div><dt>最近签到</dt><dd>{formatDateTime(site.lastCheckedAt)}</dd></div></dl>
       {site.note ? <div className="drawer-note"><h3>站点备注</h3><p>{site.note}</p></div> : null}
+      <div className="drawer-section"><h3>最近授权同步</h3>{authEvents.length ? authEvents.slice(0, 5).map((event) => <div className="drawer-result" key={event.id}><StatusBadge tone={event.status === 'success' ? 'success' : event.status === 'failed' ? 'danger' : 'neutral'}>{event.status === 'success' ? '同步成功' : event.status === 'failed' ? '同步失败' : event.status === 'claimed' ? '已连接' : '处理中'}</StatusBadge><span>{event.message}{event.status === 'success' ? `（${event.cookieCount} Cookie / ${event.localStorageCount} 存储）` : ''}</span><time>{formatDateTime(event.completedAt ?? event.startedAt)}</time></div>) : <p className="empty-inline">暂无授权记录</p>}</div>
       <div className="drawer-section"><h3>最近记录</h3>{results.length ? results.slice(0,10).map((result) => <div className="drawer-result" key={result.id}><StatusBadge tone={statusTone(result.status)}>{checkinLabel(result.status)}</StatusBadge><span>{result.message}</span><time>{formatDateTime(result.completedAt)}</time></div>) : <p className="empty-inline">暂无记录</p>}</div>
     </aside>
   </div>

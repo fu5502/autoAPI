@@ -32,6 +32,14 @@ export interface ChannelImportPreview {
     balanceCurrency: string | null;
     balanceStatus: ProbeResult["balanceStatus"];
   };
+  matchedChannel: {
+    id: string;
+    name: string;
+    baseUrl: string;
+    keyName: string;
+    keyLast4: string;
+    models: string[];
+  } | null;
   expiresAt: string;
 }
 
@@ -45,6 +53,7 @@ interface PendingChannelImport {
   models: string[];
   keyCiphertext: string;
   keyLast4: string;
+  matchedChannelId: string | null;
   expiresAtMs: number;
 }
 
@@ -86,12 +95,7 @@ export class OpsAgent {
     }
 
     const normalizedBaseUrl = normalizeBaseUrl(input.baseUrl);
-    for (const channel of await this.options.store.listChannels()) {
-      if (normalizeBaseUrl(channel.baseUrl) !== normalizedBaseUrl) continue;
-      if (this.options.secrets.decrypt(channel.keyCiphertext) === apiKey) {
-        throw new ChannelImportError("相同 Base URL 和 API Key 已经在渠道池中", 409, "conflict");
-      }
-    }
+    const matchedChannel = findDomainMatch(await this.options.store.listChannels(), normalizedBaseUrl, apiKey, this.options.secrets);
 
     const candidateId = randomUUID();
     const expiresAtMs = Date.now() + 10 * 60_000;
@@ -105,6 +109,7 @@ export class OpsAgent {
       models: [],
       keyCiphertext: this.options.secrets.encrypt(apiKey),
       keyLast4: apiKey.slice(-4),
+      matchedChannelId: matchedChannel?.id ?? null,
       expiresAtMs,
     });
     return {
@@ -125,6 +130,7 @@ export class OpsAgent {
         balanceCurrency: null,
         balanceStatus: "unknown",
       },
+      matchedChannel: matchedChannel ? sanitizeMatchedChannel(matchedChannel) : null,
       expiresAt: new Date(expiresAtMs).toISOString(),
     };
   }
@@ -170,17 +176,12 @@ export class OpsAgent {
     if (pending.siteId !== input.siteId) throw new ChannelImportError("导入候选与当前站点不匹配", 404, "not_found");
 
     const apiKey = this.options.secrets.decrypt(pending.keyCiphertext);
-    const existingChannels = await this.options.store.listChannels();
-    for (const channel of existingChannels) {
-      if (normalizeBaseUrl(channel.baseUrl) !== pending.baseUrl) continue;
-      const existingKey = this.options.secrets.decrypt(channel.keyCiphertext);
-      if (existingKey === apiKey) {
-        throw new ChannelImportError("相同 Base URL 和 API Key 已经在渠道池中", 409, "conflict");
-      }
-    }
+    const matchedChannel = pending.matchedChannelId
+      ? await this.options.store.getChannel(pending.matchedChannelId)
+      : null;
 
     const requestedModels = [...new Set(input.models.map((model) => model.trim()).filter(Boolean))];
-    const models = pending.models.length > 0 ? requestedModels : [];
+    const models = pending.models.length > 0 ? requestedModels : matchedChannel?.models ?? [];
     if (pending.models.length > 0 && models.some((model) => !pending.models.includes(model))) {
       throw new ChannelImportError("所选模型不在该站点返回的模型列表中", 422, "validation_failed");
     }
@@ -188,6 +189,25 @@ export class OpsAgent {
     // A candidate is single-use. Delete it before writing the channel so a retry
     // cannot accidentally create a duplicate after a partially completed request.
     this.pendingChannelImports.delete(input.candidateId);
+    if (matchedChannel) {
+      const updated = await this.updateChannel(matchedChannel.id, {
+        name: input.name.trim(),
+        keyName: pending.keyName,
+        apiKey,
+        baseUrl: pending.baseUrl,
+        protocol: pending.protocol,
+        models,
+        priority: input.priority,
+        weight: input.weight,
+        minBalance: matchedChannel.minBalance,
+        balance: matchedChannel.balance,
+        balanceCurrency: matchedChannel.balanceCurrency,
+        tags: [...new Set(input.tags.map((tag) => tag.trim()).filter(Boolean))],
+        enabled: matchedChannel.enabled,
+      });
+      if (!updated) throw new ChannelImportError("匹配到的渠道已不存在，请重新导入", 404, "not_found");
+      return { channel: updated, probe: null, action: "updated" as const };
+    }
     const imported = await this.onboard({
       name: input.name.trim(),
       channelName: input.name.trim(),
@@ -201,7 +221,7 @@ export class OpsAgent {
       tags: [...new Set(input.tags.map((tag) => tag.trim()).filter(Boolean))],
     });
     const channel = await this.options.store.getChannel(imported.channel.id);
-    return { channel: channel ?? imported.channel, probe: null };
+    return { channel: channel ?? imported.channel, probe: null, action: "created" as const };
   }
 
   async discoverModels(input: ProviderProbeInput): Promise<ModelDiscoveryResult> {
@@ -371,6 +391,41 @@ export function isOfficialApiKey(value: string): boolean {
 
 function normalizeBaseUrl(value: string): string {
   return value.trim().replace(/\/+$/, "");
+}
+
+function findDomainMatch(channels: Channel[], baseUrl: string, apiKey: string, secrets: SecretBox): Channel | null {
+  const targetHost = channelHost(baseUrl);
+  if (!targetHost) return null;
+  const matches = channels.filter((channel) => channelHost(channel.baseUrl) === targetHost);
+  if (!matches.length) return null;
+  const exactKey = matches.find((channel) => {
+    try {
+      return secrets.decrypt(channel.keyCiphertext) === apiKey;
+    } catch {
+      return false;
+    }
+  });
+  if (exactKey) return exactKey;
+  return matches.find((channel) => normalizeBaseUrl(channel.baseUrl) === baseUrl) ?? matches[0] ?? null;
+}
+
+function channelHost(value: string): string | null {
+  try {
+    return new URL(value).hostname.toLowerCase().replace(/\.$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeMatchedChannel(channel: Channel) {
+  return {
+    id: channel.id,
+    name: channel.name,
+    baseUrl: channel.baseUrl,
+    keyName: channel.keyName ?? "API Key",
+    keyLast4: channel.keyLast4,
+    models: channel.models,
+  };
 }
 
 function redactCredential(message: string, apiKey: string): string {

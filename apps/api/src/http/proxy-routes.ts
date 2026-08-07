@@ -87,6 +87,15 @@ export function gatewayErrorHandler(error: Error, request: FastifyRequest, reply
     method: request.method,
     path: request.url.split("?", 1)[0],
   }, "Unhandled request error");
+  if (request.url.startsWith("/admin/checkin")) {
+    return reply.code(500).send({
+      error: {
+        message: sanitizeErrorMessage(error.message) || "签到请求处理失败",
+        type: "checkin_error",
+        requestId: request.id,
+      },
+    });
+  }
   return sendProtocolError(reply, request, 500, "Internal gateway error", "internal_error");
 }
 

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>autoAPI 授权助手</title>
+    <style>
+      :root { color-scheme: light; font: 14px system-ui, sans-serif; }
+      body { width: 320px; margin: 0; padding: 18px; color: #17211b; background: #f4f7f4; }
+      h1 { margin: 0 0 6px; font-size: 18px; }
+      p { color: #607066; line-height: 1.45; }
+      label { display: block; margin: 12px 0; font-weight: 600; }
+      input { box-sizing: border-box; width: 100%; margin-top: 6px; padding: 9px 10px; border: 1px solid #cbd7ce; border-radius: 6px; font: inherit; }
+      button { width: 100%; border: 0; border-radius: 6px; padding: 10px; background: #25834c; color: white; font: inherit; font-weight: 650; cursor: pointer; }
+      button:disabled { opacity: .55; cursor: wait; }
+      #status { min-height: 20px; margin: 12px 0 0; }
+      .success { color: #167344; } .error { color: #b43d36; }
+    </style>
+  </head>
+  <body>
+    <h1>autoAPI 授权助手</h1>
+    <p>后台点击站点授权后会自动打开目标站点登录页。完成登录后，授权助手会自动同步；此处仅作为备用手动同步入口。</p>
+    <label>autoAPI 地址<input id="origin" placeholder="https://autoapi.example.com" autocomplete="url"></label>
+    <label>一次性授权码<input id="code" placeholder="12 位授权码" autocomplete="one-time-code" maxlength="16"></label>
+    <button id="sync">同步当前站点</button>
+    <p id="status" aria-live="polite"></p>
+    <script src="popup.js"></script>
+  </body>
+</html>

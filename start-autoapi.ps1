@@ -26,6 +26,116 @@ function Get-PortProcess([int]$Port) {
   return Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
 }
 
+function New-ProcessJob {
+  if ($null -eq ("AutoApiProcessJob" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class AutoApiProcessJob
+{
+    private const int JobObjectExtendedLimitInformation = 9;
+    private const uint JobObjectLimitKillOnJobClose = 0x2000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoCounters
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BasicLimitInformation
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public IntPtr MinimumWorkingSetSize;
+        public IntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public IntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ExtendedLimitInformation
+    {
+        public BasicLimitInformation BasicLimitInformation;
+        public IoCounters IoInfo;
+        public IntPtr ProcessMemoryLimit;
+        public IntPtr JobMemoryLimit;
+        public IntPtr PeakProcessMemoryUsed;
+        public IntPtr PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(
+        IntPtr job,
+        int informationClass,
+        ref ExtendedLimitInformation information,
+        uint informationLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public static IntPtr CreateKillOnClose()
+    {
+        IntPtr job = CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        var information = new ExtendedLimitInformation();
+        information.BasicLimitInformation.LimitFlags = JobObjectLimitKillOnJobClose;
+        uint length = (uint)Marshal.SizeOf(typeof(ExtendedLimitInformation));
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref information, length))
+        {
+            int error = Marshal.GetLastWin32Error();
+            CloseHandle(job);
+            throw new Win32Exception(error);
+        }
+
+        return job;
+    }
+
+    public static void Assign(IntPtr job, IntPtr process)
+    {
+        if (!AssignProcessToJobObject(job, process))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+    }
+
+    public static void Close(IntPtr job)
+    {
+        if (job != IntPtr.Zero)
+        {
+            CloseHandle(job);
+        }
+    }
+}
+"@
+  }
+  return [AutoApiProcessJob]::CreateKillOnClose()
+}
+
+function Add-ProcessToJob([IntPtr]$Job, [System.Diagnostics.Process]$Process) {
+  [AutoApiProcessJob]::Assign($Job, $Process.Handle)
+}
+
 function Ensure-Dependencies {
   if (-not (Test-Command "node.exe")) {
     Write-MenuText "未找到 Node.js，请安装 Node.js 22 或更高版本。" Red
@@ -67,8 +177,8 @@ function Show-Menu {
   Show-ServiceStatus
   Write-Host ""
   Write-Host "-- 启动 ----------------------------------------------------" -ForegroundColor Magenta
-  Write-Host "[1]" -ForegroundColor Yellow -NoNewline; Write-Host " 正式模式        Docker Compose 启动 PostgreSQL、Redis 和网关"
-  Write-Host "[2]" -ForegroundColor Yellow -NoNewline; Write-Host " 开发模式        启动 API 与前端热更新窗口"
+  Write-Host "[1]" -ForegroundColor Yellow -NoNewline; Write-Host " 正式模式        当前终端前台运行 Docker Compose 服务"
+  Write-Host "[2]" -ForegroundColor Yellow -NoNewline; Write-Host " 开发模式        当前终端运行 API 与前端热更新"
   Write-Host "[3]" -ForegroundColor Yellow -NoNewline; Write-Host " 打开控制台      打开正在运行的 autoAPI 页面"
   Write-Host ""
   Write-Host "-- 维护 ----------------------------------------------------" -ForegroundColor Magenta
@@ -83,6 +193,7 @@ function Show-Menu {
   Write-Host "[B]" -ForegroundColor Yellow -NoNewline; Write-Host " 备份配置        备份 .env、迁移文件和文档"
   Write-Host "[M]" -ForegroundColor Yellow -NoNewline; Write-Host " 迁移签到数据    从 zhongzhuanzhan 导入站点和签到历史"
   Write-Host "[K]" -ForegroundColor Yellow -NoNewline; Write-Host " 备份签到数据    备份签到 SQLite 与浏览器配置"
+  Write-Host "[E]" -ForegroundColor Yellow -NoNewline; Write-Host " 授权助手目录    打开 Chrome/Edge 本地授权助手目录"
   Write-Host "[V]" -ForegroundColor Yellow -NoNewline; Write-Host " 版本信息        查看 Node、pnpm 和项目版本"
   Write-Host ""
   Write-Host "------------------------------------------------------------" -ForegroundColor DarkCyan
@@ -92,20 +203,93 @@ function Show-Menu {
 
 function Start-DevMode {
   if (-not (Ensure-Dependencies)) { return }
-  if (-not (Test-Port $ApiPort)) {
-    $apiCommand = "cd /d `"$Root`" && title autoAPI API && pnpm.cmd --filter @autoapi/api dev"
-    Start-Process -FilePath $env:ComSpec -ArgumentList @("/k", $apiCommand) -WorkingDirectory $Root | Out-Null
-  } else {
-    Write-MenuText "API 已占用 $ApiPort 端口，跳过启动。" Yellow
+  Stop-PreviousServices
+  $busyPorts = @($ApiPort, $WebPort) | Where-Object { Test-Port $_ }
+  if ($busyPorts.Count -gt 0) {
+    Write-MenuText "端口 $($busyPorts -join ', ') 已被占用，请先停止已有服务。" Yellow
+    return
   }
-  if (-not (Test-Port $WebPort)) {
-    $webCommand = "cd /d `"$Root`" && title autoAPI Web && pnpm.cmd --filter @autoapi/web dev"
-    Start-Process -FilePath $env:ComSpec -ArgumentList @("/k", $webCommand) -WorkingDirectory $Root | Out-Null
-  } else {
-    Write-MenuText "前端已占用 $WebPort 端口，跳过启动。" Yellow
+
+  Write-Host ""
+  Write-MenuText "开发服务将在当前终端启动。" Green
+  Write-Host "API: $ApiUrl"
+  Write-Host "Web: $WebUrl"
+  Write-MenuText "日志会显示在此窗口；按 Ctrl+C 或关闭此窗口会停止本次启动的服务。" Yellow
+  Write-Host ""
+
+  $job = [IntPtr]::Zero
+  $services = @()
+  try {
+    try {
+      $job = New-ProcessJob
+    } catch {
+      Write-MenuText "无法创建进程生命周期绑定，将使用前台进程树清理：$($_.Exception.Message)" Yellow
+    }
+    $nodeCommand = (Get-Command node.exe -ErrorAction Stop).Source
+    $tsxScript = (Resolve-Path (Join-Path $Root "apps\api\node_modules\.bin\..\tsx\dist\cli.mjs") -ErrorAction Stop).Path
+    $viteScript = (Resolve-Path (Join-Path $Root "apps\web\node_modules\.bin\..\vite\bin\vite.js") -ErrorAction Stop).Path
+    $apiDirectory = Join-Path $Root "apps\api"
+    $webDirectory = Join-Path $Root "apps\web"
+
+    $apiProcess = Start-Process -FilePath $nodeCommand -ArgumentList @($tsxScript, "watch", "src/index.ts") -WorkingDirectory $apiDirectory -NoNewWindow -PassThru
+    $services += [PSCustomObject]@{ Name = "API"; Process = $apiProcess }
+    if ($job -ne [IntPtr]::Zero) {
+      try {
+        Add-ProcessToJob $job $apiProcess
+      } catch {
+        Write-MenuText "无法绑定 API 进程，将使用前台进程树清理：$($_.Exception.Message)" Yellow
+        [AutoApiProcessJob]::Close($job)
+        $job = [IntPtr]::Zero
+      }
+    }
+
+    $webProcess = Start-Process -FilePath $nodeCommand -ArgumentList @($viteScript, "--host", "0.0.0.0") -WorkingDirectory $webDirectory -NoNewWindow -PassThru
+    $services += [PSCustomObject]@{ Name = "Web"; Process = $webProcess }
+    if ($job -ne [IntPtr]::Zero) {
+      try {
+        Add-ProcessToJob $job $webProcess
+      } catch {
+        Write-MenuText "无法绑定 Web 进程，将使用前台进程树清理：$($_.Exception.Message)" Yellow
+        [AutoApiProcessJob]::Close($job)
+        $job = [IntPtr]::Zero
+      }
+    }
+
+    $ready = $false
+    $startupDeadline = (Get-Date).AddSeconds(30)
+    while ($true) {
+      foreach ($service in $services) { $service.Process.Refresh() }
+      $exited = @($services | Where-Object { $_.Process.HasExited })
+      if ($exited.Count -gt 0) {
+        foreach ($service in $exited) {
+          Write-MenuText "$($service.Name) 服务已退出，退出码：$($service.Process.ExitCode)。请查看上方日志。" Red
+        }
+        break
+      }
+      if (-not $ready -and (Test-Port $ApiPort) -and (Test-Port $WebPort)) {
+        Write-MenuText "API 与 Web 已启动。" Green
+        $ready = $true
+      }
+      if (-not $ready -and (Get-Date) -ge $startupDeadline) {
+        Write-MenuText "开发服务启动超时，请查看上方 API/Web 日志。" Red
+        break
+      }
+      Start-Sleep -Milliseconds 400
+    }
+  } catch {
+    Write-MenuText "开发服务启动失败：$($_.Exception.Message)" Red
+  } finally {
+    foreach ($service in $services) {
+      $service.Process.Refresh()
+      if (-not $service.Process.HasExited) {
+        & taskkill.exe /PID $service.Process.Id /T /F 2>$null | Out-Null
+      }
+    }
+    if ($job -ne [IntPtr]::Zero) {
+      [AutoApiProcessJob]::Close($job)
+    }
+    Stop-LocalServices
   }
-  Write-MenuText "开发服务已启动，API: $ApiUrl，前端: $WebUrl" Green
-  Start-Sleep -Seconds 2
 }
 
 function Start-ProductionMode {
@@ -120,7 +304,7 @@ function Start-ProductionMode {
   }
   $envContent = Get-Content (Join-Path $Root ".env") -Raw
   $requiredValues = @{}
-  foreach ($required in @("POSTGRES_PASSWORD", "DATABASE_URL", "CHECKIN_VNC_PASSWORD", "CREDENTIAL_ENCRYPTION_KEY", "ADMIN_TOKEN", "ADMIN_PASSWORD", "GATEWAY_API_KEY")) {
+  foreach ($required in @("POSTGRES_PASSWORD", "DATABASE_URL", "CREDENTIAL_ENCRYPTION_KEY", "ADMIN_TOKEN", "ADMIN_PASSWORD", "GATEWAY_API_KEY")) {
     $match = [regex]::Match($envContent, "(?m)^$required=([^\r\n]+)")
     if (-not $match.Success -or [string]::IsNullOrWhiteSpace($match.Groups[1].Value)) {
       Write-MenuText ".env 缺少 $required，无法启动正式模式。" Red
@@ -134,13 +318,24 @@ function Start-ProductionMode {
       return
     }
   }
-  if ($requiredValues["CHECKIN_VNC_PASSWORD"].Length -ne 8) {
-    Write-MenuText "CHECKIN_VNC_PASSWORD 必须正好为 8 个字符。" Red
+  Stop-PreviousServices
+  if (Test-Port $ApiPort) {
+    Write-MenuText "端口 $ApiPort 已被占用，请先停止已有服务。" Yellow
     return
   }
-  Start-Process -FilePath $env:ComSpec -ArgumentList @("/k", "cd /d `"$Root`" && title autoAPI Docker && docker compose up --build") -WorkingDirectory $Root | Out-Null
-  Write-MenuText "Docker 正式模式已启动，网关地址: $ApiUrl" Green
-  Start-Sleep -Seconds 2
+
+  Write-Host ""
+  Write-MenuText "Docker 正式模式将在当前终端前台运行。" Green
+  Write-Host "网关地址: $ApiUrl"
+  Write-MenuText "日志会显示在此窗口；按 Ctrl+C 或关闭此窗口会停止本 Compose 项目。" Yellow
+  Write-Host ""
+
+  try {
+    & docker compose up --build
+  } finally {
+    Write-MenuText "正在停止本次启动的 Docker 服务（不会删除数据卷）..." Yellow
+    & docker compose down --remove-orphans 2>$null | Out-Null
+  }
 }
 
 function Open-Dashboard {
@@ -193,18 +388,69 @@ function Initialize-Environment {
   Start-Process notepad.exe $envPath
 }
 
-function Stop-Services {
+function Stop-LocalServices {
+  $stopped = @{}
   foreach ($port in @($ApiPort, $WebPort)) {
-    $connections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    $connections = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
     foreach ($connection in $connections) {
-      Stop-Process -Id $connection.OwningProcess -Force -ErrorAction SilentlyContinue
-      Write-MenuText "已停止端口 $port 的进程 PID $($connection.OwningProcess)。" Green
+      $processId = [int]$connection.OwningProcess
+      if ($stopped.ContainsKey($processId)) { continue }
+      $stopped[$processId] = $true
+      $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+      if ($process) {
+        Write-MenuText "正在停止端口 $port 的进程 PID $processId 及其子进程..." Yellow
+        & taskkill.exe /PID $processId /T /F 2>$null | Out-Null
+      }
     }
   }
-  if (Test-Command "docker.exe") {
-    docker compose stop
+}
+
+function Stop-ManagedDevProcesses {
+  $patterns = @(
+    '(?i)@autoapi[\\/](api|web).*dev',
+    '(?i)apps[\\/]api[\\/].*tsx.*src[\\/]index\.ts',
+    '(?i)apps[\\/]web[\\/].*vite'
+  )
+  $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  $matched = @($processes | Where-Object {
+    $commandLine = [string]$_.CommandLine
+    $commandLine -and ($patterns | Where-Object { $commandLine -match $_ })
+  })
+  $stopped = @{}
+  foreach ($process in $matched) {
+    $processId = [int]$process.ProcessId
+    if ($processId -eq $PID -or $stopped.ContainsKey($processId)) { continue }
+    $stopped[$processId] = $true
+    Write-MenuText "正在清理旧 autoAPI 进程 PID $processId 及其子进程..." Yellow
+    & taskkill.exe /PID $processId /T /F 2>$null | Out-Null
   }
-  Start-Sleep -Seconds 1
+}
+
+function Wait-PortsFree([int[]]$Ports, [int]$TimeoutSeconds = 10) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    $busy = @($Ports | Where-Object { Test-Port $_ })
+    if ($busy.Count -eq 0) { return $true }
+    Start-Sleep -Milliseconds 250
+  } while ((Get-Date) -lt $deadline)
+  return $false
+}
+
+function Stop-PreviousServices {
+  Write-MenuText "启动前正在清理旧的 autoAPI 服务..." Yellow
+  Stop-ManagedDevProcesses
+  Stop-LocalServices
+  if (Test-Command "docker.exe") {
+    & docker compose stop 2>$null | Out-Null
+  }
+  if (-not (Wait-PortsFree @($ApiPort, $WebPort))) {
+    Write-MenuText "旧服务清理后仍有端口未释放，将在启动前继续检查。" Yellow
+  }
+}
+
+function Stop-Services {
+  Stop-PreviousServices
+  Write-MenuText "旧服务已停止。" Green
 }
 
 function Backup-Configuration {
@@ -230,6 +476,11 @@ function Backup-CheckinData {
   if ($LASTEXITCODE -eq 0) { Write-MenuText "签到数据备份完成。" Green } else { Write-MenuText "签到数据备份失败。" Red }
 }
 
+function Open-AuthAssistant {
+  Start-Process explorer.exe (Join-Path $Root "apps\auth-assistant")
+  Write-MenuText "已打开本地授权助手目录，请在 Chrome/Edge 扩展管理页加载该目录。" Green
+}
+
 function Show-Version {
   $package = Get-Content (Join-Path $Root "package.json") -Raw | ConvertFrom-Json
   Write-Host "autoAPI: $($package.version)"
@@ -253,6 +504,7 @@ while ($true) {
     "B" { Backup-Configuration }
     "M" { Migrate-CheckinData }
     "K" { Backup-CheckinData }
+    "E" { Open-AuthAssistant }
     "V" { Show-Version }
     "0" { exit 0 }
     default { Write-MenuText "无效选项，请重新选择。" Yellow }

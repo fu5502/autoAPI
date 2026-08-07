@@ -38,7 +38,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify({
     logger: config.nodeEnv === "test" ? false : {
       level: config.nodeEnv === "production" ? "info" : "warn",
-    redact: ["req.headers.authorization", "req.headers.x-api-key", "req.headers.x-admin-token", "req.headers.x-autoapi-pairing-token", "body.apiKey"],
+    redact: ["req.headers.authorization", "req.headers.x-api-key", "req.headers.x-admin-token", "req.headers.x-autoapi-pairing-token", "req.headers.x-autoapi-assistant-token", "body.apiKey", "body.uploadToken"],
     },
     // Streaming requests are governed by the upstream connection/idle timeout
     // in fetchUpstream. A fixed Fastify request timeout would cut long Codex
@@ -49,7 +49,17 @@ export async function buildApp(options: BuildAppOptions = {}) {
   });
   registerCompressedJsonParser(app);
   app.setErrorHandler(gatewayErrorHandler);
-  await app.register(cors, { origin: config.nodeEnv === "production" ? false : true });
+  await app.register(cors, {
+    origin: config.nodeEnv === "production"
+      ? (origin, callback) => {
+          if (!origin || /^(?:chrome-extension:\/\/[a-z]{32}|moz-extension:\/\/[0-9a-f-]{36})$/i.test(origin)) {
+            callback(null, true);
+            return;
+          }
+          callback(null, false);
+        }
+      : true,
+  });
   await app.register(rateLimit, { global: false });
 
   const secrets = createSecretBox(config.credentialEncryptionKey);

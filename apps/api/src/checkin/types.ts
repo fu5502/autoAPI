@@ -18,6 +18,22 @@ export type CheckinStatus =
 
 export type RunTrigger = 'manual' | 'scheduled' | 'retry'
 
+export type AuthSyncMethod = 'assistant'
+export type AuthSyncStatus = 'waiting' | 'claimed' | 'success' | 'failed' | 'cancelled'
+
+export interface AuthSyncEvent {
+  id: number
+  siteId: number
+  method: AuthSyncMethod
+  status: AuthSyncStatus
+  message: string
+  cookieCount: number
+  localStorageCount: number
+  startedAt: string
+  claimedAt: string | null
+  completedAt: string | null
+}
+
 export interface Site {
   id: number
   name: string
@@ -41,6 +57,11 @@ export interface Site {
   lastRewardAt: string | null
   lastBalanceDeltaAmount: number | null
   lastError: string | null
+  authSyncedAt?: string | null
+  authSyncStatus?: AuthSyncStatus | null
+  authSyncMessage?: string | null
+  authSyncCookieCount?: number
+  authSyncLocalStorageCount?: number
   createdAt: string
   updatedAt: string
 }
@@ -80,6 +101,15 @@ export interface CheckinResult {
   loginVerified?: boolean | undefined
 }
 
+export interface SiteDeletionLog {
+  id: number
+  siteId: number
+  siteName: string
+  baseUrl: string
+  message: string
+  deletedAt: string
+}
+
 export interface AppSettings {
   scheduleEnabled: boolean
   scheduleWindowStart: string
@@ -110,8 +140,10 @@ export interface DashboardSummary {
 
 export interface AppState {
   sites: Site[]
+  authSyncEvents: AuthSyncEvent[]
   summary: DashboardSummary
   recentResults: CheckinResult[]
+  recentDeletions: SiteDeletionLog[]
   recentRuns: CheckinRun[]
   settings: AppSettings
 }

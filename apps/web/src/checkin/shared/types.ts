@@ -41,6 +41,11 @@ export interface Site {
   lastRewardAt: string | null
   lastBalanceDeltaAmount: number | null
   lastError: string | null
+  authSyncedAt?: string | null
+  authSyncStatus?: 'waiting' | 'claimed' | 'success' | 'failed' | 'cancelled' | null
+  authSyncMessage?: string | null
+  authSyncCookieCount?: number
+  authSyncLocalStorageCount?: number
   createdAt: string
   updatedAt: string
 }
@@ -80,6 +85,15 @@ export interface CheckinResult {
   loginVerified?: boolean
 }
 
+export interface SiteDeletionLog {
+  id: number
+  siteId: number
+  siteName: string
+  baseUrl: string
+  message: string
+  deletedAt: string
+}
+
 export interface AppSettings {
   scheduleEnabled: boolean
   scheduleWindowStart: string
@@ -111,11 +125,25 @@ export interface DashboardSummary {
 export interface AppState {
   sites: Site[]
   channelLinks: SiteChannelLink[]
+  authSyncEvents: AuthSyncEvent[]
   summary: DashboardSummary
   recentResults: CheckinResult[]
+  recentDeletions: SiteDeletionLog[]
   recentRuns: CheckinRun[]
   settings: AppSettings
-  browserAccessUrl?: string | null
+}
+
+export interface AuthSyncEvent {
+  id: number
+  siteId: number
+  method: 'assistant'
+  status: 'waiting' | 'claimed' | 'success' | 'failed' | 'cancelled'
+  message: string
+  cookieCount: number
+  localStorageCount: number
+  startedAt: string
+  claimedAt: string | null
+  completedAt: string | null
 }
 
 export interface SiteChannelLink {
@@ -124,32 +152,27 @@ export interface SiteChannelLink {
   createdAt: string
 }
 
-export interface AuthSessionState {
-  id: string
-  siteId: number
-  status: 'waiting' | 'success' | 'failed' | 'cancelled'
-  message: string
-  startedAt: string
-  completedAt: string | null
-}
-
-export interface CookieCloudPairing {
+export interface AuthAssistantPairing {
   pairId: string
-  uuid: string
-  password: string
-  uploadToken: string
-  headerName: 'X-AutoAPI-Pairing-Token'
-  endpoint: string
+  code: string
+  siteId: number
+  siteName: string
   domain: string
-  withStorage: boolean
+  siteUrl: string
+  adapter: AdapterType
   expiresAt: string
+  uploadPath: '/auth-assistant/upload'
+  claimPath: '/auth-assistant/claim'
 }
 
-export interface CookieCloudPairingStatus {
+export interface AuthAssistantPairingStatus {
   pairId: string
   siteId: number
-  status: 'waiting' | 'received' | 'failed' | 'expired' | 'cancelled'
+  status: 'waiting' | 'claimed' | 'received' | 'failed' | 'expired' | 'cancelled'
+  code: string
+  domain: string
   expiresAt: string
+  claimedAt: string | null
   receivedAt: string | null
   cookieCount: number
   localStorageCount: number
@@ -174,6 +197,14 @@ export interface ChannelImportPreview {
     balanceCurrency: string | null
     balanceStatus: 'ok' | 'low' | 'exhausted' | 'unknown' | 'error'
   }
+  matchedChannel: {
+    id: string
+    name: string
+    baseUrl: string
+    keyName: string
+    keyLast4: string
+    models: string[]
+  } | null
   expiresAt: string
 }
 
@@ -188,6 +219,7 @@ export interface ChannelImportModelResult {
 }
 
 export interface ChannelImportResult {
+  action: 'created' | 'updated'
   channel: {
     id: string
     name: string

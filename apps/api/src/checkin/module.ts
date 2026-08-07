@@ -6,7 +6,7 @@ import { GatewayError } from "../gateway/errors.js";
 import { BrowserManager } from "./browser-manager.js";
 import { CheckinBalanceSync } from "./channel-balance.js";
 import { CheckinCoordinator } from "./coordinator.js";
-import { CookieCloudService } from "./cookiecloud.js";
+import { AuthAssistantService } from "./auth-assistant.js";
 import { AppDatabase } from "./db.js";
 import { EventBus } from "./events.js";
 import { NewApiService } from "./new-api.js";
@@ -78,15 +78,26 @@ const channelLinkSchema = z.object({
   channelId: z.string().uuid(),
 });
 
-const cookieCloudUploadSchema = z.object({
-  uuid: z.string().trim().min(8).max(200),
-  encrypted: z.string().min(1).max(8 * 1024 * 1024),
-  crypto_type: z.enum(["legacy", "aes-128-cbc-fixed"]).optional(),
+const assistantClaimSchema = z.object({
+  code: z.string().trim().min(6).max(16),
+  hostname: z.string().trim().min(1).max(253),
+});
+const assistantPreviewSchema = z.object({
+  code: z.string().trim().min(6).max(16),
+});
+const assistantUploadSchema = z.object({
+  pairId: z.string().uuid(),
+  iv: z.string().min(16).max(64),
+  ciphertext: z.string().min(32).max(12 * 1024 * 1024),
+});
+const assistantFailureSchema = z.object({
+  pairId: z.string().uuid(),
+  message: z.string().trim().min(1).max(500),
 });
 
 export interface CheckinModule {
   interactiveAuthorizationEnabled: boolean;
-  cookieCloud: CookieCloudService;
+  authAssistant: AuthAssistantService;
   db: AppDatabase;
   browser: BrowserManager;
   events: EventBus;
@@ -107,10 +118,10 @@ export function createCheckinModule(
   const db = new AppDatabase();
   const browser = new BrowserManager();
   const events = new EventBus();
-  const cookieCloud = new CookieCloudService(db, options.secrets ?? null, events);
+  const authAssistant = new AuthAssistantService(db, options.secrets ?? null, events);
   const newApi = new NewApiService(db, browser, events, {
     interactiveAuthorizationEnabled,
-    cookieCloud,
+    authAssistant,
   });
   const siteIcons = new SiteIconService(db, fetch, browser);
   const telegram = new TelegramNotifier(db);
@@ -120,13 +131,13 @@ export function createCheckinModule(
   scheduler.start();
   return {
     interactiveAuthorizationEnabled,
-    cookieCloud,
+    authAssistant,
     db, browser, events, newApi, coordinator, scheduler, siteIcons, telegram, balanceSync,
     async close() {
       scheduler.stop();
       coordinator.stop();
       await browser.shutdown().catch(() => undefined);
-      cookieCloud.close();
+      authAssistant.close();
       db.close();
     },
   };
@@ -138,36 +149,122 @@ export async function registerCheckinRoutes(
   requireAdmin: (request: FastifyRequest, reply: FastifyReply) => Promise<void>,
   dependencies: { agent: OpsAgent },
 ): Promise<void> {
-  app.options("/cookiecloud/update", async (_request, reply) => {
+  app.options("/auth-assistant/upload", async (request, reply) => {
     return reply
-      .header("access-control-allow-origin", "*")
+      .headers(assistantCorsHeaders(request.headers.origin))
       .header("access-control-allow-methods", "POST, OPTIONS")
-      .header("access-control-allow-headers", "content-type, content-encoding, x-autoapi-pairing-token")
+      .header("access-control-allow-headers", "content-type, x-autoapi-assistant-token")
       .send();
   });
-  app.post("/cookiecloud/update", {
+  app.options("/auth-assistant/claim", async (request, reply) => {
+    return reply
+      .headers(assistantCorsHeaders(request.headers.origin))
+      .header("access-control-allow-methods", "POST, OPTIONS")
+      .header("access-control-allow-headers", "content-type")
+      .send();
+  });
+  app.options("/auth-assistant/preview", async (request, reply) => {
+    return reply
+      .headers(assistantCorsHeaders(request.headers.origin))
+      .header("access-control-allow-methods", "POST, OPTIONS")
+      .header("access-control-allow-headers", "content-type")
+      .send();
+  });
+  app.options("/auth-assistant/fail", async (request, reply) => {
+    return reply
+      .headers(assistantCorsHeaders(request.headers.origin))
+      .header("access-control-allow-methods", "POST, OPTIONS")
+      .header("access-control-allow-headers", "content-type, x-autoapi-assistant-token")
+      .send();
+  });
+  app.post("/auth-assistant/claim", {
     config: {
       rateLimit: {
-        max: 60,
-        timeWindow: 15 * 60_000,
+        max: 30,
+        timeWindow: 10 * 60_000,
       },
     },
   }, async (request, reply) => {
     const originHeaders = {
-      "access-control-allow-origin": "*",
       "cache-control": "no-store",
+      ...assistantCorsHeaders(request.headers.origin),
     };
     try {
-      const body = cookieCloudUploadSchema.parse(request.body);
-      const uploadToken = typeof request.headers["x-autoapi-pairing-token"] === "string"
-        ? request.headers["x-autoapi-pairing-token"].trim()
-        : "";
-      if (!uploadToken) return reply.code(401).headers(originHeaders).send({ action: "error", message: "缺少 CookieCloud 配对上传 Token" });
-      const status = module.cookieCloud.acceptUpload(body.uuid, body.encrypted, uploadToken, body.crypto_type ?? "legacy");
-      return reply.headers(originHeaders).send({ action: "done", status });
+      const body = assistantClaimSchema.parse(request.body);
+      return reply.headers(originHeaders).send(module.authAssistant.claim(body.code, body.hostname));
     } catch (error) {
-      const message = error instanceof Error ? error.message : "CookieCloud 上传失败";
-      return reply.code(/Token|授权码/.test(message) ? 401 : 400).headers(originHeaders).send({ action: "error", message });
+      const message = error instanceof Error ? error.message : "无法连接授权助手";
+      return reply.code(/授权码|授权任务/.test(message) ? 401 : 400).headers(originHeaders).send({ error: { message, type: "assistant_claim_error" } });
+    }
+  });
+  app.post("/auth-assistant/preview", {
+    config: {
+      rateLimit: {
+        max: 30,
+        timeWindow: 10 * 60_000,
+      },
+    },
+  }, async (request, reply) => {
+    const originHeaders = {
+      "cache-control": "no-store",
+      ...assistantCorsHeaders(request.headers.origin),
+    };
+    try {
+      const body = assistantPreviewSchema.parse(request.body);
+      const preview = module.authAssistant.preview(body.code);
+      return reply.headers(originHeaders).send(preview);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "授权码不存在或已过期";
+      return reply.code(/授权码|授权任务/.test(message) ? 401 : 400).headers(originHeaders).send({ error: { message, type: "assistant_preview_error" } });
+    }
+  });
+  app.post("/auth-assistant/upload", {
+    config: {
+      rateLimit: {
+        max: 30,
+        timeWindow: 10 * 60_000,
+      },
+    },
+  }, async (request, reply) => {
+    const originHeaders = {
+      "cache-control": "no-store",
+      ...assistantCorsHeaders(request.headers.origin),
+    };
+    try {
+      const body = assistantUploadSchema.parse(request.body);
+      const headerToken = typeof request.headers["x-autoapi-assistant-token"] === "string"
+        ? request.headers["x-autoapi-assistant-token"].trim()
+        : "";
+      if (!headerToken) return reply.code(401).headers(originHeaders).send({ error: { message: "缺少授权助手上传 Token", type: "assistant_auth_error" } });
+      const status = module.authAssistant.acceptUpload({ ...body, uploadToken: headerToken });
+      return reply.headers(originHeaders).send({ status });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "授权助手上传失败";
+      return reply.code(/Token|授权任务|授权码/.test(message) ? 401 : 400).headers(originHeaders).send({ error: { message, type: "assistant_upload_error" } });
+    }
+  });
+  app.post("/auth-assistant/fail", {
+    config: {
+      rateLimit: {
+        max: 30,
+        timeWindow: 10 * 60_000,
+      },
+    },
+  }, async (request, reply) => {
+    const originHeaders = {
+      "cache-control": "no-store",
+      ...assistantCorsHeaders(request.headers.origin),
+    };
+    try {
+      const body = assistantFailureSchema.parse(request.body);
+      const headerToken = typeof request.headers["x-autoapi-assistant-token"] === "string"
+        ? request.headers["x-autoapi-assistant-token"].trim()
+        : "";
+      if (!headerToken) return reply.code(401).headers(originHeaders).send({ error: { message: "缺少授权助手上传 Token", type: "assistant_auth_error" } });
+      return reply.headers(originHeaders).send({ status: module.authAssistant.failPair({ ...body, uploadToken: headerToken }) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "授权助手失败状态上报失败";
+      return reply.code(/Token|授权任务/.test(message) ? 401 : 400).headers(originHeaders).send({ error: { message, type: "assistant_failure_error" } });
     }
   });
 
@@ -176,14 +273,13 @@ export async function registerCheckinRoutes(
 
     checkin.get("/state", async () => ({
       sites: module.db.listSites(),
+      authSyncEvents: module.db.listAuthSyncEvents(),
       summary: module.db.getDashboardSummary(module.scheduler.getNextRunAt(), module.scheduler.isRunning()),
       recentResults: module.db.listResults({ limit: 50 }),
+      recentDeletions: module.db.listSiteDeletionLogs(50),
       recentRuns: module.db.listRecentRuns(20),
       channelLinks: module.db.listChannelLinks(),
       settings: settingsForClient(module.db.getSettings()),
-      browserAccessUrl: !module.interactiveAuthorizationEnabled
-        ? null
-        : process.env.CHECKIN_BROWSER_URL?.trim() || null,
     }));
 
     checkin.get("/events", async (request, reply) => {
@@ -239,7 +335,7 @@ export async function registerCheckinRoutes(
       if (!url) return reply.code(404).send();
       const asset = await module.siteIcons.getIconAsset(id);
       if (!asset) return reply.redirect(url);
-      reply.header("cache-control", "private, no-cache").type(asset.contentType);
+      reply.header("cache-control", "private, max-age=31536000, immutable").type(asset.contentType);
       return reply.send(Buffer.from(asset.body));
     });
     checkin.post<{ Params: { id: string } }>("/sites/:id/favicon/refresh", async (request) => {
@@ -249,8 +345,58 @@ export async function registerCheckinRoutes(
       return module.db.getSite(id);
     });
     checkin.delete<{ Params: { id: string } }>("/sites/:id", async (request, reply) => {
-      if (!module.db.deleteSite(parseId(request.params.id))) return reply.code(404).send({ error: "站点不存在" });
-      return { ok: true };
+      try {
+      let siteId: number;
+      try {
+        siteId = parseId(request.params.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Invalid site id";
+        return reply.code(400).send({ error: { message, type: "invalid_request" } });
+      }
+      if (!module.db.getSite(siteId)) return reply.code(404).send({ error: { message: "站点不存在", type: "not_found" } });
+      if (module.coordinator.getActiveRun()?.id) {
+        return reply.code(409).send({ error: { message: "签到任务正在运行，请完成后再删除站点", type: "conflict" } });
+      }
+      const cleanupWarnings: string[] = [];
+      try {
+        // Browser cleanup must never prevent the SQLite record from being removed.
+        // A closing Chromium page can otherwise wait behind a navigation indefinitely.
+        await withTimeout(module.newApi.cancelAuthorizationsForSite(siteId), 3_000);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown authorization cleanup error";
+        cleanupWarnings.push(`authorization cleanup: ${message}`);
+        request.log.warn({ siteId, error: message }, "Check-in authorization cleanup failed during site deletion");
+      }
+      try {
+        module.authAssistant.cancelPairsForSite(siteId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown assistant cleanup error";
+        cleanupWarnings.push(`assistant cleanup: ${message}`);
+        request.log.warn({ siteId, error: message }, "Authorization assistant cleanup failed during site deletion");
+      }
+      try {
+        module.siteIcons.forgetSite(siteId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown icon cleanup error";
+        cleanupWarnings.push(`icon cleanup: ${message}`);
+        request.log.warn({ siteId, error: message }, "Site icon cleanup failed during site deletion");
+      }
+      try {
+        const deletionMessage = cleanupWarnings.length
+          ? `站点已删除，运行时清理提示：${cleanupWarnings.join('；')}`
+          : '站点已删除';
+        if (!module.db.deleteSite(siteId, { message: deletionMessage })) return reply.code(404).send({ error: { message: "站点不存在", type: "not_found" } });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown database deletion error";
+        request.log.error({ siteId, error: message }, "Check-in site deletion failed");
+        return reply.code(500).send({ error: { message: `\u7AD9\u70B9\u5220\u9664\u5931\u8D25: ${message}`, type: "site_delete_error" } });
+      }
+      return cleanupWarnings.length ? { ok: true, warnings: cleanupWarnings } : { ok: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown site deletion error";
+        request.log.error({ path: request.url, error: message }, "Unhandled check-in site deletion error");
+        return reply.code(500).send({ error: { message: `\u7AD9\u70B9\u5220\u9664\u5931\u8D25: ${message}`, type: "site_delete_error" } });
+      }
     });
     checkin.post<{ Params: { id: string } }>("/sites/:id/channel-import/prepare", async (request, reply) => {
       const site = module.db.getSite(parseId(request.params.id));
@@ -306,6 +452,7 @@ export async function registerCheckinRoutes(
         const imported = await dependencies.agent.confirmChannelImport({ ...input, siteId });
         const linked = await module.balanceSync.linkChannel(siteId, imported.channel.id);
         return reply.code(201).send({
+          action: imported.action,
           channel: sanitizeImportedChannel(linked.channel),
           probe: null,
         });
@@ -361,27 +508,22 @@ export async function registerCheckinRoutes(
         });
       }
     });
-    checkin.post<{ Params: { id: string } }>("/sites/:id/cookiecloud/pair", async (request, reply) => {
+    checkin.post<{ Params: { id: string } }>("/sites/:id/auth-assistant/pair", async (request, reply) => {
       const siteId = parseId(request.params.id);
       const site = module.db.getSite(siteId);
       if (!site) return reply.code(404).send({ error: { message: "站点不存在", type: "not_found" } });
-      const pairing = module.cookieCloud.createPair(site);
-      return {
-        ...pairing,
-        endpoint: `${publicOrigin(request)}/cookiecloud`,
-        withStorage: true,
-      };
+      return module.authAssistant.createPair(site);
     });
-    checkin.get<{ Params: { id: string; pairId: string } }>("/sites/:id/cookiecloud/pair/:pairId", async (request, reply) => {
+    checkin.get<{ Params: { id: string; pairId: string } }>("/sites/:id/auth-assistant/pair/:pairId", async (request, reply) => {
       const siteId = parseId(request.params.id);
-      const status = module.cookieCloud.getPairStatus(request.params.pairId, siteId);
-      if (!status) return reply.code(404).send({ error: { message: "CookieCloud 配对不存在或已过期", type: "not_found" } });
+      const status = module.authAssistant.getPairStatus(request.params.pairId, siteId);
+      if (!status) return reply.code(404).send({ error: { message: "授权任务不存在或已过期", type: "not_found" } });
       return status;
     });
-    checkin.delete<{ Params: { id: string; pairId: string } }>("/sites/:id/cookiecloud/pair/:pairId", async (request, reply) => {
+    checkin.delete<{ Params: { id: string; pairId: string } }>("/sites/:id/auth-assistant/pair/:pairId", async (request, reply) => {
       const siteId = parseId(request.params.id);
-      const status = module.cookieCloud.cancelPair(request.params.pairId, siteId);
-      if (!status) return reply.code(404).send({ error: { message: "CookieCloud 配对不存在", type: "not_found" } });
+      const status = module.authAssistant.cancelPair(request.params.pairId, siteId);
+      if (!status) return reply.code(404).send({ error: { message: "授权任务不存在", type: "not_found" } });
       return status;
     });
     checkin.get<{ Params: { id: string } }>("/auth-sessions/:id", async (request, reply) => {
@@ -434,19 +576,32 @@ export async function registerCheckinRoutes(
 }, { prefix: "/admin/checkin" });
 }
 
-function publicOrigin(request: FastifyRequest): string {
-  const forwardedProto = request.headers["x-forwarded-proto"];
-  const protocol = typeof forwardedProto === "string" && forwardedProto.trim()
-    ? forwardedProto.split(",")[0]!.trim()
-    : request.protocol;
-  const host = request.headers.host ?? "localhost:8080";
-  return `${protocol}://${host}`.replace(/\/+$/, "");
+function assistantCorsHeaders(origin: string | undefined): Record<string, string> {
+  const headers = { "vary": "Origin" };
+  if (!origin || !/^(?:chrome-extension:\/\/[a-z]{32}|moz-extension:\/\/[0-9a-f-]{36})$/i.test(origin)) {
+    return headers;
+  }
+  return { ...headers, "access-control-allow-origin": origin };
 }
 
 function parseId(value: string): number {
   const id = Number(value);
   if (!Number.isInteger(id) || id <= 0) throw new GatewayError("无效 ID", 400, "invalid_request_error");
   return id;
+}
+
+async function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`运行时清理超时（${timeoutMs}ms）`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function toMinutes(value: string): number {

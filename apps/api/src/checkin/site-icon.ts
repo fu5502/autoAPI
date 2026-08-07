@@ -217,6 +217,14 @@ export class SiteIconService {
     const site = this.db.getSite(siteId)
     if (!site) throw new Error('站点不存在')
     let url = await this.getIconUrl(siteId)
+    if (!refresh && url) {
+      const stored = this.db.getSiteIconAsset(siteId, url)
+      if (stored) {
+        const asset = { body: stored.body, contentType: stored.contentType }
+        this.assetCache.set(siteId, { url, asset })
+        return asset
+      }
+    }
     if (refresh || !url || (!site.faviconCustom && isFallbackIconUrl(url, site.baseUrl) && !this.renderedIconAttempts.has(siteId))) {
       url = await this.getIconUrl(siteId, true)
     }
@@ -246,6 +254,13 @@ export class SiteIconService {
       })
     this.assetPending.set(siteId, { url, task })
     return task
+  }
+
+  forgetSite(siteId: number): void {
+    this.pending.delete(siteId)
+    this.assetCache.delete(siteId)
+    this.assetPending.delete(siteId)
+    this.renderedIconAttempts.delete(siteId)
   }
 
   private async loadIconAsset(baseUrl: string, iconUrl: string, allowBrowser: boolean): Promise<IconAsset | null> {

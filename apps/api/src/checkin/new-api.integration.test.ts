@@ -66,13 +66,21 @@ describe('NewApiService channel import', () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('New API 测试站', 'https://new-api.example')
-    database.updateSiteAuth(site.id, { adapter: 'new-api-modern', authStatus: 'valid' })
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid' })
 
     const page = {
       goto: async () => undefined,
       waitForLoadState: async () => undefined,
       waitForTimeout: async () => undefined,
       evaluate: async (_callback: unknown, input: { pathname?: string }) => {
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { system_name: 'New API 测试站', quota_per_unit: 500_000 },
+          }
+        }
         if (input.pathname === '/api/user/auth/refresh') {
           return { httpStatus: 200, contentType: 'application/json', success: true, data: { access_token: 'dashboard-session-token' } }
         }

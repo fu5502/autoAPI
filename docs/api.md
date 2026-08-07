@@ -41,7 +41,9 @@
 
 签到接口统一使用管理员登录会话，路径前缀为 `/admin/checkin`。未登录请求返回 `401`。签到站点的“导入渠道池”只在能明确取得官方 API Key 时提供，不会把 Cookie、网页登录 Token 或刷新 Token 当作渠道密钥。
 
-签到授权默认通过 CookieCloud 兼容接口完成：本地扩展向 `POST /cookiecloud/update` 上传 gzip 压缩的 `uuid`、`encrypted` 和 `crypto_type` JSON，并使用弹窗下发的一次性 `X-AutoAPI-Pairing-Token` 请求头。服务端验证后将会话快照加密保存，不提供明文 Cookie 读取接口。noVNC 仅在显式设置 `CHECKIN_ENABLE_NOVNC=true` 时启用。
+签到授权通过 autoAPI 本地授权助手完成：后台生成一次性授权码后，已安装的本地扩展会自动打开目标站点登录页，调用 `POST /auth-assistant/claim` 领取临时密钥，并在登录回跳后向 `POST /auth-assistant/upload` 上传 AES-256-GCM 加密的当前站点 Cookie 和 Local Storage。服务端验证站点域名后将会话快照加密保存，并在 `site_auth_events` 中记录连接、成功或失败状态。noVNC 仅在显式设置 `CHECKIN_ENABLE_NOVNC=true` 时启用。
+
+本地授权助手失败时调用 `POST /auth-assistant/fail`，使用 `X-AutoAPI-Assistant-Token` 和配对任务 ID 上报失败原因。扩展弹窗可以复用当前自动授权任务作为手动同步兜底；授权任务只能使用一次，有效期 10 分钟。服务重启、取消、关闭登录页或超时后需要在后台重新发起授权。扩展目录为 `apps/auth-assistant`，可在 Chrome/Edge 的开发者模式中以“加载已解压的扩展程序”安装。
 
 ## Add a model route
 

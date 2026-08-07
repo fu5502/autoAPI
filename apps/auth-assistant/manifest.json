@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "autoAPI Auth Assistant",
+  "description": "Sync the current site's authenticated browser state to autoAPI.",
+  "version": "0.2.2",
+  "permissions": ["cookies", "activeTab", "storage", "scripting", "tabs"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "action": {
+    "default_title": "Sync to autoAPI",
+    "default_popup": "popup.html"
+  },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "content_scripts": [{
+    "matches": ["http://*/*", "https://*/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }]
+}

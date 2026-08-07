@@ -3,12 +3,15 @@ import type {
   AdapterType,
   AppSettings,
   AuthStatus,
+  AuthSyncMethod,
+  AuthSyncStatus,
   CheckinResult,
   CheckinRun,
   CheckinStatus,
   DashboardSummary,
   RunTrigger,
   Site,
+  SiteDeletionLog,
 } from './types.js'
 import { databasePath, ensureDataDirectories } from './config.js'
 import { localDateKey, nowIso } from './utils.js'
@@ -87,6 +90,11 @@ function mapSite(row: Row): Site {
     lastRewardAt: row.last_reward_at === null || row.last_reward_at === undefined ? null : String(row.last_reward_at),
     lastBalanceDeltaAmount: nullableNumber(row.last_balance_delta_amount),
     lastError: row.last_error === null ? null : String(row.last_error),
+    authSyncedAt: row.auth_synced_at === null || row.auth_synced_at === undefined ? null : String(row.auth_synced_at),
+    authSyncStatus: row.auth_sync_status === null || row.auth_sync_status === undefined ? null : String(row.auth_sync_status) as Exclude<Site['authSyncStatus'], null | undefined>,
+    authSyncMessage: row.auth_sync_message === null || row.auth_sync_message === undefined ? null : String(row.auth_sync_message),
+    authSyncCookieCount: Number(row.auth_sync_cookie_count ?? 0),
+    authSyncLocalStorageCount: Number(row.auth_sync_local_storage_count ?? 0),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   }
@@ -122,6 +130,17 @@ function mapResult(row: Row): CheckinResult {
     message: String(row.message),
     startedAt: String(row.started_at),
     completedAt: String(row.completed_at),
+  }
+}
+
+function mapSiteDeletion(row: Row): SiteDeletionLog {
+  return {
+    id: Number(row.id),
+    siteId: Number(row.site_id),
+    siteName: String(row.site_name),
+    baseUrl: String(row.base_url),
+    message: String(row.message),
+    deletedAt: String(row.deleted_at),
   }
 }
 
@@ -197,6 +216,18 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_results_run ON checkin_results(run_id);
       CREATE INDEX IF NOT EXISTS idx_runs_started ON checkin_runs(started_at DESC);
 
+      CREATE TABLE IF NOT EXISTS site_deletion_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id INTEGER NOT NULL,
+        site_name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        message TEXT NOT NULL,
+        deleted_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_site_deletion_logs_deleted_at
+        ON site_deletion_logs(deleted_at DESC);
+
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -215,6 +246,22 @@ export class AppDatabase {
         encrypted TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS site_auth_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+        method TEXT NOT NULL,
+        status TEXT NOT NULL,
+        message TEXT NOT NULL,
+        cookie_count INTEGER NOT NULL DEFAULT 0,
+        local_storage_count INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        claimed_at TEXT,
+        completed_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_site_auth_events_site_started
+        ON site_auth_events(site_id, started_at DESC);
 
       CREATE TABLE IF NOT EXISTS icon_asset_cache (
         cache_key TEXT PRIMARY KEY,
@@ -297,12 +344,77 @@ export class AppDatabase {
   }
 
   listSites(): Site[] {
-    return (this.db.prepare('SELECT * FROM sites ORDER BY enabled DESC, id ASC').all() as Row[]).map(mapSite)
+    return (this.db.prepare(this.siteSelect('ORDER BY s.enabled DESC, s.id ASC')).all() as Row[]).map(mapSite)
   }
 
   getSite(id: number): Site | null {
-    const row = this.db.prepare('SELECT * FROM sites WHERE id = ?').get(id) as Row | undefined
+    const row = this.db.prepare(this.siteSelect('WHERE s.id = ?')).get(id) as Row | undefined
     return row ? mapSite(row) : null
+  }
+
+  private siteSelect(suffix: string): string {
+    return `
+      SELECT s.*, event.completed_at AS auth_synced_at, event.status AS auth_sync_status,
+        event.message AS auth_sync_message, event.cookie_count AS auth_sync_cookie_count,
+        event.local_storage_count AS auth_sync_local_storage_count
+      FROM sites s
+      LEFT JOIN site_auth_events event ON event.id = (
+        SELECT latest.id FROM site_auth_events latest
+        WHERE latest.site_id = s.id
+        ORDER BY latest.id DESC LIMIT 1
+      )
+      ${suffix}
+    `
+  }
+
+  startAuthSync(siteId: number, method: AuthSyncMethod, message: string): number {
+    if (!this.getSite(siteId)) throw new Error('站点不存在')
+    const result = this.db.prepare(`
+      INSERT INTO site_auth_events (site_id, method, status, message, started_at)
+      VALUES (?, ?, 'waiting', ?, ?)
+    `).run(siteId, method, message, nowIso())
+    return Number(result.lastInsertRowid)
+  }
+
+  recoverPendingAuthSyncs(message = '服务已重启，本次授权任务已失效，请重新生成授权码'): number {
+    const result = this.db.prepare(`
+      UPDATE site_auth_events
+      SET status = 'failed', message = ?, completed_at = ?
+      WHERE status IN ('waiting', 'claimed') AND completed_at IS NULL
+    `).run(message, nowIso())
+    return Number(result.changes)
+  }
+
+  markAuthSyncClaimed(id: number, message: string): void {
+    this.db.prepare(`
+      UPDATE site_auth_events SET status = 'claimed', message = ?, claimed_at = ? WHERE id = ?
+    `).run(message, nowIso(), id)
+  }
+
+  completeAuthSync(id: number, status: Exclude<AuthSyncStatus, 'waiting' | 'claimed'>, message: string, cookieCount: number, localStorageCount: number): void {
+    this.db.prepare(`
+      UPDATE site_auth_events
+      SET status = ?, message = ?, cookie_count = ?, local_storage_count = ?, completed_at = ?
+      WHERE id = ?
+    `).run(status, message, cookieCount, localStorageCount, nowIso(), id)
+  }
+
+  listAuthSyncEvents(siteId?: number, limit = 50): import('./types.js').AuthSyncEvent[] {
+    const rows = (siteId === undefined
+      ? this.db.prepare('SELECT * FROM site_auth_events ORDER BY id DESC LIMIT ?').all(limit)
+      : this.db.prepare('SELECT * FROM site_auth_events WHERE site_id = ? ORDER BY id DESC LIMIT ?').all(siteId, limit)) as Row[]
+    return rows.map((row) => ({
+      id: Number(row.id),
+      siteId: Number(row.site_id),
+      method: String(row.method) as import('./types.js').AuthSyncMethod,
+      status: String(row.status) as import('./types.js').AuthSyncStatus,
+      message: String(row.message),
+      cookieCount: Number(row.cookie_count ?? 0),
+      localStorageCount: Number(row.local_storage_count ?? 0),
+      startedAt: String(row.started_at),
+      claimedAt: row.claimed_at === null || row.claimed_at === undefined ? null : String(row.claimed_at),
+      completedAt: row.completed_at === null || row.completed_at === undefined ? null : String(row.completed_at),
+    }))
   }
 
   listChannelLinks(siteId?: number): SiteChannelLink[] {
@@ -476,8 +588,35 @@ export class AppDatabase {
     return this.getSite(id)
   }
 
-  deleteSite(id: number): boolean {
-    return Number(this.db.prepare('DELETE FROM sites WHERE id = ?').run(id).changes) > 0
+  deleteSite(id: number, options: { message?: string } = {}): boolean {
+    const site = this.getSite(id)
+    if (!site) return false
+    const siteId = site.id
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      // Keep deletion deterministic for databases created by older versions.
+      // Some installations predate the current ON DELETE CASCADE constraints.
+      this.db.prepare('DELETE FROM site_channel_links WHERE site_id = ?').run(siteId)
+      this.db.prepare('DELETE FROM site_models WHERE site_id = ?').run(siteId)
+      this.db.prepare('DELETE FROM model_catalog_snapshots WHERE site_id = ?').run(siteId)
+      this.db.prepare('DELETE FROM site_auth_events WHERE site_id = ?').run(siteId)
+      this.db.prepare('DELETE FROM site_auth_snapshots WHERE site_id = ?').run(siteId)
+      this.db.prepare('DELETE FROM site_icon_assets WHERE site_id = ?').run(siteId)
+      this.db.prepare('DELETE FROM checkin_results WHERE site_id = ?').run(siteId)
+      const deleted = Number(this.db.prepare('DELETE FROM sites WHERE id = ?').run(siteId).changes) > 0
+      if (deleted) {
+        this.db.prepare(`
+          INSERT INTO site_deletion_logs (site_id, site_name, base_url, message, deleted_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(site.id, site.name, site.baseUrl, options.message ?? '站点已删除', nowIso())
+      }
+      this.db.exec('COMMIT')
+      return deleted
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   updateSiteAuth(id: number, input: {
@@ -629,6 +768,11 @@ export class AppDatabase {
     return (this.db.prepare('SELECT * FROM checkin_results ORDER BY completed_at DESC LIMIT ?').all(limit) as Row[]).map(mapResult)
   }
 
+  listSiteDeletionLogs(limit = 50): SiteDeletionLog[] {
+    const safeLimit = Math.min(1000, Math.max(1, limit))
+    return (this.db.prepare('SELECT * FROM site_deletion_logs ORDER BY deleted_at DESC, id DESC LIMIT ?').all(safeLimit) as Row[]).map(mapSiteDeletion)
+  }
+
   getSettings(): AppSettings {
     const rows = this.db.prepare('SELECT key, value FROM settings').all() as Row[]
     const values = Object.fromEntries(rows.map((row) => [String(row.key), JSON.parse(String(row.value))]))
@@ -658,6 +802,7 @@ export class AppDatabase {
   cleanupHistory(retentionDays: number) {
     const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString()
     this.db.prepare('DELETE FROM checkin_runs WHERE started_at < ?').run(cutoff)
+    this.db.prepare('DELETE FROM site_deletion_logs WHERE deleted_at < ?').run(cutoff)
   }
 
   getDashboardSummary(nextRunAt: string | null, schedulerRunning: boolean): DashboardSummary {

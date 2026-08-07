@@ -8,7 +8,7 @@ import type {
   Site,
 } from './types.js'
 import { BrowserManager } from './browser-manager.js'
-import { CookieCloudService, type BrowserAuthSnapshot } from './cookiecloud.js'
+import { AuthAssistantService, type BrowserAuthSnapshot } from './auth-assistant.js'
 import { AppDatabase } from './db.js'
 import { EventBus } from './events.js'
 import { localDateKey, nowIso, quotaToAmount, roundAmount, safeMessage } from './utils.js'
@@ -208,38 +208,44 @@ export class NewApiService {
     private readonly db: AppDatabase,
     private readonly browser: BrowserManager,
     private readonly events: EventBus,
-    options: { interactiveAuthorizationEnabled?: boolean; cookieCloud?: CookieCloudService } = {},
+    options: { interactiveAuthorizationEnabled?: boolean; authAssistant?: AuthAssistantService } = {},
   ) {
     this.interactiveAuthorizationEnabled = options.interactiveAuthorizationEnabled ?? true
-    this.cookieCloud = options.cookieCloud ?? null
+    this.authAssistant = options.authAssistant ?? null
   }
 
-  private readonly cookieCloud: CookieCloudService | null
+  private readonly authAssistant: AuthAssistantService | null
 
   private async applyImportedCookies(context: BrowserContext, site: Site): Promise<BrowserAuthSnapshot | null> {
-    return this.cookieCloud?.applyToContext(context, site.id) ?? null
+    return this.authAssistant?.applyToContext(context, site.id) ?? null
   }
 
   private async openImportedSitePage(context: BrowserContext, page: Page, site: Site): Promise<void> {
     const snapshot = await this.applyImportedCookies(context, site)
+    await this.installImportedStorage(page, site, snapshot)
     await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
-    await this.applyImportedStorage(page, site, snapshot)
   }
 
   private async openImportedStorage(page: Page, site: Site): Promise<void> {
-    await this.applyImportedStorage(page, site, await this.cookieCloud?.getSnapshot(site.id) ?? null)
+    const snapshot = await this.authAssistant?.getSnapshot(site.id) ?? null
+    if (!await this.installImportedStorage(page, site, snapshot)) return
+    await page.reload({ waitUntil: 'domcontentloaded' })
   }
 
-  private async applyImportedStorage(page: Page, site: Site, snapshot: BrowserAuthSnapshot | null): Promise<void> {
-    if (!snapshot) return
-    const host = new URL(site.baseUrl).hostname.toLowerCase()
-    const storage = snapshot.localStorageByHost[host]
-      ?? Object.entries(snapshot.localStorageByHost).find(([key]) => key === host || key.endsWith(`.${host}`) || host.endsWith(`.${key}`))?.[1]
-    if (!storage || !Object.keys(storage).length) return
-    await page.evaluate((items) => {
+  private async installImportedStorage(page: Page, _site: Site, snapshot: BrowserAuthSnapshot | null): Promise<boolean> {
+    if (!snapshot) return false
+    const storageByHost = Object.fromEntries(
+      Object.entries(snapshot.localStorageByHost)
+        .map(([host, items]) => [host.toLowerCase().replace(/\.$/, ''), items] as const),
+    )
+    if (!Object.keys(storageByHost).length) return false
+    await page.addInitScript(({ storageByHost: importedStorage }) => {
+      const currentHost = window.location.hostname.toLowerCase()
+      const items = importedStorage[currentHost]
+      if (!items) return
       for (const [key, value] of Object.entries(items)) window.localStorage.setItem(key, value)
-    }, storage)
-    await page.reload({ waitUntil: 'domcontentloaded' })
+    }, { storageByHost })
+    return true
   }
 
   async extractOfficialApiKeys(siteId: number): Promise<OfficialApiKeyExtraction> {
@@ -255,78 +261,97 @@ export class NewApiService {
       }
     }
 
-    const protocol = site.adapter === 'sub2api' ? 'sub2api' : site.adapter === 'new-api-modern' || site.adapter === 'new-api-legacy' ? 'new-api' : null
-    if (!protocol) {
-      return {
-        supported: false,
-        baseUrl: site.baseUrl,
-        protocol: 'new-api',
-        keys: [],
-        reason: '该站点适配器暂不支持自动提取官方 API Key，请手动添加渠道',
-      }
-    }
-
     const timeoutMs = this.db.getSettings().requestTimeoutSeconds * 1000
     return this.browser.run({ interactive: false }, async (context, page) => {
       await this.openImportedSitePage(context, page, site)
-      let headers: Record<string, string>
-      if (protocol === 'sub2api') {
-        const auth = await this.detectSub2ApiAuthentication(page, timeoutMs)
-        if (!auth) {
-          return {
-            supported: false,
-            baseUrl: site.baseUrl,
-            protocol,
-            keys: [],
-            reason: '无法从已授权会话恢复站点登录状态，请重新授权后重试',
-          }
-        }
-        headers = { Authorization: `Bearer ${auth.accessToken}` }
-      } else {
-        if (site.adapter === 'new-api-legacy' && site.legacyUserId) {
-          // Legacy New API installations may still accept New-API-User for
-          // basic user endpoints, but token management is protected by the
-          // browser session. Prefer a refreshed session bearer when available.
-          const modern = await pageRequest<{ access_token?: string }>(page, '/api/user/auth/refresh', 'POST', {}, timeoutMs)
-          headers = modern.success && modern.data?.access_token
-            ? { Authorization: `Bearer ${modern.data.access_token}` }
-            : { 'New-API-User': String(site.legacyUserId) }
-        } else {
-          // New API may protect cookie-based refresh with an Origin check. Use
-          // the authorized page first so the browser sends the same cookies and
-          // browser headers as the site's own frontend.
-          const modern = await pageRequest<{ access_token?: string }>(page, '/api/user/auth/refresh', 'POST', {}, timeoutMs)
-          if (!modern.success || !modern.data?.access_token) {
-            return {
-              supported: false,
-              baseUrl: site.baseUrl,
-              protocol,
-              keys: [],
-              reason: '无法从已授权会话恢复站点登录状态，请重新授权后重试',
-            }
-          }
-          headers = { Authorization: `Bearer ${modern.data.access_token}` }
+      const resolved = await this.resolveOfficialApiImportContext(context, page, site, timeoutMs)
+      if (!resolved) {
+        return {
+          supported: false,
+          baseUrl: site.baseUrl,
+          protocol: 'new-api',
+          keys: [],
+          reason: '该站点暂不支持自动提取官方 API Key，请手动添加渠道',
         }
       }
-      const keys = protocol === 'new-api'
-        ? await extractNewApiOfficialKeys(page, context, site.baseUrl, headers, timeoutMs)
-        : await extractSub2ApiOfficialKeys(page, context, site.baseUrl, headers, timeoutMs)
+      const keys = resolved.protocol === 'new-api'
+        ? await extractNewApiOfficialKeys(page, context, resolved.baseUrl, resolved.headers, timeoutMs)
+        : await extractSub2ApiOfficialKeys(page, context, resolved.baseUrl, resolved.headers, timeoutMs)
       if (keys.length) {
         return {
           supported: true,
-          baseUrl: site.baseUrl,
-          protocol,
+          baseUrl: resolved.baseUrl,
+          protocol: resolved.protocol,
           keys,
         }
       }
       return {
         supported: false,
-        baseUrl: site.baseUrl,
-        protocol,
+        baseUrl: resolved.baseUrl,
+        protocol: resolved.protocol,
         keys: [],
-        reason: `站点未通过官方 API Key 管理接口提供完整 Key，不能安全自动导入（已尝试 ${protocol === 'new-api' ? 'New API Token 接口' : 'Sub2API API Key 接口'}）`,
+        reason: `站点未通过官方 API Key 管理接口提供完整 Key，不能安全自动导入（已尝试 ${resolved.protocol === 'new-api' ? 'New API Token 接口' : 'Sub2API API Key 接口'}）`,
       }
     })
+  }
+
+  private async resolveOfficialApiImportContext(
+    context: BrowserContext,
+    page: Page,
+    site: Site,
+    timeoutMs: number,
+  ): Promise<{ baseUrl: string; protocol: 'new-api' | 'sub2api'; headers: Record<string, string> } | null> {
+    if (site.adapter === 'sub2api' || isSub2ApiSite(site.baseUrl)) {
+      const auth = await this.detectSub2ApiAuthentication(page, timeoutMs)
+      return auth ? { baseUrl: site.baseUrl, protocol: 'sub2api', headers: { Authorization: `Bearer ${auth.accessToken}` } } : null
+    }
+
+    if (['local-api', 'fengwind-welfare', 'hybgzs-welfare', 'chy-traffic'].includes(site.adapter)
+      || isFengwindWelfareSite(site.baseUrl)
+      || isHybgzsWelfareSite(site.baseUrl)
+      || isChyTrafficSite(site.baseUrl)) {
+      return null
+    }
+
+    let status = await this.getRemoteStatus(page, timeoutMs)
+    let baseUrl = resolveServerBaseUrl(status.data?.server_address, site.baseUrl)
+    if (baseUrl !== site.baseUrl) {
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
+      status = await this.getRemoteStatus(page, timeoutMs)
+    }
+
+    const auth = await this.detectAuthentication(page, site.legacyUserId, timeoutMs)
+    if (auth && ['new-api-modern', 'new-api-legacy'].includes(auth.adapter)) {
+      const money = deriveMoneySettings(status.data)
+      this.db.updateSiteAuth(site.id, {
+        adapter: auth.adapter,
+        authStatus: 'valid',
+        baseUrl,
+        username: auth.user.display_name || auth.user.username || null,
+        legacyUserId: auth.legacyUserId ?? null,
+        name: status.data?.system_name || site.name,
+        currencySymbol: money.currencySymbol,
+        quotaPerUnit: money.quotaPerUnit,
+        displayScale: money.displayScale,
+        lastBalanceRaw: numberOrNull(auth.user.quota),
+        lastBalanceAmount: quotaToAmount(numberOrNull(auth.user.quota), money.quotaPerUnit, money.displayScale),
+        lastError: null,
+      })
+      return { baseUrl, protocol: 'new-api', headers: buildAuthHeaders(auth) }
+    }
+
+    // Some New API deployments return a refresh token without embedding the
+    // user object. It is still safe to use this bearer only for the official
+    // token-management endpoints; the key itself is accepted only after the
+    // normal API-key shape checks below.
+    const modern = await pageRequest<{ access_token?: string }>(page, '/api/user/auth/refresh', 'POST', {}, timeoutMs)
+    if (modern.success && modern.data?.access_token) {
+      return { baseUrl, protocol: 'new-api', headers: { Authorization: `Bearer ${modern.data.access_token}` } }
+    }
+    if (site.adapter === 'new-api-legacy' && site.legacyUserId) {
+      return { baseUrl, protocol: 'new-api', headers: { 'New-API-User': String(site.legacyUserId) } }
+    }
+    return null
   }
 
   async extractOfficialApiKey(siteId: number): Promise<OfficialApiKeyExtraction> {
@@ -384,6 +409,12 @@ export class NewApiService {
       })
     }
     return state
+  }
+
+  async cancelAuthorizationsForSite(siteId: number): Promise<void> {
+    const sessions = [...this.authSessions.values()]
+      .filter((session) => session.siteId === siteId && session.status === 'waiting')
+    for (const session of sessions) await this.cancelAuthorization(session.id)
   }
 
   private async authorizeInBrowser(site: Site, state: AuthSessionState) {

@@ -2,9 +2,8 @@ import type {
   ApiResponse,
   AppSettings,
   AppState,
-  AuthSessionState,
-  CookieCloudPairing,
-  CookieCloudPairingStatus,
+  AuthAssistantPairing,
+  AuthAssistantPairingStatus,
   ChannelImportPreview,
   ChannelImportPrepareResult,
   ChannelImportModelResult,
@@ -14,24 +13,35 @@ import type {
 
 const tokenKey = 'autoapi-admin-session'
 
-function authHeaders(options?: RequestInit): HeadersInit {
+function authHeaders(): HeadersInit {
   return {
     Authorization: `Bearer ${localStorage.getItem(tokenKey) ?? ''}`,
-    ...options?.headers,
   }
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  const headers = new Headers(authHeaders())
+  if (options?.headers) {
+    new Headers(options.headers).forEach((value, key) => headers.set(key, value))
+  }
+  if (options?.body !== undefined && !headers.has('content-type')) headers.set('Content-Type', 'application/json')
   const response = await fetch(url, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...authHeaders(options),
-      ...options?.headers,
-    },
+    headers,
   })
-  const payload = await response.json() as ApiResponse<T> & { error?: { message?: string }; message?: string }
-  if (!response.ok) throw new Error(payload.error?.message || payload.message || '操作失败')
+  const raw = await response.text()
+  let payload: (ApiResponse<T> & { error?: { message?: string; requestId?: string }; message?: string }) | null = null
+  try {
+    payload = raw ? JSON.parse(raw) as ApiResponse<T> & { error?: { message?: string; requestId?: string }; message?: string } : null
+  } catch {
+    payload = null
+  }
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.message || raw.trim() || `请求失败（HTTP ${response.status}）`
+    const requestId = payload?.error?.requestId
+    throw new Error(requestId ? `${message}（请求 ID：${requestId}）` : message)
+  }
+  if (!payload) throw new Error(`服务返回了空响应（HTTP ${response.status}）`)
   return ('data' in payload && payload.success === true ? payload.data : payload) as T
 }
 
@@ -41,19 +51,15 @@ export const api = {
   addSitesBulk: (urls: string[]) => request<{ created: Site[]; skipped: Array<{ input: string; reason: string }> }>('/admin/checkin/sites/bulk', { method: 'POST', body: JSON.stringify({ urls }) }),
   updateSite: (id: number, input: Partial<Pick<Site, 'name' | 'baseUrl' | 'note' | 'faviconUrl' | 'enabled'>>) => request<Site>(`/admin/checkin/sites/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   refreshSiteFavicon: (id: number) => request<Site>(`/admin/checkin/sites/${id}/favicon/refresh`, { method: 'POST', body: '{}' }),
-  deleteSite: (id: number) => request<void>(`/admin/checkin/sites/${id}`, { method: 'DELETE' }),
-  authorizeSite: (id: number) => request<AuthSessionState>(`/admin/checkin/sites/${id}/authorize`, { method: 'POST', body: '{}' }),
-  createCookieCloudPair: (id: number) => request<CookieCloudPairing>(`/admin/checkin/sites/${id}/cookiecloud/pair`, { method: 'POST', body: '{}' }),
-  getCookieCloudPair: (siteId: number, pairId: string) => request<CookieCloudPairingStatus>(`/admin/checkin/sites/${siteId}/cookiecloud/pair/${pairId}`),
-  cancelCookieCloudPair: (siteId: number, pairId: string) => request<CookieCloudPairingStatus>(`/admin/checkin/sites/${siteId}/cookiecloud/pair/${pairId}`, { method: 'DELETE' }),
-  createBrowserSession: () => request<{ url: string }>('/admin/checkin/browser/session', { method: 'POST', body: '{}' }),
+  deleteSite: (id: number) => request<{ ok: true; warnings?: string[] }>(`/admin/checkin/sites/${id}`, { method: 'DELETE' }),
+  createAuthAssistantPair: (id: number) => request<AuthAssistantPairing>(`/admin/checkin/sites/${id}/auth-assistant/pair`, { method: 'POST', body: '{}' }),
+  getAuthAssistantPair: (siteId: number, pairId: string) => request<AuthAssistantPairingStatus>(`/admin/checkin/sites/${siteId}/auth-assistant/pair/${pairId}`),
+  cancelAuthAssistantPair: (siteId: number, pairId: string) => request<AuthAssistantPairingStatus>(`/admin/checkin/sites/${siteId}/auth-assistant/pair/${pairId}`, { method: 'DELETE' }),
   prepareChannelImport: (id: number) => request<ChannelImportPrepareResult>(`/admin/checkin/sites/${id}/channel-import/prepare`, { method: 'POST', body: '{}' }),
   discoverChannelImportModels: (id: number, candidateId: string) => request<ChannelImportModelResult>(`/admin/checkin/sites/${id}/channel-import/models`, { method: 'POST', body: JSON.stringify({ candidateId }) }),
   confirmChannelImport: (id: number, input: { candidateId: string; name: string; models: string[]; priority: number; weight: number; tags: string[] }) => request<ChannelImportResult>(`/admin/checkin/sites/${id}/channel-import/confirm`, { method: 'POST', body: JSON.stringify(input) }),
   linkChannelBalance: (id: number, channelId: string) => request<import('./shared/types').ChannelBalanceLinkResult>(`/admin/checkin/sites/${id}/channel-link`, { method: 'POST', body: JSON.stringify({ channelId }) }),
   syncChannelBalance: (id: number) => request<{ updatedChannelIds: string[]; skippedBecauseBalanceIsUnknown: boolean }>(`/admin/checkin/sites/${id}/channel-balance/sync`, { method: 'POST', body: '{}' }),
-  getAuthSession: (id: string) => request<AuthSessionState>(`/admin/checkin/auth-sessions/${id}`),
-  cancelAuthSession: (id: string) => request<AuthSessionState>(`/admin/checkin/auth-sessions/${id}`, { method: 'DELETE' }),
   runCheckin: (siteIds?: number[]) => request<unknown>('/admin/checkin/checkin/run', { method: 'POST', body: JSON.stringify(siteIds ? { siteIds } : {}) }),
   saveSettings: (settings: AppSettings) => request<AppSettings>('/admin/checkin/settings', { method: 'PUT', body: JSON.stringify(settings) }),
   testTelegram: (input: { botToken: string; chatId: string }) => request<{ sent: boolean }>('/admin/checkin/settings/telegram/test', { method: 'POST', body: JSON.stringify(input) }),

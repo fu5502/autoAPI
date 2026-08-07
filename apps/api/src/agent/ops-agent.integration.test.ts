@@ -7,7 +7,7 @@ import { GeminiAdapter } from "../gateway/adapters/gemini-adapter.js";
 import { OpenAiAdapter } from "../gateway/adapters/openai-adapter.js";
 import { createSecretBox } from "../security/secret-box.js";
 import { startMockUpstream } from "../test/test-helpers.js";
-import { ChannelImportError, isOfficialApiKey, OpsAgent } from "./ops-agent.js";
+import { isOfficialApiKey, OpsAgent } from "./ops-agent.js";
 
 let server: FastifyInstance | null = null;
 
@@ -79,13 +79,43 @@ describe("operations agent", () => {
     expect(modelsChecks).toBe(0);
     expect(chatChecks).toBe(0);
 
-    await expect(agent.prepareChannelImport({
+    await store.updateChannel(imported.channel.id, {
+      name: imported.channel.name,
+      baseUrl: imported.channel.baseUrl,
+      protocol: imported.channel.protocol,
+      models: ["existing-model"],
+      priority: imported.channel.priority,
+      weight: imported.channel.weight,
+      minBalance: imported.channel.minBalance,
+      tags: imported.channel.tags,
+      enabled: imported.channel.enabled,
+    });
+
+    const reimportPreview = await agent.prepareChannelImport({
       siteId: 7,
       siteName: "Import site",
-      baseUrl: mock.baseUrl,
-      apiKey: "sk-valid-import-key",
+      baseUrl: `${mock.baseUrl}/v1/`,
+      apiKey: "sk-rotated-import-key",
       protocol: "openai",
-    })).rejects.toBeInstanceOf(ChannelImportError);
+    });
+    expect(reimportPreview.matchedChannel).toMatchObject({ id: imported.channel.id, name: "Imported site", baseUrl: mock.baseUrl });
+
+    const updated = await agent.confirmChannelImport({
+      siteId: 7,
+      candidateId: reimportPreview.candidateId,
+      name: "Reimported site",
+      models: [],
+      priority: 7,
+      weight: 80,
+      tags: ["签到站点", "重新导入"],
+    });
+    expect(updated.action).toBe("updated");
+    expect(updated.channel.id).toBe(imported.channel.id);
+    expect(updated.channel.name).toBe("Reimported site");
+    expect(updated.channel.baseUrl).toBe(`${mock.baseUrl}/v1`);
+    expect(updated.channel.models).toEqual(["existing-model"]);
+    expect(secrets.decrypt(updated.channel.keyCiphertext)).toBe("sk-rotated-import-key");
+    expect(await store.listChannels()).toHaveLength(1);
   });
 
   it("accepts a complete non-sk key returned by an official provider API", async () => {

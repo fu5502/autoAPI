@@ -1,7 +1,7 @@
-import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
+import { Fragment, lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Copy, GitBranch, KeyRound, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun } from "lucide-react";
-import { ApiError, api, clearAdminSession, hasAdminSession } from "./api";
+import { ApiError, api, clearAdminSession, getAdminToken, hasAdminSession } from "./api";
 import { ChannelTable } from "./components/ChannelTable";
 import { ChannelEditor } from "./components/ChannelEditor";
 import { MetricStrip } from "./components/MetricStrip";
@@ -493,31 +493,35 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                 const expanded = expandedAliases.has(pool.alias);
                 const hasMultipleChannels = pool.routes.length > 1;
                 return (
-                <tr key={pool.alias}>
-                  <td>
-                    <div className="pool-model-name">
-                      <Route size={16} />
-                      <span className="mono">{pool.alias}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <strong className="pool-health-count">{pool.healthyChannels}/{pool.channels}</strong>
-                  </td>
-                  <td>{pool.totalRequests1h.toLocaleString("zh-CN")} 次</td>
-                  <td className={pool.totalRequests1h === 0 ? "subtle" : pool.errorRate1h > 0.2 ? "danger-text" : pool.errorRate1h > 0.05 ? "warning-text" : "success-text"}>{pool.totalRequests1h === 0 ? "—" : formatPercent(1 - pool.errorRate1h)}</td>
-                  <td>{pool.averageLatencyMs1h} ms</td>
-                  <td>
-                    <div className="pool-route-cell">
-                      <button className="pool-expand-button" type="button" onClick={() => toggleExpanded(pool.alias)} aria-expanded={expanded} disabled={!hasMultipleChannels}>
-                        <span className="pool-expand-icon" aria-hidden="true">{hasMultipleChannels ? (expanded ? "−" : "+") : "·"}</span>
-                        <span>{hasMultipleChannels ? (expanded ? `收起 ${pool.routes.length} 个渠道` : `${pool.routes.length} 个渠道`) : "1 个渠道"}</span>
-                      </button>
-                      {expanded ? <div className="pool-route-list">
+                <Fragment key={pool.alias}>
+                  <tr className={`pool-table-row ${expanded ? "expanded" : ""}`.trim()}>
+                    <td>
+                      <div className="pool-model-name">
+                        <Route size={16} />
+                        <span className="mono">{pool.alias}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <strong className="pool-health-count">{pool.healthyChannels}/{pool.channels}</strong>
+                    </td>
+                    <td>{pool.totalRequests1h.toLocaleString("zh-CN")} 次</td>
+                    <td className={pool.totalRequests1h === 0 ? "subtle" : pool.errorRate1h > 0.2 ? "danger-text" : pool.errorRate1h > 0.05 ? "warning-text" : "success-text"}>{pool.totalRequests1h === 0 ? "—" : formatPercent(1 - pool.errorRate1h)}</td>
+                    <td>{pool.averageLatencyMs1h} ms</td>
+                    <td>
+                      <div className="pool-route-cell">
+                        <button className="pool-expand-button" type="button" onClick={() => toggleExpanded(pool.alias)} aria-expanded={expanded} disabled={!hasMultipleChannels}>
+                          <span className="pool-expand-icon" aria-hidden="true">{hasMultipleChannels ? (expanded ? "−" : "+") : "·"}</span>
+                          <span>{hasMultipleChannels ? (expanded ? `收起 ${pool.routes.length} 个渠道` : `${pool.routes.length} 个渠道`) : "1 个渠道"}</span>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {expanded ? <tr className="pool-route-detail-row">
+                    <td className="pool-route-detail-cell" colSpan={6}>
+                      <div className="pool-route-list">
                         {pool.routes.map((route) => (
                           <div className="pool-route-item" key={`${route.channelId}-${route.upstreamModel}`}>
                             <div className="pool-route-main">
-                              <StatusDot status={route.status} />
-                              <span className="pool-route-channel" title={route.channelName}>{route.channelName}</span>
                               <span className="pool-route-meta pool-route-conversation" title="最近 1 小时真实请求的平均响应耗时">
                                 <span>对话延迟</span>
                                 <strong>{formatLatency(route.conversationLatencyMs)}</strong>
@@ -528,7 +532,11 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                               </span>
                             </div>
                             <div className="pool-route-health" aria-label={`${route.channelName} 近 24 小时每小时状态`}>
-                              <span className="pool-route-health-label">近 24h</span>
+                              <div className="pool-route-identity">
+                                <PoolRouteSiteIcon route={route} />
+                                <span className="pool-route-channel" title={route.channelName}>{route.channelName}</span>
+                                <StatusDot status={route.status} />
+                              </div>
                               <div className="pool-route-hour-grid">
                                 {route.hourlyHealth.map((point) => (
                                   <span className="pool-route-hour-wrap" key={point.bucket} tabIndex={0} aria-label={formatHealthTooltip(point)}>
@@ -546,10 +554,10 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
                             </div>
                           </div>
                         ))}
-                      </div> : null}
-                    </div>
-                  </td>
-                </tr>
+                      </div>
+                    </td>
+                  </tr> : null}
+                </Fragment>
                 );
               })}
             </tbody>
@@ -557,6 +565,53 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
         </div>
       </section>
     </div>
+  );
+}
+
+function PoolRouteSiteIcon({ route }: { route: Pool["routes"][number] }) {
+  const iconUrl = `/admin/channels/${encodeURIComponent(route.channelId)}/favicon`;
+  const [iconSrc, setIconSrc] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    const controller = new AbortController();
+    setIconSrc(null);
+    setUnavailable(false);
+
+    void fetch(iconUrl, {
+      cache: "force-cache",
+      headers: { Authorization: `Bearer ${getAdminToken()}` },
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("channel icon unavailable");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (!blob.size) throw new Error("channel icon is empty");
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setIconSrc(objectUrl);
+      })
+      .catch(() => {
+        if (active) setUnavailable(true);
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [iconUrl]);
+
+  return (
+    <span className="pool-route-site-icon" title={`${route.channelName} 站点图标`} aria-hidden="true">
+      {unavailable || !iconSrc
+        ? <span>{route.channelName.slice(0, 1).toUpperCase()}</span>
+        : <img src={iconSrc} alt="" loading="lazy" decoding="async" onError={() => { setIconSrc(null); setUnavailable(true); }} />}
+    </span>
   );
 }
 

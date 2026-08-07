@@ -10,7 +10,10 @@ export function registerCompressedJsonParser(app: FastifyInstance): void {
       if (encoding && !['identity', 'gzip', 'x-gzip'].includes(encoding)) {
         throw new Error(`Unsupported content encoding: ${encoding}`)
       }
-      done(null, JSON.parse(decoded.toString('utf8')))
+      // Browsers may send Content-Type: application/json for an empty DELETE.
+      // Treat it as an absent body so the route can handle the request normally.
+      const text = decoded.toString('utf8').trim()
+      done(null, text ? JSON.parse(text) : undefined)
     } catch (error) {
       done(error as Error)
     }

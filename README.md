@@ -61,17 +61,13 @@ docker compose up --build -d
 
 后台和网关统一运行在 `http://localhost:8080`。PostgreSQL 和 Redis 只在 Compose 内网开放，不映射到宿主机。服务器远程浏览器和 noVNC 默认关闭，不开放 `6080`，避免通过远程桌面处理第三方登录。签到授权应使用本地浏览器授权助手；noVNC 仅保留为受控调试开关 `CHECKIN_ENABLE_NOVNC=true`，不建议在公网环境启用。
 
-### CookieCloud 本地授权
+### autoAPI 本地授权助手
 
-签到站授权默认使用 CookieCloud 兼容方式，不需要在服务器开启 noVNC。进入“公益站签到”，点击站点的“授权”，在本地 Chrome/Edge 安装 CookieCloud 扩展，将弹窗中的信息填入扩展：
+签到授权使用自研 Chrome/Edge 扩展，不需要在服务器开启 noVNC。首次在本机 Chrome/Edge 的扩展管理页以“加载已解压的扩展程序”安装 `apps/auth-assistant` 后，进入“公益站签到”点击站点的“授权”，后台会弹出“本地授权助手”，扩展会自动新开该站点的登录页。
 
-- Endpoint：填写弹窗中的服务地址，扩展会自动请求其 `/update` 路径。
-- UUID、密码：按弹窗内容填写。
-- Domains：填写站点域名，建议只填写当前站点主域名。
-- 同步方向：选择上传，并开启 Local Storage 同步。
-- Headers：按弹窗提供的整行内容填写自定义请求头。
+在新标签页完成登录后，扩展会自动同步当前站点的 Cookie 和 Local Storage。自动回传未完成时，也可以在该登录页打开扩展并点击“同步当前站点”，扩展会复用正在进行的本地授权任务。一次性授权码只作为未能启动扩展时的手动备用方案。扩展在浏览器端使用 AES-256-GCM 加密上传；服务端只保存加密后的会话快照。
 
-上传成功后后台会显示 Cookie 和 Local Storage 数量，并将登录状态加密保存到签到数据目录。服务器只保留加密后的会话快照；配对信息和上传 Token 15 分钟后失效，上传完成后不能重复使用。不要把 CookieCloud 的 UUID、密码或自定义请求头发布到公共页面。
+后台会实时显示“已打开本地浏览器登录页”“等待完成站点登录”“授权同步成功”或具体失败原因，并记录同步时间、Cookie 数量和 Local Storage 数量。授权任务 10 分钟后失效且只能完成一次同步。扩展更新后，请在 Chrome/Edge 扩展管理页点击“重新加载”。
 
 ### 管理后台登录
 
@@ -88,7 +84,7 @@ docker compose up --build -d
 
 Node.js 22 and pnpm are required. Development uses a file-backed control plane by default, stored in the project root at `.autoapi-data/state.json`, so PostgreSQL and Redis are not needed for local work. Channels, selected model routes, balances, encrypted keys, and usage records survive API restarts. Existing state from the earlier `apps/api/.autoapi-data/state.json` location is copied forward on first startup and is never deleted. Add your own channels from the dashboard; autoAPI no longer creates demo providers, demo models, or fake usage records.
 
-On Windows, double-click `start-autoapi.bat` to open the Chinese terminal control center. It can start development or Docker mode, stop services, run diagnostics, run the full check, open the dashboard, and create a configuration backup.
+On Windows, double-click `start-autoapi.bat` to open the Chinese terminal control center. It can start development or Docker mode, stop services, run diagnostics, run the full check, open the dashboard, and create a configuration backup. Before `[1]` or `[2]` starts, the launcher stops old autoAPI processes and this project's Compose services. Both service modes run in the current terminal, so no extra API/Web/Docker windows are opened; closing the launcher window stops the foreground service session.
 
 ```powershell
 pnpm install
