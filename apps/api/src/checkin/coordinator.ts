@@ -41,16 +41,21 @@ export class CheckinCoordinator {
 
     try {
       for (const site of candidates) {
-      const balanceOnly = trigger !== 'manual' && !site.enabled
-        let result = balanceOnly
-          ? await this.newApi.refreshBalanceSite(site, run.id)
-          : await this.newApi.checkinSite(site, run.id)
-        // A manual click should still refresh the account balance when the
-        // site does not expose a usable check-in endpoint. This covers New
-        // API installations such as aixoras.com where /api/user/checkin is
-        // absent or check-in is disabled, without changing scheduled runs.
-        if (!balanceOnly && shouldRefreshBalanceAfterCheckin(result)) {
+        const balanceOnly = site.checkinMode === 'balance_only' || (trigger !== 'manual' && !site.enabled)
+        let operation: 'checkin' | 'balance_refresh' = balanceOnly ? 'balance_refresh' : 'checkin'
+        let result: CheckinResult
+        if (balanceOnly) {
           result = await this.newApi.refreshBalanceSite(site, run.id)
+        } else {
+          const checkinResult = await this.newApi.checkinSite(site, run.id)
+          const shouldFallback = shouldRefreshBalanceAfterCheckin(checkinResult)
+          if (checkinResult.status === 'disabled' || shouldFallback) {
+            this.db.updateSiteCheckinMode(site.id, 'balance_only')
+            operation = 'balance_refresh'
+          }
+          result = shouldFallback
+            ? await this.newApi.refreshBalanceSite(site, run.id)
+            : checkinResult
         }
         const { id: _id, siteName: _siteName, ...storedResult } = result
         this.db.applyResult(site.id, storedResult)
@@ -62,7 +67,7 @@ export class CheckinCoordinator {
           })
         })
 
-        if (['success', 'already_checked'].includes(result.status)) success += 1
+        if (['success', 'already_checked'].includes(result.status) || (operation === 'balance_refresh' && balanceRefreshSucceeded(result))) success += 1
         else if (result.status === 'disabled') skipped += 1
         else {
           failed += 1
@@ -71,9 +76,9 @@ export class CheckinCoordinator {
 
         this.events.emit({
           type: 'site_result',
-          title: resultTitle(result),
+          title: resultTitle(result, operation),
           message: `${site.name}: ${result.message}`,
-          data: { result, siteId: site.id, runId: run.id },
+          data: { result, siteId: site.id, runId: run.id, operation },
         })
       }
     } finally {
@@ -200,7 +205,13 @@ function balanceRefreshFailure(site: { id: number; name: string; lastBalanceRaw:
   }
 }
 
-function resultTitle(result: CheckinResult): string {
+function resultTitle(result: CheckinResult, operation: 'checkin' | 'balance_refresh'): string {
+  if (operation === 'balance_refresh') {
+    if (balanceRefreshSucceeded(result)) return '余额刷新成功'
+    if (result.status === 'manual_required') return '余额刷新需要授权'
+    if (result.status === 'failed') return '余额刷新失败'
+    return '余额刷新未完成'
+  }
   if (result.status === 'success') return '签到成功'
   if (result.status === 'already_checked') return '今日已签到'
   if (result.status === 'manual_required') return '需要人工处理'
@@ -209,7 +220,7 @@ function resultTitle(result: CheckinResult): string {
 }
 
 function shouldRefreshBalanceAfterCheckin(result: CheckinResult): boolean {
-  if (result.status === 'disabled') return true
+  if (result.status === 'disabled') return !balanceRefreshSucceeded(result)
   if (result.status !== 'failed') return false
   return /^(?:not found|method not allowed|未找到|不存在)$/i.test(result.message.trim())
     || /(?:签到|check[-_ ]?in).*(?:404|不存在|未启用|不支持|未开放|不可用)/i.test(result.message)

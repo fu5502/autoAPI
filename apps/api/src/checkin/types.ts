@@ -16,6 +16,8 @@ export type CheckinStatus =
   | 'manual_required'
   | 'disabled'
 
+export type CheckinMode = 'checkin' | 'balance_only'
+
 export type RunTrigger = 'manual' | 'scheduled' | 'retry'
 
 export type AuthSyncMethod = 'assistant'
@@ -55,6 +57,7 @@ export interface Site {
   lastBalanceUpdatedAt?: string | null
   lastCheckedAt: string | null
   lastStatus: CheckinStatus
+  checkinMode: CheckinMode
   lastRewardAmount: number | null
   lastRewardAt: string | null
   lastBalanceDeltaAmount: number | null

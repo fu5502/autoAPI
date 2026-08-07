@@ -74,6 +74,14 @@ function supportsAutomaticChannelImport(site: Site) {
   return !['local-api', 'fengwind-welfare', 'hybgzs-welfare', 'chy-traffic'].includes(site.adapter)
 }
 
+function isBalanceOnlySite(site: Site) {
+  return site.checkinMode === 'balance_only'
+}
+
+function siteOperationLabel(site: Site) {
+  return isBalanceOnlySite(site) ? '刷新余额' : checkinLabel(site.lastStatus)
+}
+
 function channelMatchesSite(channelBaseUrl: string, siteBaseUrl: string) {
   try {
     const channel = new URL(channelBaseUrl)
@@ -271,9 +279,16 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
   }
 
   const runCheckin = async (siteIds?: number[]) => {
+    const selectedSite = siteIds?.length === 1 ? state?.sites.find((site) => site.id === siteIds[0]) : null
+    const balanceOnly = Boolean(selectedSite && isBalanceOnlySite(selectedSite))
     try {
       await api.runCheckin(siteIds)
-      notify('签到任务已提交', siteIds?.length === 1 ? '正在处理所选站点' : '正在依次处理全部启用站点')
+      notify(
+        balanceOnly ? '余额刷新任务已提交' : '签到任务已提交',
+        balanceOnly
+          ? `正在刷新 ${selectedSite?.name ?? '所选站点'} 的余额`
+          : siteIds?.length === 1 ? '正在处理所选站点' : '正在依次签到或刷新全部启用站点',
+      )
       void refresh(true)
     } catch (cause) {
       notify('无法开始签到', cause instanceof Error ? cause.message : '未知错误', 'danger')
@@ -471,7 +486,7 @@ function Dashboard({ state, onAdd, onRun, onAuthorize, onImport, importedSiteIds
         description={formatDate()}
         actions={<>
           <button className="button secondary" onClick={onAdd}><Plus size={17} />添加站点</button>
-          <button className="button primary" onClick={() => onRun()} disabled={busy}><Play size={17} fill="currentColor" />{busy ? '执行中' : '一键签到'}</button>
+          <button className="button primary" onClick={() => onRun()} disabled={busy}><Play size={17} fill="currentColor" />{busy ? '执行中' : '一键签到 / 刷新'}</button>
         </>}
       />
       <SummaryBand state={state} />
@@ -513,7 +528,7 @@ function AttentionModal({ sites, onClose }: { sites: Site[]; onClose: () => void
     {sites.length ? <div className="attention-list">{sites.map((site) => <div className="attention-row" key={site.id}>
       <SiteAvatar site={site} />
       <div className="attention-main"><strong>{site.name}</strong><p>{site.lastError || (site.authStatus === 'unknown' ? '尚未完成登录授权' : '当前状态需要人工检查')}</p><small>{site.baseUrl}</small></div>
-      <div className="attention-status"><StatusBadge tone={statusTone(site.authStatus)}>{authLabel(site.authStatus)}</StatusBadge><StatusBadge tone={statusTone(site.lastStatus)}>{checkinLabel(site.lastStatus)}</StatusBadge></div>
+      <div className="attention-status"><StatusBadge tone={statusTone(site.authStatus)}>{authLabel(site.authStatus)}</StatusBadge><StatusBadge tone={statusTone(site.lastStatus)}>{siteOperationLabel(site)}</StatusBadge></div>
     </div>)}</div> : <EmptyState title="暂无需处理站点" description="当前登录与签到状态均正常。" />}
     <div className="modal-actions"><button className="button primary" onClick={onClose}>完成</button></div>
   </Modal>
@@ -588,7 +603,8 @@ function SitesView({ state, onRun, onAuthorize, onImport, importedSiteIds, onSel
     try {
       const updated = await api.updateSite(site.id, { enabled: !site.enabled })
       await onRefresh()
-      notify(updated.enabled ? '自动签到已启用' : '自动签到已禁用', updated.name, 'success')
+      const operation = isBalanceOnlySite(updated) ? '自动刷新余额' : '自动签到'
+      notify(updated.enabled ? `${operation}已启用` : `${operation}已禁用`, updated.name, 'success')
     } catch (cause) {
       notify('更新失败', cause instanceof Error ? cause.message : '未知错误', 'danger')
     }
@@ -633,22 +649,22 @@ function SitesView({ state, onRun, onAuthorize, onImport, importedSiteIds, onSel
 
   return <>
     <section className="section-block site-management-section">
-      <div className="section-heading"><div><h2>站点管理</h2><p>所有站点每分钟刷新；自动签到关闭后仍可手动操作</p></div><span>{state.summary.enabledSites} / {state.summary.totalSites} 个已启用</span></div>
+      <div className="section-heading"><div><h2>站点管理</h2><p>支持签到的站点执行签到，其余站点刷新余额</p></div><span>{state.summary.enabledSites} / {state.summary.totalSites} 个已启用</span></div>
       <div className="toolbar">
         <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、地址或备注" /></label>
-        <label className="select-field"><span className="sr-only">状态筛选</span><select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}><option value="all">全部状态</option><option value="valid">登录有效</option><option value="attention">需要处理</option><option value="disabled">自动签到已关闭</option></select><ChevronDown size={15} /></label>
+        <label className="select-field"><span className="sr-only">状态筛选</span><select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}><option value="all">全部状态</option><option value="valid">登录有效</option><option value="attention">需要处理</option><option value="disabled">自动任务已关闭</option></select><ChevronDown size={15} /></label>
         <span className="toolbar-count">{sites.length} 个站点</span>
       </div>
-      <div className="table-wrap"><table className="data-table management-table"><thead><tr><th>站点</th><th>适配器</th><th>登录</th><th>签到</th><th>签到金额</th><th>当前余额</th><th>加入渠道</th><th>自动签到</th><th>操作</th></tr></thead><tbody>{sites.map((site) => <tr key={site.id}>
+      <div className="table-wrap"><table className="data-table management-table"><thead><tr><th>站点</th><th>适配器</th><th>登录</th><th>签到 / 刷新</th><th>签到金额 / 刷新时间</th><th>当前余额</th><th>加入渠道</th><th>自动任务</th><th>操作</th></tr></thead><tbody>{sites.map((site) => <tr key={site.id}>
         <td><button className="site-cell" onClick={() => onSelect(site)}><SiteAvatar site={site} /><span><strong>{site.name}</strong><small>{site.baseUrl}</small>{site.note ? <small className="site-note" title={site.note}>备注：{site.note}</small> : null}</span></button></td>
         <td><span className="adapter-label">{siteAdapterLabel(site)}</span></td>
         <td><div className="site-auth-cell"><StatusBadge tone={statusTone(site.authStatus)}>{authLabel(site.authStatus)}</StatusBadge>{site.authSyncStatus === 'success' && site.authSyncedAt ? <small className="auth-sync-meta">已同步 {formatDateTime(site.authSyncedAt)}</small> : site.authSyncStatus === 'failed' ? <small className="auth-sync-meta danger-text" title={site.authSyncMessage ?? undefined}>同步失败</small> : null}</div></td>
-        <td><StatusBadge tone={statusTone(site.lastStatus)}>{checkinLabel(site.lastStatus)}</StatusBadge></td>
-        <td><div className="reward-cell"><strong className={site.lastStatus === 'disabled' ? rewardTimingTone(site.lastBalanceUpdatedAt) : rewardTimingTone(site.lastRewardAt)}>{formatAmount(site.lastRewardAmount, site.currencySymbol)}</strong><small className={site.lastStatus === 'disabled' ? balanceRefreshTimingClass(site.lastBalanceUpdatedAt) : undefined}>{site.lastStatus === 'disabled' ? balanceRefreshTimingLabel(site.lastBalanceUpdatedAt) : hasFreshBalanceRefresh(site, state.recentResults) ? '余额已刷新' : rewardTimingLabel(site.lastRewardAt)}</small></div></td>
+        <td><StatusBadge tone={statusTone(site.lastStatus)}>{siteOperationLabel(site)}</StatusBadge></td>
+        <td><div className="reward-cell"><strong className={isBalanceOnlySite(site) ? rewardTimingTone(site.lastBalanceUpdatedAt) : rewardTimingTone(site.lastRewardAt)}>{formatAmount(site.lastRewardAmount, site.currencySymbol)}</strong><small className={isBalanceOnlySite(site) ? balanceRefreshTimingClass(site.lastBalanceUpdatedAt) : undefined}>{isBalanceOnlySite(site) ? balanceRefreshTimingLabel(site.lastBalanceUpdatedAt) : hasFreshBalanceRefresh(site, state.recentResults) ? '余额已刷新' : rewardTimingLabel(site.lastRewardAt)}</small></div></td>
         <td><div className="site-balance-cell"><button type="button" className={`site-balance-button balance-value ${site.lastBalanceAmount === null ? 'empty' : ''}`} title="点击刷新站点余额" disabled={refreshingBalanceSiteId !== null} onClick={(event) => { event.stopPropagation(); void refreshBalance(site) }}>{refreshingBalanceSiteId === site.id ? <RefreshCw size={13} className="spin" /> : null}<span>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></button><small className="balance-refresh-time">{formatBalanceRefreshTime(site.lastBalanceUpdatedAt)}</small></div></td>
         <td><StatusBadge tone={importedSiteIds.includes(site.id) ? 'success' : 'neutral'}>{importedSiteIds.includes(site.id) ? '是' : '否'}</StatusBadge></td>
-        <td><div className="switch-control"><button className={`toggle ${site.enabled ? 'on' : ''}`} role="switch" aria-checked={site.enabled} aria-label={`${site.enabled ? '停用' : '启用'} ${site.name} 自动签到`} onClick={() => toggle(site)}><span /></button><small>{site.enabled ? '已启用' : '已禁用'}</small></div></td>
-        <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton><IconButton title="立即签到" onClick={() => onRun([site.id])}><Play size={16} /></IconButton><IconButton title={importedSiteIds.includes(site.id) ? '重新导入渠道池' : site.authStatus !== 'valid' ? '点击后先授权，授权成功后继续接入渠道或关联余额' : supportsAutomaticChannelImport(site) ? '导入渠道池' : '关联已有渠道并同步余额'} disabled={importingSiteId === site.id} onClick={() => void prepareImport(site)}><ArrowDownToLine size={16} className={importingSiteId === site.id ? 'spin' : undefined} /></IconButton><IconButton title="删除" danger onClick={() => remove(site)}><Trash2 size={16} /></IconButton></div></td>
+        <td><div className="switch-control"><button className={`toggle ${site.enabled ? 'on' : ''}`} role="switch" aria-checked={site.enabled} aria-label={`${site.enabled ? '停用' : '启用'} ${site.name} ${isBalanceOnlySite(site) ? '自动刷新余额' : '自动签到'}`} onClick={() => toggle(site)}><span /></button><small>{site.enabled ? '已启用' : '已禁用'}</small></div></td>
+        <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton><IconButton title={isBalanceOnlySite(site) ? '刷新余额' : '立即签到'} onClick={() => onRun([site.id])}>{isBalanceOnlySite(site) ? <RefreshCw size={16} /> : <Play size={16} />}</IconButton><IconButton title={importedSiteIds.includes(site.id) ? '重新导入渠道池' : site.authStatus !== 'valid' ? '点击后先授权，授权成功后继续接入渠道或关联余额' : supportsAutomaticChannelImport(site) ? '导入渠道池' : '关联已有渠道并同步余额'} disabled={importingSiteId === site.id} onClick={() => void prepareImport(site)}><ArrowDownToLine size={16} className={importingSiteId === site.id ? 'spin' : undefined} /></IconButton><IconButton title="删除" danger onClick={() => remove(site)}><Trash2 size={16} /></IconButton></div></td>
       </tr>)}</tbody></table></div>
     </section>
     {editingSite ? <EditSiteModal site={editingSite} onClose={() => setEditingSite(null)} onSaved={async () => { setEditingSite(null); await onRefresh() }} notify={notify} /> : null}
@@ -1207,12 +1223,13 @@ function AuthAssistantModal({ site, pairing, onClose, onStatus }: { site: Site; 
 }
 
 function SiteDrawer({ site, results, authEvents, onClose, onRun, onAuthorize }: { site: Site; results: CheckinResult[]; authEvents: AppState['authSyncEvents']; onClose: () => void; onRun: () => void; onAuthorize: () => void }) {
+  const balanceOnly = isBalanceOnlySite(site)
   return <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={`${site.name} 详情`}>
     <button className="drawer-backdrop" onClick={onClose} aria-label="关闭" />
     <aside className="drawer">
       <header><div><SiteAvatar site={site} large /><div><h2>{site.name}</h2><a href={site.baseUrl} target="_blank" rel="noreferrer">{site.baseUrl}<ExternalLink size={13} /></a></div></div><IconButton title="关闭" onClick={onClose}><X size={18} /></IconButton></header>
-      <div className="drawer-actions"><button className="button primary" onClick={onRun}><Play size={16} />立即签到</button><button className="button secondary" onClick={onAuthorize}><KeyRound size={16} />重新授权</button></div>
-      <dl className="site-facts"><div><dt>适配器</dt><dd>{siteAdapterLabel(site)}</dd></div><div><dt>登录账号</dt><dd>{site.username || '--'}</dd></div><div><dt>当前余额</dt><dd>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</dd></div><div><dt>最近签到</dt><dd>{formatDateTime(site.lastCheckedAt)}</dd></div></dl>
+      <div className="drawer-actions"><button className="button primary" onClick={onRun}>{balanceOnly ? <RefreshCw size={16} /> : <Play size={16} />}{balanceOnly ? '刷新余额' : '立即签到'}</button><button className="button secondary" onClick={onAuthorize}><KeyRound size={16} />重新授权</button></div>
+      <dl className="site-facts"><div><dt>适配器</dt><dd>{siteAdapterLabel(site)}</dd></div><div><dt>登录账号</dt><dd>{site.username || '--'}</dd></div><div><dt>当前余额</dt><dd>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</dd></div><div><dt>{balanceOnly ? '最近刷新' : '最近签到'}</dt><dd>{formatDateTime(site.lastCheckedAt)}</dd></div></dl>
       {site.note ? <div className="drawer-note"><h3>站点备注</h3><p>{site.note}</p></div> : null}
       <div className="drawer-section"><h3>最近授权同步</h3>{authEvents.length ? authEvents.slice(0, 5).map((event) => <div className="drawer-result" key={event.id}><StatusBadge tone={event.status === 'success' ? 'success' : event.status === 'failed' ? 'danger' : 'neutral'}>{event.status === 'success' ? '同步成功' : event.status === 'failed' ? '同步失败' : event.status === 'claimed' ? '已连接' : '处理中'}</StatusBadge><span>{event.message}{event.status === 'success' ? `（${event.cookieCount} Cookie / ${event.localStorageCount} 存储）` : ''}</span><time>{formatDateTime(event.completedAt ?? event.startedAt)}</time></div>) : <p className="empty-inline">暂无授权记录</p>}</div>
       <div className="drawer-section"><h3>最近记录</h3>{results.length ? results.slice(0,10).map((result) => <div className="drawer-result" key={result.id}><StatusBadge tone={statusTone(result.status)}>{checkinLabel(result.status)}</StatusBadge><span>{result.message}</span><time>{formatDateTime(result.completedAt)}</time></div>) : <p className="empty-inline">暂无记录</p>}</div>

@@ -42,6 +42,7 @@ describe('autoAPI authorization assistant', () => {
     const claim = service.claim(pairing.code)
     const encrypted = encryptPayload({
       siteOrigin: 'https://cdk.hybgzs.com',
+      pageTitle: '  黑与白福利站\n控制台  ',
       cookies: [{ name: 'session', value: 'secret-cookie', domain: '.hybgzs.com', path: '/', secure: true, httpOnly: true }],
       localStorage: { access_token: 'secret-storage' },
     }, claim.secret)
@@ -49,7 +50,7 @@ describe('autoAPI authorization assistant', () => {
     const status = service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
 
     expect(status).toMatchObject({ status: 'received', cookieCount: 1, localStorageCount: 1 })
-    expect(database.getSite(site.id)).toMatchObject({ name: '我的自定义站点名称', authStatus: 'valid', authSyncStatus: 'success' })
+    expect(database.getSite(site.id)).toMatchObject({ name: '黑与白福利站 控制台', authStatus: 'valid', authSyncStatus: 'success' })
     expect(database.listAuthSyncEvents(site.id)[0]).toMatchObject({ status: 'success', cookieCount: 1, localStorageCount: 1 })
     const stored = database.getSiteAuthSnapshot(site.id)
     expect(stored?.encrypted).toBeTruthy()

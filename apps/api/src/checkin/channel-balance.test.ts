@@ -25,6 +25,7 @@ function makeSite(overrides: Partial<Site> = {}): Site {
     lastBalanceAmount: 12.5,
     lastCheckedAt: null,
     lastStatus: "success",
+    checkinMode: "checkin",
     lastRewardAmount: null,
     lastRewardAt: null,
     lastBalanceDeltaAmount: null,

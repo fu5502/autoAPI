@@ -254,7 +254,8 @@ async function claimPair(autoApiOrigin, code, hostname) {
 
 async function uploadClaimedSnapshot({ autoApiOrigin, claim, tabId, current, cookies, storageItems }) {
   if (!isAllowedHost(current.hostname, claim.domain)) throw new Error(`当前站点 ${current.hostname} 与目标站点 ${claim.domain} 不匹配`)
-  const plaintext = JSON.stringify({ siteOrigin: current.origin, cookies, localStorage: storageItems, sentAt: new Date().toISOString() })
+  const pageTitle = await readCurrentPageTitle(tabId)
+  const plaintext = JSON.stringify({ siteOrigin: current.origin, pageTitle, cookies, localStorage: storageItems, sentAt: new Date().toISOString() })
   const secret = base64UrlToBytes(claim.secret)
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const key = await crypto.subtle.importKey('raw', secret, 'AES-GCM', false, ['encrypt'])
@@ -267,6 +268,25 @@ async function uploadClaimedSnapshot({ autoApiOrigin, claim, tabId, current, coo
   const uploaded = await readResponse(uploadResponse)
   if (!uploadResponse.ok) throw new Error(uploaded.error?.message || '上传授权状态失败')
   return { ok: true, cookieCount: uploaded.status.cookieCount, localStorageCount: uploaded.status.localStorageCount }
+}
+
+async function readCurrentPageTitle(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    if (typeof tab.title === 'string' && tab.title.trim()) return tab.title.trim()
+  } catch {
+    // The tab can navigate while the service worker is reading it.
+  }
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: () => document.title || '',
+    })
+    return typeof results?.[0]?.result === 'string' ? results[0].result.trim() : ''
+  } catch {
+    return ''
+  }
 }
 
 async function looksLikeLoginPage(tabId) {
