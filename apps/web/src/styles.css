@@ -1894,6 +1894,16 @@ th:last-child {
   font-size: 12px;
 }
 
+.action-notice {
+  margin-top: 12px;
+  padding: 10px 13px;
+  color: var(--green);
+  background: var(--green-soft);
+  border: 1px solid color-mix(in srgb, var(--green) 24%, transparent);
+  border-radius: 5px;
+  font-size: 12px;
+}
+
 .empty-table-cell {
   height: 96px;
   color: var(--muted);

@@ -177,6 +177,10 @@ export const api = {
     method: "POST",
     body: JSON.stringify(body),
   }),
+  syncCheckinSiteBalance: (siteId: number) => adminFetch<{ updatedChannelIds: string[]; skippedBecauseBalanceIsUnknown: boolean }>(`/checkin/sites/${siteId}/channel-balance/sync`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  }),
   importProvider: (body: Record<string, unknown>) => adminFetch<{ providerId: string; channel: Channel }>("/providers/import", {
     method: "POST",
     body: JSON.stringify(body),

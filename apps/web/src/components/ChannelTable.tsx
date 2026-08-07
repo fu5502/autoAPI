@@ -1,11 +1,13 @@
 import { Fragment, useEffect, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Copy, GripVertical, Pause, Pencil, Play, RefreshCw, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, GripVertical, Pause, Pencil, Play, RefreshCw, Trash2, WalletCards } from "lucide-react";
 import type { Channel } from "../types";
 import { getAdminToken } from "../api";
 import { StatusDot } from "./StatusDot";
 
 export function ChannelTable({
   channels,
+  syncingBalanceId,
+  onSyncBalance,
   probingId,
   onProbe,
   onEdit,
@@ -16,6 +18,8 @@ export function ChannelTable({
   onReorder,
 }: {
   channels: Channel[];
+  syncingBalanceId: number | null;
+  onSyncBalance: (siteId: number) => void;
   probingId: string | null;
   onProbe: (id: string) => void;
   onEdit: (channel: Channel) => void;
@@ -161,6 +165,9 @@ export function ChannelTable({
                 <td className={channel.recentRequestCount === 0 ? "subtle" : channel.recentErrorRate > 0.2 ? "danger-text" : channel.recentErrorRate > 0.05 ? "warning-text" : "success-text"}>{channel.recentRequestCount === 0 ? "—" : formatPercent(1 - channel.recentErrorRate)}</td>
                 <td>
                   <div className="table-actions">
+                    {channel.checkinSite ? <button className="icon-button" type="button" title={syncingBalanceId === channel.checkinSite.id ? "同步中…" : "同步签到站余额"} aria-label={`${syncingBalanceId === channel.checkinSite.id ? "同步中" : "同步"}${channel.checkinSite.name}余额`} disabled={syncingBalanceId !== null} onClick={() => onSyncBalance(channel.checkinSite!.id)}>
+                      <WalletCards size={15} className={syncingBalanceId === channel.checkinSite.id ? "spin" : ""} />
+                    </button> : null}
                     <button className="icon-button" type="button" title="探测渠道" aria-label={`探测${channel.name}`} disabled={probingId === channel.id} onClick={() => onProbe(channel.id)}>
                       <RefreshCw size={15} className={probingId === channel.id ? "spin" : ""} />
                     </button>
