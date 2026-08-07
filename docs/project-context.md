@@ -2,11 +2,19 @@
 
 > 这是 autoAPI 的长期上下文文档。新会话、新开发者或自动化代理开始修改项目之前，应先阅读本文件，再查看 git status 和最近提交。本文记录项目当前的架构、行为约定、数据边界、部署方式和已经处理过的关键问题。
 
-更新时间：2026-08-07
+更新时间：2026-08-08
 仓库：https://github.com/fu5502/autoAPI
 当前线上入口：http://23.80.83.24:18080/
 线上项目目录：/opt/autoapi/app
 当前发布分支：main
+最近功能基线提交：`afebc12 feat: 将不支持签到站点切换为余额刷新`
+
+当前状态快照：
+
+- 本地工作树在本次文档更新前干净，`main` 与 `origin/main` 已同步。
+- 线上 Docker Compose 的应用、PostgreSQL 和 Redis 容器均应保持 healthy；发布后必须重新检查，不以构建成功代替运行验证。
+- 线上入口端口是 `18080`，容器内部 API 仍监听 `8080`；1Panel 反向代理应指向宿主机的实际映射端口（当前为 `127.0.0.1:18080`），不要把容器内端口误当成宿主机端口。
+- 线上签到数据使用 Docker volume `autoapi_autoapi-checkin`，挂载到 `/data/checkin`；普通更新绝不能删除该 volume。
 
 仓库中不得保存真实管理员密码、SSH 密码、渠道 API Key、Cookie、Local Storage、生产 .env 或运行数据。线上信息只用于运维定位，敏感值必须留在服务器环境变量或 1Panel 密钥配置中。
 
@@ -17,6 +25,14 @@
 - 完成顺序固定为：本地修改与验证、提交并推送 `main`、同步线上源码、原地重建容器、检查线上健康与日志。
 - 普通发布只更新应用源码和 `autoapi` 容器，不删除 PostgreSQL、Redis、签到 SQLite、浏览器 profile 或任何 Docker volume。
 - 如果由于权限、网络或服务器状态无法完成线上同步，最终报告必须明确说明线上尚未更新，不能只报告本地完成。
+
+### 最近已合入的变更
+
+- 不支持或没有可用签到接口的站点会持久化为 `checkin_mode = balance_only`，后续手动、定时和重试任务都执行余额刷新，不再反复调用不存在的签到接口。
+- 余额刷新只有真实读取到数值才计为成功；站点列表、签到记录、概览统计和渠道池统一使用“刷新余额”文案，并展示刷新时间。
+- 修改站点名称不会重置站点模式；修改 Base URL 会恢复为 `checkin`，让新地址重新识别适配器能力。
+- 本地授权助手扩展当前版本为 `0.2.3`，授权成功后会上传浏览器当前页面标题，服务端据此更新站点名称；站点图标使用服务端缓存。
+- Docker 启动时先启动并等待 Xvfb 的 `DISPLAY=:99`，确认虚拟显示可用后才启动 API，避免 Chromium 因 `Missing X server or $DISPLAY` 立即退出。
 
 ## 1. 项目定位
 
@@ -100,6 +116,23 @@ docker-compose.yml 启动 PostgreSQL、Redis 和 autoapi：
 
 PostgreSQL、Redis 和签到数据分别持久化。重新构建镜像不会清空这三类数据。
 
+最近一次线上数据核验基线（2026-08-08，后续数据只应增加或按业务删除）：
+
+| 数据项 | 数量 |
+| --- | ---: |
+| 公益站点 | 29 |
+| 签到结果 | 868 |
+| 签到运行 | 275 |
+| 授权事件 | 30 |
+| 站点渠道关联 | 1 |
+| 渠道 | 13 |
+| 模型映射 | 54 |
+| 用量记录 | 2430 |
+| 模型测试会话 | 4 |
+| 余额快照 | 7584 |
+
+这组数字是发布后的回归参照，不是固定业务目标。发布前后应在管理后台或只读 SQL 查询中核对数量，尤其是渠道、模型映射、用量、测试会话、签到站点和签到历史；没有明确迁移需求时，数量不应减少。
+
 ### 3.3 永远不要做的操作
 
 - 不要删除 .autoapi-data 来“修复”前端或重置测试。
@@ -163,6 +196,10 @@ API：http://127.0.0.1:8080/
 
 开发模式默认登录信息仅用于首次本地启动：用户名 admin，密码 AutoAPI@123456。登录后立即在安全设置修改；线上不要使用默认密码。
 
+`start-autoapi.bat` 只是编码设置和 PowerShell 转发器，实际菜单逻辑在 `start-autoapi.ps1`。开发模式会把 API 和 Web 子进程绑定到当前启动器进程：关闭启动器窗口或选择“停止服务”后，本次服务应一起结束。若看到乱码命令、`'01' 不是内部或外部命令` 或多个终端残留，先关闭旧窗口，再从项目根目录重新双击 BAT；不要把 BAT 内容粘贴进 cmd 逐行执行。
+
+启动失败时优先选择菜单中的“运行诊断”，确认 Node.js 22、pnpm、8080/5173 端口和依赖目录，再查看当前终端最后一段 API/Vite 日志。`ELIFECYCLE` 只是并行脚本的汇总退出码，真正原因在它上方的 API 或 Web 日志中。
+
 ## 6. Docker 与 1Panel 部署
 
 ### 6.1 标准 Compose
@@ -197,6 +234,24 @@ docker compose ps
 - 使用 HTTPS 时，扩展和管理页面应使用同一公开域名，不要混用 localhost、内网 IP 和公网域名创建授权任务。
 
 当前线上部署记录：服务器 23.80.83.24，端口 18080，目录 /opt/autoapi/app，应用容器 autoapi-autoapi-1，noVNC 关闭，PostgreSQL/Redis/签到数据卷保留。以上不包含 SSH 密码、管理员密码、网关 Key 或渠道 Key。
+
+### 6.3 线上安全更新顺序
+
+在服务器项目目录执行以下顺序；如果使用 1Panel，则将同样步骤放入 Compose 应用的“重新构建/部署”流程：
+
+```bash
+git fetch origin
+git checkout main
+git pull --ff-only origin main
+docker compose config
+docker compose up -d --build autoapi
+docker compose ps
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+只重建 `autoapi` 是为了减少数据库和 Redis 的无意义重启；配置或基础设施变化时可以重建全套 Compose，但仍不要使用 `down -v`。如果线上源码目录不是 Git 工作树，应先用经过审查的源码归档覆盖应用代码，再执行同样的 Compose 构建，禁止覆盖 `.env` 和数据目录。
+
+发布完成后至少检查：登录页、`/healthz`、一个已知模型的 `GET /v1/models`、调用请求页、渠道池余额、公益站状态和最近执行日志。发现新容器没有更新时，先看 `docker compose ps` 的创建时间和 `docker compose logs --tail=200 autoapi`，不要通过删除 volume 来“强制刷新”。
 
 ## 7. 管理后台功能
 
@@ -277,6 +332,8 @@ docker compose ps
 
 配对任务只能使用一次，约 10 分钟过期。登录页被关闭、服务重启或任务超时后必须重新点击授权。扩展更新后在 chrome://extensions 或 edge://extensions 点击重新加载。
 
+当前主方案是自研扩展，不再使用 CookieCloud 作为授权链路。线上操作时，浏览器访问线上管理页面并在该页面点击授权；扩展会根据当前管理页面的公开 Origin 配对到线上服务。不要在本地 `localhost` 页面创建任务后，切换到公网页面或另一台服务器完成登录，否则会出现“提示不匹配”或后台一直等待。扩展需要能访问目标站点的 Cookie/Local Storage，站点登录页打开后再完成登录；不要提前关闭新开的标签页。
+
 服务端不会把 Cookie、网页登录 Token 或刷新 Token 当作渠道 API Key。授权快照只用于签到和余额读取；渠道导入必须拿到明确官方 API Key。
 
 黑与白福利站的签到按钮可能触发 CAP 人机验证。线上默认 `CHECKIN_ENABLE_NOVNC=false` 时，服务端可以使用本地授权助手上传的 Cookie/Local Storage 读取登录和余额，但不能替用户点击服务器 Xvfb 中的 CAP。结果显示“登录有效；请完成 CAP”表示登录快照正常、只是签到需要人工，不应再次误判为授权失效。可在本地已登录浏览器完成一次签到后，再回到后台刷新余额；需要操作服务器浏览器时只能在受控内网或 SSH 隧道中临时开启 noVNC。
@@ -300,6 +357,19 @@ CHECKIN_ENABLE_NOVNC=false 是线上建议值。只在隔离调试环境中显�
 - 不支持官方 Key 接口的站点可以手动创建渠道、输入 Key、拉取模型并选择模型，或关联已有渠道同步余额。
 
 “站点未通过官方 API Key 管理接口提供完整 Key”表示不能安全得到官方 Key，不等于签到 Cookie 失效，不能用网页登录 Token 绕过。
+
+授权和渠道导入是两条独立流程：授权只同步浏览器会话，用于签到/余额；导入渠道必须取得明确的官方 API Key。支持多个官方 Key 的站点会在导入弹窗中列出 Key 名称和尾号供选择；无法提供完整 Key 的站点应使用“手动创建渠道”输入 API Key，再拉取模型并手动选择。导入弹窗在准备、拉取模型、确认和保存失败时都应显示明确结果；遇到 `Not Found` 或健康探测失败，不要把它当作导入必需步骤，当前导入基础信息不会自动探测。
+
+### 10.5 `checkin` 与 `balance_only` 模式
+
+站点有两个持久化模式：
+
+| 模式 | 页面主操作 | 服务端行为 |
+| --- | --- | --- |
+| `checkin` | 立即签到 | 调用站点签到适配器；成功后按适配器结果记录奖励和余额。 |
+| `balance_only` | 刷新余额 | 不调用签到接口，只读取登录态和余额；适用于不支持签到、签到接口不存在或站点被识别为余额站的情况。 |
+
+当 `checkin` 站点返回“接口不存在、未启用或不支持签到”等明确结果时，系统会切换到 `balance_only` 并立即尝试刷新余额。后续手动、定时和重试都走余额刷新。修改站点名称不会改变模式；修改 Base URL 会恢复重新识别。站点管理中显示“刷新余额”不代表伪造了签到成功，只有拿到真实余额才会计入成功统计并更新时间。
 
 ## 11. 关键 API 入口
 
@@ -392,6 +462,15 @@ git push -u origin 当前分支
 
 不要在工作树混有用户数据、临时截图、.env 或未确认改动时执行 git add -A。发布后检查 docker compose ps、容器日志、/healthz，并验证渠道、模型路由、用量、测试记录、签到站点、签到历史和登录历史数量没有减少。
 
+当前提交 `afebc12` 的验证结果：
+
+- `pnpm.cmd typecheck`：通过。
+- `pnpm.cmd test`：26 个测试文件、144 个测试全部通过。
+- `pnpm.cmd build`：通过。
+- `git diff --check`：通过。
+
+文档更新本身不要求重启线上容器；但按照项目约定，若用户要求“同步线上”，仍需完成 GitHub 推送、服务器源码同步、应用容器重建和线上健康核验，并在最终回复中说明每一步状态。
+
 ## 14. 关键故障排查
 
 ### 页面只有左侧菜单
@@ -432,6 +511,23 @@ git push -u origin 当前分支
 
 检查 .env 是否仍有 change-me-*、默认管理员密码或数据库占位密码；检查 PostgreSQL/Redis healthcheck、容器日志、1Panel 反向代理和 8080 端口。不要清空 volume。
 
+### Chrome 启动后立即退出：`Missing X server or $DISPLAY`
+
+这表示 Chromium 是在没有可用图形显示的进程环境中启动的，常见于旧容器仍在运行、直接从宿主机启动 Chromium，或镜像没有执行新的启动脚本。生产容器的正确顺序是：`start-container.sh` 启动 `start-checkin-display.sh`，Xvfb 提供 `DISPLAY=:99`，`wait-for-display.sh` 检查成功后才启动 API/浏览器。
+
+排查顺序：
+
+1. 执行 `docker compose ps`，确认只有一个应用容器且状态为 healthy。
+2. 执行 `docker compose logs --tail=200 autoapi`，确认没有 `display supervisor stopped`、`Xvfb failed` 或 profile lock。
+3. 重新构建应用镜像：`docker compose up -d --build autoapi`，不要删除 volume。
+4. 若仍失败，确认 `.env` 中 `DISPLAY=:99`、`XDG_RUNTIME_DIR=/tmp/autoapi-runtime`，且没有把宿主机的 `DISPLAY` 错误值传入容器。
+
+`Failed to connect to /run/dbus/system_bus_socket` 在无桌面服务器的 Linux 容器中通常不是主因；真正需要处理的是 `Missing X server or $DISPLAY`。不要用 `--no-sandbox` 或删除浏览器 profile 代替显示环境修复。
+
+### Docker 报“找不到 postgres”或服务名解析失败
+
+命令必须在包含 `docker-compose.yml` 的目录执行，并使用 Compose 服务名 `postgres`、`redis`。不要把宿主机的 `localhost` 写进容器内 `DATABASE_URL`；容器内应使用 `postgres://autoapi:密码@postgres:5432/autoapi` 和 `redis://redis:6379`。先执行 `docker compose config` 检查变量替换，再执行 `docker compose ps` 查看健康状态。
+
 ## 15. 已处理的关键历史问题
 
 - 添加渠道不自动探测。
@@ -444,6 +540,9 @@ git push -u origin 当前分支
 - 站点删除不会因关闭中的 Chromium 页、授权窗口或图标清理失败而卡死 SQLite 删除。
 - Chromium profile 锁只安全清理失效锁，不误删正在使用的 profile。
 - noVNC 默认关闭，线上使用本地授权助手。
+- 不支持签到的站点不再显示“暂无成功记录”作为余额结果，只有实际读取余额后才显示余额刷新成功和刷新时间。
+- 站点重新授权不会覆盖手工维护的站点名称和图标；授权助手同步的浏览器页面标题只用于授权成功后的站点识别更新。
+- 最近提交 `afebc12` 已把余额站点模式写入 SQLite 并增加幂等字段迁移，旧签到数据库可直接升级。
 
 ## 16. 后续开发约定
 
@@ -466,6 +565,20 @@ Get-Content -Raw docs/project-context.md
 git status --short --branch
 git log -5 --oneline --decorate
 </pre>
+
+开始处理用户反馈时，先明确反馈发生在本地还是线上；没有特别说明时按线上处理。推荐恢复顺序：
+
+1. 读取本文件、README.md、docs/api.md 和 docs/clients.md。
+2. 执行 `git status --short --branch`，不要回滚用户已有改动。
+3. 如果是线上问题，先检查 `/healthz`、容器状态、反向代理和最近 200 行日志，再决定是否修改代码。
+4. 修改前说明将要改动的文件和是否需要发布；修改后运行类型检查、测试、构建和 `git diff --check`。
+5. 用户要求上线时，先推送 `origin/main`，再安全重建应用容器，最后核对数据数量没有减少。
+
+新会话可以直接把下面这段作为上下文起点：
+
+```text
+这是 C:/Users/fu550/Documents/autoAPI 项目。默认简体中文。当前发布分支是 main，线上部署在 /opt/autoapi/app，普通升级不得删除 PostgreSQL、Redis、autoapi-checkin volume、SQLite 或 browser-profile。签到授权主方案是 apps/auth-assistant 本地 Chrome/Edge 扩展，CookieCloud 已放弃，noVNC 默认关闭。未特别说明的问题按线上问题处理。请先读取 docs/project-context.md、README.md、docs/api.md、docs/clients.md，再检查 git status；修改后保持本地、GitHub main 和线上同步，并完成验证。
+```
 
 任务定位：
 
