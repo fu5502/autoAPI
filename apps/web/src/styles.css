@@ -1815,6 +1815,21 @@ th:last-child {
   white-space: nowrap;
 }
 
+.channel-balance-button {
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.channel-balance-button:hover:not(:disabled) {
+  border-color: currentColor;
+}
+
+.channel-balance-button:disabled {
+  cursor: wait;
+  opacity: 0.78;
+}
+
 .channel-balance-mark {
   width: 6px;
   height: 6px;

@@ -160,7 +160,7 @@ export function ChannelTable({
                 <td><span className="channel-routing-number">{channel.weight}</span></td>
                 <td><StatusDot status={channel.status} /></td>
                 <td><span className="mono subtle">{channel.protocol}</span></td>
-                <td>{formatBalance(channel)}</td>
+                <td>{formatBalance(channel, onSyncBalance, syncingBalanceId)}</td>
                 <td>{channel.lastLatencyMs === null ? "—" : `${channel.lastLatencyMs} ms`}</td>
                 <td className={channel.recentRequestCount === 0 ? "subtle" : channel.recentErrorRate > 0.2 ? "danger-text" : channel.recentErrorRate > 0.05 ? "warning-text" : "success-text"}>{channel.recentRequestCount === 0 ? "—" : formatPercent(1 - channel.recentErrorRate)}</td>
                 <td>
@@ -242,12 +242,25 @@ function ChannelSiteIcon({ channel }: { channel: Channel }) {
   );
 }
 
-function formatBalance(channel: Channel) {
-  if (channel.balance === null) {
-    return <span className="channel-balance channel-balance-unknown" title="当前余额未知"><span className="channel-balance-mark" aria-hidden="true" />未知</span>;
+function formatBalance(channel: Channel, onSyncBalance: (siteId: number) => void, syncingBalanceId: number | null) {
+  const value = channel.balance === null ? null : `${channel.balanceCurrency === "USD" ? "$" : `${channel.balanceCurrency ?? ""} `}${formatBalanceValue(channel.balance)}`;
+  const balanceClass = channel.balance === null ? "unknown" : channel.balanceStatus;
+  const balanceContent = <>
+    {syncingBalanceId === channel.checkinSite?.id ? <RefreshCw size={13} className="spin" aria-hidden="true" /> : <span className="channel-balance-mark" aria-hidden="true" />}
+    {value === null ? <span>未知</span> : <strong>{value}</strong>}
+  </>;
+  if (channel.checkinSite) {
+    const syncing = syncingBalanceId === channel.checkinSite.id;
+    const disabled = syncingBalanceId !== null;
+    return <button className={`channel-balance channel-balance-${balanceClass} channel-balance-button`} type="button" title={syncing ? "同步中…" : disabled ? "另一个签到站正在同步" : "点击余额同步签到站余额"} aria-label={`${syncing ? "同步中" : "同步"}${channel.checkinSite.name}余额`} disabled={disabled} onClick={(event) => {
+      event.stopPropagation();
+      onSyncBalance(channel.checkinSite!.id);
+    }}>{balanceContent}</button>;
   }
-  const value = `${channel.balanceCurrency === "USD" ? "$" : `${channel.balanceCurrency ?? ""} `}${formatBalanceValue(channel.balance)}`;
-  return <span className={`channel-balance channel-balance-${channel.balanceStatus}`} title={`当前余额 ${value}`}><span className="channel-balance-mark" aria-hidden="true" /><strong>{value}</strong></span>;
+  if (value === null) {
+    return <span className="channel-balance channel-balance-unknown" title="当前余额未知">{balanceContent}</span>;
+  }
+  return <span className={`channel-balance channel-balance-${channel.balanceStatus}`} title={`当前余额 ${value}`}>{balanceContent}</span>;
 }
 
 function formatBalanceValue(value: number) {
