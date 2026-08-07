@@ -609,20 +609,29 @@ export class NewApiService {
         }
 
         const statusResponse = await this.getRemoteStatus(page, requestTimeoutMs)
+        const remoteStatus = statusResponse.data
+        const money = deriveMoneySettings(remoteStatus)
+        // New API 1.1+ rotates the dashboard refresh cookie whenever this
+        // endpoint is called. A site with check-in disabled does not need an
+        // authenticated request, so avoid rotating the user's session just
+        // to discover that there is nothing to claim.
+        if (remoteStatus?.checkin_enabled === false) {
+          return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', {
+            beforeRaw: site.lastBalanceRaw,
+            afterRaw: site.lastBalanceRaw,
+            money,
+          })
+        }
+
         const auth = await this.detectAuthentication(page, site.legacyUserId, requestTimeoutMs)
         if (!auth) return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权')
         if (auth.adapter === 'local-api') {
           return this.checkinLocalApiSite(page, site, runId, startedAt, auth, requestTimeoutMs)
         }
 
-        const remoteStatus = statusResponse.data
-        const money = deriveMoneySettings(remoteStatus)
         const authHeaders = buildAuthHeaders(auth)
         const beforeUserResponse = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', authHeaders, requestTimeoutMs)
         const beforeRaw = beforeUserResponse.success ? numberOrNull(beforeUserResponse.data?.quota) : null
-        if (remoteStatus?.checkin_enabled === false) {
-          return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw, money })
-        }
 
         const month = localDateKey(new Date()).slice(0, 7)
         const checkinStatus = await pageRequest<CheckinStatusData>(page, `/api/user/checkin?month=${month}`, 'GET', authHeaders, requestTimeoutMs)
@@ -767,6 +776,14 @@ export class NewApiService {
         }
 
         const statusResponse = await this.getRemoteStatus(page, requestTimeoutMs)
+        if (statusResponse.success && statusResponse.data?.checkin_enabled === false) {
+          return this.makeResult(site, runId, startedAt, 'disabled', '自动签到已关闭，未刷新余额以保护登录会话', {
+            beforeRaw: site.lastBalanceRaw,
+            afterRaw: site.lastBalanceRaw,
+            money: deriveMoneySettings(statusResponse.data),
+          })
+        }
+
         const auth = await this.detectAuthentication(page, site.legacyUserId, requestTimeoutMs)
         if (!auth) return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权')
 

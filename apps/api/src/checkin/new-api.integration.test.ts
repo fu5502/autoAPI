@@ -61,6 +61,50 @@ describe('NewApiService CHY authorization', () => {
   })
 })
 
+describe('NewApiService disabled New API check-in', () => {
+  it('does not rotate the dashboard session when the site has disabled check-in', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('ooioo.work', 'https://ooioo.work')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 12 })
+    const refreshedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string }) => {
+        if (!input?.pathname) return String(callback).includes('document.title') ? { title: 'ooioo', text: '' } : []
+        refreshedPaths.push(input.pathname)
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/auth/refresh') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { access_token: 'rotated-token', user: { id: 7, username: 'test-user', quota: 12 } },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.checkinSite(site, run.id)
+
+    expect(result).toMatchObject({ status: 'disabled', message: '签到功能未启用' })
+    expect(refreshedPaths).toEqual(['/api/status'])
+  })
+})
+
 describe('NewApiService channel import', () => {
   it('reads a complete New API key from the batch key endpoint when the list is masked', async () => {
     const database = new AppDatabase(':memory:')
