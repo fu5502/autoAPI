@@ -271,6 +271,10 @@ docker compose ps
 
 服务端不会把 Cookie、网页登录 Token 或刷新 Token 当作渠道 API Key。授权快照只用于签到和余额读取；渠道导入必须拿到明确官方 API Key。
 
+黑与白福利站的签到按钮可能触发 CAP 人机验证。线上默认 `CHECKIN_ENABLE_NOVNC=false` 时，服务端可以使用本地授权助手上传的 Cookie/Local Storage 读取登录和余额，但不能替用户点击服务器 Xvfb 中的 CAP。结果显示“登录有效；请完成 CAP”表示登录快照正常、只是签到需要人工，不应再次误判为授权失效。可在本地已登录浏览器完成一次签到后，再回到后台刷新余额；需要操作服务器浏览器时只能在受控内网或 SSH 隧道中临时开启 noVNC。
+
+若线上显示“登录状态已失效”，重新从线上公开域名生成授权任务并同步，检查扩展和管理页面是否使用同一公开域名，以及部署升级前后 `CREDENTIAL_ENCRYPTION_KEY` 和 `autoapi-checkin` volume 是否保持不变。密钥变化会使旧授权快照无法解密，重新授权即可恢复。
+
 ### 10.3 noVNC
 
 CHECKIN_ENABLE_NOVNC=false 是线上建议值。只在隔离调试环境中显式打开，并通过 SSH 隧道或内网访问 6080。不能把 noVNC 直接暴露公网，也不应作为长期生产授权方案。
@@ -397,6 +401,16 @@ git push -u origin 当前分支
 ### Chromium 提示 profile 被另一进程占用
 
 这是持久化 profile 的 SingletonLock 指向旧容器或旧机器的典型错误。当前 BrowserManager 会扫描 Linux /proc，确认没有 Chromium 使用该 profile 后才清理失效锁；有活跃 Chromium 时不会删除锁。先检查重复容器或服务，不要删除整个 profile。
+
+### 本地黑与白正常、线上黑与白失败
+
+先看公益签到最近执行中的逐站消息：
+
+- “登录有效；请完成 CAP”：线上授权快照有效，失败原因是服务器没有可见的人工 CAP 操作入口；本地完成签到后再刷新余额，或在受控环境临时使用 noVNC。
+- “登录状态已失效”：重新从线上公开域名创建授权任务，确认扩展同步的是 `cdk.hybgzs.com` 当前页面，并检查生产 `CREDENTIAL_ENCRYPTION_KEY` 没有在重建时变化。
+- “Chrome 启动后立即退出”或 profile locked：检查容器是否多开、`autoapi-checkin` volume 是否被另一个容器挂载，再查看 `docker compose logs autoapi`；不要直接删除整个 browser-profile。
+
+容器升级后先执行 `docker compose ps` 和 `curl http://127.0.0.1:8080/healthz`，确认运行的是新容器；不要用 `docker compose down -v`，否则会删除签到和浏览器持久化数据。
 
 ### browserContext.newPage 提示 context/browser closed
 

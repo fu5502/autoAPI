@@ -37,19 +37,19 @@ function toBase64Url(value: Uint8Array) {
 describe('autoAPI authorization assistant', () => {
   it('claims a code, stores encrypted browser state, and records success', async () => {
     const { database, service } = makeService()
-    const site = database.createSite('测试站点', 'https://example.com/dashboard')
+    const site = database.createSite('我的自定义站点名称', 'https://cdk.hybgzs.com/dashboard')
     const pairing = service.createPair(site)
     const claim = service.claim(pairing.code)
     const encrypted = encryptPayload({
-      siteOrigin: 'https://example.com',
-      cookies: [{ name: 'session', value: 'secret-cookie', domain: '.example.com', path: '/', secure: true, httpOnly: true }],
+      siteOrigin: 'https://cdk.hybgzs.com',
+      cookies: [{ name: 'session', value: 'secret-cookie', domain: '.hybgzs.com', path: '/', secure: true, httpOnly: true }],
       localStorage: { access_token: 'secret-storage' },
     }, claim.secret)
 
     const status = service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
 
     expect(status).toMatchObject({ status: 'received', cookieCount: 1, localStorageCount: 1 })
-    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'valid', authSyncStatus: 'success' })
+    expect(database.getSite(site.id)).toMatchObject({ name: '我的自定义站点名称', authStatus: 'valid', authSyncStatus: 'success' })
     expect(database.listAuthSyncEvents(site.id)[0]).toMatchObject({ status: 'success', cookieCount: 1, localStorageCount: 1 })
     const stored = database.getSiteAuthSnapshot(site.id)
     expect(stored?.encrypted).toBeTruthy()
