@@ -1,118 +1,176 @@
 # autoAPI
 
-## 项目交接与长期上下文
+autoAPI 是一个自托管的多渠道模型网关。Codex、Hermes、Claude Code、OpenAI SDK 等客户端只需要连接一个稳定入口，autoAPI 会在后端多个中转站之间进行模型路由、健康检查、余额同步和故障切换。
 
-完整的当前架构、数据保留规则、本地/Docker/1Panel 部署、本地授权助手、渠道路由、签到模块、API 入口、故障排查和开发约定，统一记录在 [docs/project-context.md](docs/project-context.md)。开始新的开发会话或修改现有功能前，请先阅读该文档。
+渠道的 Base URL 和 API Key 只保存在 autoAPI 后台，客户端不需要知道具体中转站信息。API Key 使用服务端密钥加密保存，管理页面和日志默认脱敏。
 
-autoAPI is a self-hosted model gateway for keeping Codex, Hermes, Claude-compatible tools, and OpenAI-compatible clients on one stable endpoint while upstream relay providers change underneath them.
+## 项目交接文档
 
-It stores provider credentials encrypted, lets you select the models that enter each pool, probes channels only when requested, and fails requests over to another eligible channel when an upstream returns a retryable error. Streaming requests can switch only before the first upstream event is emitted; after that point autoAPI reports the interruption without joining two responses into one context.
+完整的当前架构、数据保留规则、本地/Docker/1Panel 部署、本地授权助手、渠道路由、签到模块、API 入口、故障排查和开发约定，统一记录在 [docs/project-context.md](docs/project-context.md)。
 
-## What is included
+开始新的开发会话或修改现有功能前，请先阅读该文档。它是本项目跨会话的长期上下文。
 
-- OpenAI-compatible `POST /v1/chat/completions` and `POST /v1/responses`
-- Claude-compatible `POST /v1/messages`
-- Codex aliases under `/codex/v1/*` and `/codex/*`
-- CPA/CLIProxyAPI-compatible aliases under `/openai/v1/*`, `/anthropic/v1/*`, and `/claude/v1/*`
-- `Authorization`, `x-api-key`, and `api-key` gateway authentication
-- Gemini `generateContent` adaptation behind the OpenAI chat endpoint
-- Priority routing with weighted round-robin inside a priority tier
-- Error-rate and latency based weight adjustment
-- Failover for connection errors, timeouts, 429, 5xx, and balance errors
-- Manual `/models`, lightweight generation, streaming, and balance probes
-- Consecutive-failure isolation and automatic recovery checks
-- Encrypted API keys with masked admin responses and redacted logs
-- Dashboard for channels, balances, model pools, usage, clients, and failure types
-- PostgreSQL persistence, Redis routing cursors, and Docker Compose deployment
+## 核心能力
 
-## Architecture
+- OpenAI 兼容接口：POST /v1/chat/completions、POST /v1/responses。
+- Claude 兼容接口：POST /v1/messages。
+- Codex 兼容入口：/codex/v1/* 和 /codex/*。
+- CPA/CLIProxyAPI 兼容入口：/openai/v1/*、/anthropic/v1/* 和 /claude/v1/*。
+- 支持 Authorization、x-api-key 和 api-key 网关认证。
+- 支持 Gemini generateContent 风格上游适配。
+- 模型别名、优先级、权重和加权轮询。
+- 根据健康状态、错误率、延迟和余额过滤或降低渠道权重。
+- 连接失败、超时、429、5xx、余额不足时自动尝试其他渠道。
+- 流式请求在首个上游事件输出前允许切换，开始输出后不会拼接两个上游响应。
+- 手动模型列表、轻量对话、流式和余额探测。
+- 连续失败隔离、健康恢复和渠道运维 Agent。
+- 加密保存渠道 API Key，管理页面和日志脱敏。
+- 管理后台提供渠道、模型池、健康度、调用请求、用量、测试和安全设置。
+- 公益站签到、站点授权、余额同步、本地浏览器授权助手和渠道关联。
+- PostgreSQL、Redis、签到 SQLite 和 Docker Compose 部署支持。
 
-```mermaid
-flowchart LR
-  Client["Codex / Hermes / Claude client"] --> Gateway["Fastify compatibility endpoints"]
-  Gateway --> Router["GatewayRouter"]
-  Router --> Store["PostgreSQL channel and usage store"]
-  Router --> Cursor["Redis weighted cursor"]
-  Router --> Adapters["OpenAI / Claude / Gemini adapters"]
-  Adapters --> Pool["Relay provider pool"]
-  Admin["React control plane"] --> Agent["Operations Agent"]
-  Agent --> Adapters
-  Agent --> Store
-```
+## 架构
 
-The main implementation seams are deliberately small:
+<pre>
+Codex / Hermes / Claude Code / OpenAI SDK
+                    |
+          Fastify 兼容网关入口
+                    |
+              GatewayRouter
+        /           |             \
+ PostgreSQL      Redis       协议适配器
+ 渠道/用量     路由游标    OpenAI/Claude/Gemini
+                                  |
+                         多个中转站渠道池
 
-- `GatewayRouter.execute()` owns candidate filtering, ordering, retry, stream handoff, and usage recording.
-- `UpstreamAdapter` owns provider wire formats, headers, probes, and response normalization.
-- `GatewayStore` has PostgreSQL and in-memory adapters so routing tests do not require external infrastructure.
+React 管理后台 ---> 管理 API ---> Operations Agent
+公益站签到模块 ---> SQLite、浏览器、渠道余额关联
+</pre>
+
+主要实现边界：
+
+- apps/api/src/gateway/router.ts：候选渠道过滤、排序、重试、流式切换边界和用量记录。
+- apps/api/src/gateway/selector.ts：模型别名解析、优先级、权重和健康惩罚。
+- apps/api/src/gateway/adapters/：OpenAI、Claude、Gemini 协议适配。
+- apps/api/src/agent/ops-agent.ts：渠道导入、模型发现、探测、隔离和恢复。
+- apps/api/src/checkin/：公益站数据库、签到调度、浏览器、余额和授权助手服务。
+- apps/web/src/：React 管理后台和公益站签到页面。
+- apps/auth-assistant/：Chrome/Edge Manifest V3 本地授权助手扩展。
 
 ## Docker 部署
 
-1. Create the environment file:
+### 1. 准备配置
 
-```powershell
+<pre>
 Copy-Item .env.example .env
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-```
+</pre>
 
-2. 将生成值填入 `CREDENTIAL_ENCRYPTION_KEY`，并分别替换 `POSTGRES_PASSWORD`、`ADMIN_TOKEN` 和 `GATEWAY_API_KEY`。同步修改 `DATABASE_URL` 中的 PostgreSQL 密码。noVNC 默认关闭，不需要配置 VNC 密码。
+将生成的值填入 CREDENTIAL_ENCRYPTION_KEY，并修改 POSTGRES_PASSWORD、ADMIN_TOKEN、GATEWAY_API_KEY、ADMIN_PASSWORD 和 DATABASE_URL 中的数据库密码。
 
-3. Start the stack:
+生产环境不能使用 change-me-*、默认管理员密码或占位数据库密码。CREDENTIAL_ENCRYPTION_KEY 一旦用于生产数据，后续必须稳定保存，否则旧渠道密钥和授权快照无法解密。
 
-```powershell
+### 2. 启动
+
+<pre>
 docker compose up --build -d
-```
+docker compose ps
+curl.exe http://127.0.0.1:8080/healthz
+</pre>
 
-后台和网关统一运行在 `http://localhost:8080`。PostgreSQL 和 Redis 只在 Compose 内网开放，不映射到宿主机。服务器远程浏览器和 noVNC 默认关闭，不开放 `6080`，避免通过远程桌面处理第三方登录。签到授权应使用本地浏览器授权助手；noVNC 仅保留为受控调试开关 `CHECKIN_ENABLE_NOVNC=true`，不建议在公网环境启用。
+网关和管理后台统一运行在 http://localhost:8080。PostgreSQL 和 Redis 只在 Compose 内网开放，不映射到宿主机。
 
-### autoAPI 本地授权助手
+签到授权默认使用本地浏览器授权助手，不需要开启 noVNC。CHECKIN_ENABLE_NOVNC 默认是 false；noVNC 只保留为受控调试开关，不建议在公网环境启用或开放 6080 端口。
 
-签到授权使用自研 Chrome/Edge 扩展，不需要在服务器开启 noVNC。首次在本机 Chrome/Edge 的扩展管理页以“加载已解压的扩展程序”安装 `apps/auth-assistant` 后，进入“公益站签到”点击站点的“授权”，后台会弹出“本地授权助手”，扩展会自动新开该站点的登录页。
+### 3. 更新
 
-在新标签页完成登录后，扩展会自动同步当前站点的 Cookie 和 Local Storage。自动回传未完成时，也可以在该登录页打开扩展并点击“同步当前站点”，扩展会复用正在进行的本地授权任务。一次性授权码只作为未能启动扩展时的手动备用方案。扩展在浏览器端使用 AES-256-GCM 加密上传；服务端只保存加密后的会话快照。
+<pre>
+git pull
+docker compose up -d --build
+docker compose ps
+</pre>
 
-后台会实时显示“已打开本地浏览器登录页”“等待完成站点登录”“授权同步成功”或具体失败原因，并记录同步时间、Cookie 数量和 Local Storage 数量。授权任务 10 分钟后失效且只能完成一次同步。扩展更新后，请在 Chrome/Edge 扩展管理页点击“重新加载”。
+只要不删除 Docker volume，PostgreSQL、Redis、签到 SQLite 和浏览器配置都会保留。不要使用 docker compose down -v 来进行普通升级。
 
-### 管理后台登录
+## Windows 本地开发
 
-开发/演示模式首次启动默认登录信息：
+Node.js 22 和 pnpm 是必需依赖：
 
-- 用户名：`admin`
-- 初始密码：`AutoAPI@123456`
-
-登录地址：`http://localhost:8080`（本地开发模式为 `http://localhost:5173`）。登录后台后进入“安全设置”即可修改密码。安全设置会保留最近 10 条登录记录，包括登录时间、成功/失败状态、登录 IP 和客户端信息。
-
-生产部署前必须在 `.env` 中设置 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 和所有生产密钥；生产模式会拒绝默认密码和 `change-me-*` 密钥。已有本地数据不会因升级登录功能而清空，账号信息和登录记录会以新增字段保存到现有数据文件中。
-
-## Local development
-
-Node.js 22 and pnpm are required. Development uses a file-backed control plane by default, stored in the project root at `.autoapi-data/state.json`, so PostgreSQL and Redis are not needed for local work. Channels, selected model routes, balances, encrypted keys, and usage records survive API restarts. Existing state from the earlier `apps/api/.autoapi-data/state.json` location is copied forward on first startup and is never deleted. Add your own channels from the dashboard; autoAPI no longer creates demo providers, demo models, or fake usage records.
-
-On Windows, double-click `start-autoapi.bat` to open the Chinese terminal control center. It can start development or Docker mode, stop services, run diagnostics, run the full check, open the dashboard, and create a configuration backup. Before `[1]` or `[2]` starts, the launcher stops old autoAPI processes and this project's Compose services. Both service modes run in the current terminal, so no extra API/Web/Docker windows are opened; closing the launcher window stops the foreground service session.
-
-```powershell
+<pre>
 pnpm install
 pnpm dev
-```
+</pre>
 
-- Dashboard: `http://localhost:5173`
-- API: `http://localhost:8080`
-- Development admin token: `change-me-admin`
-- Development gateway key: `change-me-gateway`
+地址：
 
-For a local production-mode run, set `APP_MODE=production`, provide PostgreSQL and Redis URLs, and configure all three secrets from `.env.example`.
+<pre>
+管理前端：http://127.0.0.1:5173/
+API：http://127.0.0.1:8080/
+网关 Base URL：http://127.0.0.1:8080/v1
+</pre>
 
-## Client configuration
+也可以双击项目根目录的 start-autoapi.bat。启动台支持正式模式、开发模式、停止服务、环境配置、完整检查、运行诊断、重新构建、数据备份、签到数据迁移和本地授权助手目录。
 
-详细的 Hermes、Codex、Claude Code、OpenAI SDK 和 curl 配置见 [`docs/clients.md`](docs/clients.md)。
+启动前会尝试停止旧的 autoAPI 进程和 Compose 服务。开发模式中的 API 和前端在当前终端运行，关闭启动器窗口会停止本次前台服务，避免多开终端留下旧服务。
 
-先在控制台添加至少一个渠道并选择模型。然后在“模型池”中确认模型已经出现；需要检查健康状态时，再在渠道列表中手动点击探测。客户端的 `Model` 必须填写模型池中的别名。客户端只需要连接 autoAPI，不需要知道后面的中转站地址和密钥。
+开发模式默认登录信息仅用于本地首次启动：
+
+- 用户名：admin
+- 初始密码：AutoAPI@123456
+
+登录后进入安全设置修改密码。线上部署必须使用自己的管理员账号和密码。
+
+## 数据持久化
+
+本地 APP_MODE=demo 时：
+
+- 渠道、模型路由、余额、加密 Key、用量和模型测试记录：项目根目录 .autoapi-data/state.json。
+- 签到站点、签到历史和设置：.autoapi-data/checkin/checkin.sqlite。
+- 服务端浏览器配置：.autoapi-data/checkin/browser-profile。
+- PostgreSQL 和 Redis 不要求本地启动。
+
+生产 Docker 模式时：
+
+- PostgreSQL 保存渠道、模型、用量和登录数据。
+- Redis 保存生产路由运行时状态。
+- Docker volume autoapi-checkin 保存签到 SQLite 和浏览器配置。
+
+旧版本 apps/api/.autoapi-data/state.json 会在首次启动时复制到新的项目根目录位置，原文件不会删除。代码升级、重新构建或重启服务不会主动清空数据。
+
+不要提交或删除以下内容：
+
+- .env
+- .autoapi-data
+- SQLite 文件
+- browser-profile
+- 真实 API Key、Cookie、Local Storage、管理员密码和 SSH 密码
+
+## 本地授权助手
+
+Linux 服务器不需要开启 noVNC。推荐在用户自己的 Chrome/Edge 中加载 apps/auth-assistant：
+
+1. 打开 Chrome/Edge 扩展管理页，启用开发者模式。
+2. 选择“加载已解压的扩展程序”，选择项目中的 apps/auth-assistant。
+3. 在 autoAPI 的“公益站签到”中点击目标站点的“授权”。
+4. 本地浏览器会自动打开目标站点登录页。
+5. 完成站点登录后，扩展自动读取当前站点允许范围内的 Cookie 和 Local Storage。
+6. 扩展使用 AES-256-GCM 加密上传，后台会显示授权同步成功或具体失败原因。
+
+授权任务只能使用一次，约 10 分钟后过期。登录页被关闭、服务重启或任务超时后，需要重新点击授权。扩展更新后在 chrome://extensions 或 edge://extensions 点击“重新加载”。
+
+服务端不会把 Cookie、网页登录 Token、access_token 或 refresh_token 当作渠道 API Key。渠道导入必须拿到明确的官方 API Key。
+
+## 客户端接入
+
+完整的 Codex、Hermes、Claude Code、OpenAI SDK 和 curl 配置见 [docs/clients.md](docs/clients.md)。
+
+使用前先在管理后台添加渠道，并选择要加入模型池的模型。客户端 Model 必须填写模型池中的别名，而不是必须填写渠道商的真实模型名。
 
 ### Codex
 
-Codex custom providers belong in the user-level `~/.codex/config.toml`; Codex ignores `model_provider` and `model_providers` in project-local configuration. Configure autoAPI as a Responses provider:
+Codex 的自定义 provider 放在用户级配置文件 ~/.codex/config.toml：
 
-```toml
+<pre>
 model = "gpt-5-codex"
 model_provider = "autoapi"
 
@@ -124,114 +182,154 @@ wire_api = "responses"
 request_max_retries = 2
 stream_max_retries = 0
 stream_idle_timeout_ms = 300000
-```
+</pre>
 
-Set the gateway key in the environment that launches Codex:
+启动 Codex 前设置网关 Key：
 
-```powershell
+<pre>
 $env:AUTOAPI_GATEWAY_KEY = "your-GATEWAY_API_KEY"
-```
+</pre>
 
-`stream_max_retries` is intentionally zero because autoAPI already owns pre-output channel failover and must not create a second independent retry layer after output starts.
+stream_max_retries 建议保持为 0，因为 autoAPI 已经负责首事件输出前的渠道切换，客户端再次对流式响应重试可能造成重复上下文。
 
-当某个 OpenAI 兼容渠道不支持 `/v1/responses` 时，autoAPI 会自动将 Codex Responses 请求降级到 `/v1/chat/completions`，并转换回 Codex 可识别的 Responses 响应。这样接入只提供 Chat API 的 CPA、New API 或 Sub2API 风格渠道时，Codex 仍可使用统一入口。
+如果上游 OpenAI 兼容渠道不支持 /v1/responses，autoAPI 会自动降级到 /v1/chat/completions，并转换回 Codex 可识别的 Responses 响应。
 
-### OpenAI-compatible clients and Hermes
+### OpenAI 兼容客户端和 Hermes
 
-Use these values when the client accepts standard OpenAI endpoint settings:
-
-```text
+<pre>
 Base URL: http://localhost:8080/v1
 API Key:  your-GATEWAY_API_KEY
-Model:    a model alias configured in autoAPI
-```
+Model:    模型池中的模型别名
+</pre>
 
-Common environment variable names are:
+常用环境变量：
 
-```powershell
+<pre>
 $env:OPENAI_BASE_URL = "http://localhost:8080/v1"
 $env:OPENAI_API_KEY = "your-GATEWAY_API_KEY"
-```
+</pre>
 
-Hermes 如果支持 OpenAI 兼容配置，填写：
+Hermes 如果支持 OpenAI 兼容配置，使用同样的 Base URL、API Key 和模型池别名。若配置项名称是 endpoint、base_url、OPENAI_BASE_URL 或 api_key，分别填入对应值即可。
 
-```text
-Base URL: http://localhost:8080/v1
-API Key:  your-GATEWAY_API_KEY
-Model:    模型池中的别名，例如 gpt-5-codex 或 hermes-default
-```
+### Claude Code
 
-如果 Hermes 使用配置文件，把 `base_url` 或 `OPENAI_BASE_URL` 指向 `http://localhost:8080/v1`，把 `api_key` 或 `OPENAI_API_KEY` 设置为 `GATEWAY_API_KEY`。若 Hermes 的配置项是 `endpoint`，同样填写这个 Base URL。
-
-### Claude-compatible clients
-
-```powershell
+<pre>
 $env:ANTHROPIC_BASE_URL = "http://localhost:8080"
 $env:ANTHROPIC_AUTH_TOKEN = "your-GATEWAY_API_KEY"
-```
+</pre>
 
-The client model name must match an autoAPI alias whose eligible channels use the Claude protocol.
-
-Claude Code 的 `/v1/models` 会返回 Anthropic 模型列表格式；OpenAI/Codex 请求仍返回 OpenAI 模型列表格式。autoAPI 会按 User-Agent 和 `anthropic-*` 请求头识别客户端，并在用量中记录为 `claude-code`、`codex`、`cli-proxy-api` 或 `hermes`。
+Claude Code 使用 /v1/messages。模型名必须是模型池别名，并且模型池中要有 Claude 协议兼容渠道。autoAPI 会按请求头和 User-Agent 识别 Claude Code、Codex、CLIProxyAPI 和 Hermes，并将客户端信息写入用量记录。
 
 ### curl 验证
 
-先用模型列表确认客户端能看到已加入模型池的别名：
+先查看模型池中的别名：
 
-```powershell
-curl.exe http://localhost:8080/v1/models `
-  -H "Authorization: Bearer your-GATEWAY_API_KEY"
-```
+<pre>
+curl.exe http://localhost:8080/v1/models -H "Authorization: Bearer your-GATEWAY_API_KEY"
+</pre>
 
-再发送一个 OpenAI Chat 请求：
+发送一个 OpenAI Chat 请求：
 
-```powershell
-curl.exe http://localhost:8080/v1/chat/completions `
-  -H "Authorization: Bearer your-GATEWAY_API_KEY" `
-  -H "Content-Type: application/json" `
-  -d '{"model":"gpt-5-codex","messages":[{"role":"user","content":"你好"}]}'
-```
+<pre>
+curl.exe http://localhost:8080/v1/chat/completions -H "Authorization: Bearer your-GATEWAY_API_KEY" -H "Content-Type: application/json" -d '{"model":"gpt-5-codex","messages":[{"role":"user","content":"你好"}]}'
+</pre>
 
-Codex 使用 `/v1/responses`，Claude 客户端使用 `/v1/messages`。这些入口的请求都会由 autoAPI 根据模型池、优先级、权重、健康状态和余额自动选择渠道；非流式请求在可重试错误时会切换到下一个渠道。
+## 渠道管理
 
-## Channel onboarding
+从管理后台的“渠道池”或“渠道管理”添加渠道，填写名称、Base URL、API Key、协议、密钥名称、优先级、权重、余额门槛、标签和模型。
 
-From the dashboard, choose **添加渠道**, enter the provider name, Base URL, API key, protocol, and the models you want in the pool, then submit. Adding a channel does not contact the upstream. Use **获取模型列表** only when you want to read the upstream model list, and use the channel table's probe action for health checks. Existing channels can be edited, disabled, probed, or deleted from **渠道管理**. Deleting a channel also removes its model routes.
+添加渠道只保存基础信息和用户选择的模型，不自动向上游发起探测请求。需要时手动拉取模型列表，再通过渠道页面的探测按钮检查模型、轻量对话、流式响应和余额。
 
-When you explicitly run a probe, autoAPI performs:
+渠道管理支持：
 
-1. model discovery or validation of supplied model names;
-2. one minimal non-streaming generation;
-3. one streaming generation through the first event;
-4. optional balance discovery through known compatible endpoints;
-5. no automatic model route changes; only the models selected in the channel form are routed.
+- 编辑、删除、启用和禁用渠道。
+- 单渠道余额同步和批量余额刷新。
+- 渠道 Key 添加、删除和名称管理。
+- Base URL 复制。
+- 只在拖拽手柄上拖动排序。
+- 点击箭头展开或收起该渠道的模型。
+- 查看健康百分比、对话延迟、端点 PING 和近期状态。
 
-Balance discovery is deliberately non-blocking. A provider without a recognized balance endpoint enters the pool with `balance_unknown` while health checks and usage accounting continue to work.
+模型池以一个模型一行显示，只展示渠道添加时选择的模型。多渠道模型默认收起，展开后显示站点图标、渠道名称和健康详情。模型默认按最近调用/请求量优先排序。
 
-## Routing semantics
+## 路由规则
 
-1. Resolve the client model alias to candidate channel/model pairs.
-2. Remove disabled, isolated, cooling, exhausted, under-minimum, and protocol-incompatible channels. `pending`（检测中）渠道仍可参与调用，只要没有被禁用、隔离、冷却或余额门槛过滤。
-3. Use the highest `priority` tier first.
-4. Within a tier, use Redis-backed weighted round-robin with small error-rate and latency penalties.
-5. Retry another candidate only for connection errors, timeouts, 402/quota errors, 429, 5xx, or recognized balance errors.
+1. 根据请求模型别名找到候选渠道和上游模型。
+2. 过滤禁用、隔离、冷却、余额不足、最低余额不满足和协议不兼容的渠道。
+3. 检测中的 pending 渠道仍参与调用，只要没有被禁用、隔离、冷却或余额门槛过滤。
+4. 优先选择 priority 更高的渠道。
+5. 同优先级按 weight 加权轮询，并参考错误率和延迟轻微降权。
+6. A 失败后切换 B，B 失败后切换 C；故障渠道会被智能降权，恢复前不会因为高权重反复抢占。
 
-Every attempt is recorded with one request ID. This makes fallback attempts visible in per-channel error rates while retaining request correlation.
+连接失败、超时、402/额度错误、429、5xx 和识别出的余额错误会尝试下一个候选渠道。非流式请求可以完整重放；流式请求仅在首个上游事件前切换，已经输出后不会拼接两个回答。
 
-## Commands
+## 健康探测和余额
 
-```powershell
-pnpm typecheck
-pnpm test
-pnpm build
-```
+手动探测通常包含：
 
-The integration suite starts real local mock upstream servers and covers 429/5xx failover, stream failure before and after the first event, protocol adaptation, provider auto-detection, credential encryption, isolation, authentication, and usage reporting.
+1. 模型列表发现或模型验证。
+2. 一次轻量非流式请求。
+3. 一次流式请求并读取首个事件。
+4. 尝试标准余额接口或已知渠道适配器。
 
-## Current MVP limits
+没有标准余额接口的渠道可以保持 balance_unknown，不会因此阻塞入池。与公益站关联的渠道优先读取签到站点余额；所有可解析的数值统一按 USD 展示。禁用渠道不会参与批量余额刷新。
 
-- Cross-protocol routing is intentionally constrained: Claude Messages routes to Claude channels, Responses routes to OpenAI-compatible channels, and Gemini adapts OpenAI Chat requests.
-- Generic balance discovery supports common credit and New API-style payloads; provider-specific adapters can be added behind the existing balance interface.
-- A stream that fails after its first event cannot continue on another channel without corrupting conversation state. autoAPI emits a structured SSE error instead.
-- The first release uses one administrator account and supports multiple named client gateway keys; multi-tenant quotas and resale billing are not included.
-- Streaming applies the connection/first-byte timeout first, then a five-minute idle timeout that resets whenever upstream data arrives. Once output has started, a failed stream is reported as an SSE error and is never joined with another channel.
+## 主要 API
+
+网关接口使用 Authorization: Bearer GATEWAY_API_KEY，也兼容 x-api-key 和 api-key：
+
+<pre>
+GET  /v1/models
+POST /v1/chat/completions
+POST /v1/responses
+POST /v1/messages
+</pre>
+
+兼容别名：/codex/v1/*、/codex/*、/openai/v1/*、/anthropic/v1/*、/claude/v1/*。
+
+管理接口使用管理员登录会话，旧脚本兼容 ADMIN_TOKEN：
+
+<pre>
+POST   /admin/auth/login
+GET    /admin/auth/me
+POST   /admin/security/password
+GET    /admin/security/login-history
+GET    /admin/status
+GET    /admin/channels
+POST   /admin/providers/import
+POST   /admin/providers/models
+POST   /admin/channels/:id/probe
+POST   /admin/channels/balances/refresh
+PUT    /admin/channels/:id
+DELETE /admin/channels/:id
+GET    /admin/pools
+GET    /admin/usage
+GET    /admin/requests
+GET    /admin/balances
+POST   /admin/model-aliases
+</pre>
+
+公益站签到接口统一使用 /admin/checkin 前缀，并复用 autoAPI 管理员登录。完整接口清单见 docs/api.md 和 docs/project-context.md。
+
+## 测试和构建
+
+<pre>
+pnpm.cmd typecheck
+pnpm.cmd test
+pnpm.cmd build
+</pre>
+
+测试覆盖模型路由、优先级权重、健康隔离恢复、OpenAI/Claude/Gemini 适配、非流式和流式故障切换、429/5xx/超时、余额错误、密钥加密、登录认证、请求记录、渠道导入、签到迁移、站点删除、图标缓存、余额关联和 Chromium profile 锁恢复。
+
+## 生产限制
+
+- Claude Messages、Codex Responses 和 OpenAI Chat 会按协议选择兼容渠道，跨协议路由不是无限制转换。
+- 没有标准余额接口的站点只能显示 balance_unknown，除非添加对应适配器。
+- 流式响应开始输出后无法无感切换到另一个渠道。
+- 当前是单管理员体系，支持多个命名网关 Key，但不包含多租户配额和转售计费。
+- 签到站点登录依赖本地授权助手或受控浏览器环境；公网部署推荐本地授权助手。
+- 生产升级不得清空 PostgreSQL、Redis、签到 SQLite 或浏览器 profile。
+
+## 开发约定
+
+开始新任务前请先阅读 docs/project-context.md，并运行 git status --short --branch。修改数据结构时必须使用幂等迁移，不能重建或清空现有数据。涉及密钥、Cookie、Local Storage 和日志时必须保持加密、域名校验和脱敏。提交前运行类型检查、测试和构建，并确认未提交 .env、运行数据或敏感文件。
