@@ -693,7 +693,13 @@ export async function registerCheckinRoutes(
       const body = request.body as { siteIds?: unknown } | undefined;
       const siteIds = body?.siteIds === undefined ? undefined : z.array(z.number().int().positive()).max(100).parse(body.siteIds);
       const task = module.coordinator.run("manual", siteIds);
-      void task.catch(() => undefined);
+      void task.catch((error) => {
+        module.events.emit({
+          type: "state_changed",
+          title: "签到任务启动失败",
+          message: error instanceof Error ? error.message : "签到任务启动失败",
+        });
+      });
       return reply.code(202).send(module.coordinator.getActiveRun());
     });
     checkin.get<{ Querystring: { limit?: string } }>("/runs", async (request) => module.db.listRecentRuns(clampInteger(request.query.limit, 50, 1, 200)));

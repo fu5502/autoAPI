@@ -50,14 +50,14 @@ export class CheckinCoordinator {
 
     const run = this.db.startRun(trigger)
     this.activeRun = run
-    this.events.emit({ type: 'run_started', title: '签到任务已开始', message: `正在处理 ${candidates.length} 个站点`, data: { runId: run.id } })
-    this.logProgress(run.id, { message: `开始处理 ${candidates.length} 个站点` })
     const failedSiteIds: number[] = []
     let success = 0
     let failed = 0
     let skipped = 0
 
     try {
+      this.events.emit({ type: 'run_started', title: '签到任务已开始', message: `正在处理 ${candidates.length} 个站点`, data: { runId: run.id } })
+      this.logProgress(run.id, { message: `开始处理 ${candidates.length} 个站点` })
       for (const site of candidates) {
         const balanceOnly = site.checkinMode === 'balance_only' || (trigger !== 'manual' && !site.enabled)
         let operation: 'checkin' | 'balance_refresh' = balanceOnly ? 'balance_refresh' : 'checkin'
@@ -113,8 +113,8 @@ export class CheckinCoordinator {
         })
       }
     } finally {
-      const completed = this.db.completeRun(run.id, { success, failed, skipped })!
       this.activeRun = null
+      const completed = this.db.completeRun(run.id, { success, failed, skipped })!
       this.events.emit({
         type: 'run_completed',
         title: completed.status === 'completed' ? '签到任务完成' : '签到任务已结束',

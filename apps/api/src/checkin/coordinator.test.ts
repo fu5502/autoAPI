@@ -33,6 +33,17 @@ function result(siteId: number, runId: number, status: 'failed' | 'disabled', me
 }
 
 describe('CheckinCoordinator manual balance fallback', () => {
+  it('does not leave an active run when no sites are executable', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const coordinator = new CheckinCoordinator(database, {} as NewApiService, new EventBus(), new TelegramNotifier(database))
+
+    await expect(coordinator.run('manual', [999])).rejects.toThrow('没有可执行的站点')
+
+    expect(coordinator.getActiveRun()).toBeNull()
+    expect(database.listRecentRuns(10)).toEqual([])
+  })
+
   it('refreshes balance when a manual check-in endpoint is missing', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)

@@ -169,6 +169,8 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
     try {
       const nextState = await api.getState()
       setState(nextState)
+      const runningRun = nextState.recentRuns.find((run) => run.status === 'running')
+      setActiveRunId((current) => runningRun ? runningRun.id : current)
       void gatewayApi.channels().then((channels) => {
         setGatewayChannels(channels)
         const linkedChannelIds = new Set((nextState.channelLinks ?? []).map((link) => link.channelId))
@@ -275,6 +277,35 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
     return () => controller.abort()
   }, [notify, refresh])
 
+  useEffect(() => {
+    if (activeRunId === null) return
+    let disposed = false
+    const syncActiveRun = async () => {
+      try {
+        const [runPayload, progress] = await Promise.all([
+          api.getRun(activeRunId),
+          api.getRunProgress(activeRunId),
+        ])
+        if (disposed) return
+        if (progress.entries.length) {
+          setProgressByRun((current) => ({ ...current, [activeRunId]: progress.entries.slice(-200) }))
+        }
+        if (runPayload.run.status !== 'running') {
+          setActiveRunId((current) => (current === activeRunId ? null : current))
+          void refresh(true)
+        }
+      } catch {
+        // Keep polling so a buffered event stream cannot leave the UI stuck.
+      }
+    }
+    void syncActiveRun()
+    const timer = window.setInterval(() => void syncActiveRun(), 2_500)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [activeRunId, refresh])
+
   const openAuthAssistant = async (site: Site, flow: AuthorizationFlow = 'standalone') => {
     try {
       const pairing = await api.createAuthAssistantPair(site.id)
@@ -358,13 +389,15 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
         void api.getRunProgress(run.id).then((progress) => {
           if (progress.entries.length) setProgressByRun((current) => ({ ...current, [run.id]: progress.entries.slice(-200) }))
         }).catch(() => undefined)
+        notify(
+          balanceOnly ? '余额刷新任务已提交' : '签到任务已提交',
+          balanceOnly
+            ? `正在刷新 ${selectedSite?.name ?? '所选站点'} 的余额`
+            : siteIds?.length === 1 ? '正在处理所选站点' : '正在依次签到或刷新全部启用站点',
+        )
+      } else {
+        notify('签到任务未启动', '没有可执行的站点，或任务已被取消', 'warning')
       }
-      notify(
-        balanceOnly ? '余额刷新任务已提交' : '签到任务已提交',
-        balanceOnly
-          ? `正在刷新 ${selectedSite?.name ?? '所选站点'} 的余额`
-          : siteIds?.length === 1 ? '正在处理所选站点' : '正在依次签到或刷新全部启用站点',
-      )
       void refresh(true)
     } catch (cause) {
       notify('无法开始签到', cause instanceof Error ? cause.message : '未知错误', 'danger')
