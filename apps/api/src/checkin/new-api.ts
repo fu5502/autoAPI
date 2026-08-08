@@ -345,6 +345,16 @@ export class NewApiService {
       beforeRaw?: number | null
     } = {},
   ): CheckinResult {
+    if (this.authenticationProbe?.browserVerificationRequired && this.loginRemainsValid(site)) {
+      return this.makeResult(
+        site,
+        runId,
+        startedAt,
+        'manual_required',
+        '线上服务器浏览器被站点验证拦截，请在本机已授权浏览器完成验证后重新刷新余额',
+        { ...values, loginVerified: true },
+      )
+    }
     const loginVerified = this.loginRemainsValid(site)
     const message = !loginVerified
       ? '登录状态已失效，请重新授权'
@@ -370,21 +380,20 @@ export class NewApiService {
       beforeRaw?: number | null
     } = {},
   ): CheckinResult {
-    if (!this.authenticationProbe?.browserVerificationRequired || !this.loginRemainsValid(site)) {
-      return this.authenticationRequiredResult(site, runId, startedAt, values)
-    }
-    return this.makeResult(
-      site,
-      runId,
-      startedAt,
-      'manual_required',
-      '线上服务器浏览器被站点验证拦截，请在本机已授权浏览器完成验证后重新刷新余额',
-      { ...values, loginVerified: true },
-    )
+    return this.authenticationRequiredResult(site, runId, startedAt, values)
   }
 
   private async applyImportedCookies(context: BrowserContext, site: Site): Promise<BrowserAuthSnapshot | null> {
     return this.authAssistant?.applyToContext(context, site.id) ?? null
+  }
+
+  private pageIsLoginPath(page: Page): boolean {
+    try {
+      const pathname = new URL(page.url()).pathname.toLowerCase().replace(/\/+$/, '')
+      return /(?:^|\/)(?:login|signin)(?:\/|$)/.test(pathname) || /^\/auth(?:\/|$)/.test(pathname)
+    } catch {
+      return false
+    }
   }
 
   private async openImportedSitePage(context: BrowserContext, page: Page, site: Site): Promise<void> {
@@ -823,6 +832,11 @@ export class NewApiService {
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.openImportedSitePage(context, page, site)
         this.logProgress(runId, site, '站点页面已打开，正在检测签到能力')
+        if (this.pageIsLoginPath(page)) {
+          return this.makeResult(site, runId, startedAt, 'manual_required', '站点已跳转到登录页，请重新授权', {
+            loginVerified: false,
+          })
+        }
         const challenge = await detectChallenge(page)
         if (challenge) {
           return this.makeResult(site, runId, startedAt, 'manual_required', challenge, {
@@ -1033,6 +1047,11 @@ export class NewApiService {
           }
         }
         const sub2ApiSite = site.adapter === 'sub2api' || isSub2ApiSite(site.baseUrl)
+        if (this.pageIsLoginPath(page)) {
+          return this.makeResult(site, runId, startedAt, 'manual_required', '站点已跳转到登录页，请重新授权', {
+            loginVerified: false,
+          })
+        }
         const challenge = await detectChallenge(page)
         // Sub2API exposes its authenticated balance API even when the public
         // SPA shell is behind a browser-verification page (for example Aihub).
@@ -1980,20 +1999,6 @@ export class NewApiService {
       }
     }
 
-    // A few reverse proxies reject automated API requests with an HTML 403/404
-    // even though the SPA already has a valid user session. Keep the persisted
-    // identity as a read-only fallback in that case; explicit JSON 401/403
-    // responses still take precedence and mark the session as invalid.
-    const storedUser = normalizeNewApiUser(await readStoredNewApiUser(page))
-    const storedUserId = numberOrNull(storedUser?.id)
-    if (
-      storedUser
-      && storedUserId !== null
-      && !this.authenticationProbe?.definitiveFailure
-    ) {
-      return { adapter: 'new-api-legacy', legacyUserId: storedUserId, user: storedUser }
-    }
-
     if (!allowModern) return null
     const modern = await pageRequest<{
       access_token?: string
@@ -2664,51 +2669,6 @@ async function readNewApiLegacyUserId(page: Page): Promise<number | null> {
           const id = Number(candidate?.id ?? candidate?.uid ?? candidate?.user_id)
           if (Number.isSafeInteger(id) && id > 0) return id
         }
-      } catch {
-        // Ignore unrelated or partially-written storage values.
-      }
-    }
-    return null
-  }).catch(() => null)
-}
-
-async function readStoredNewApiUser(page: Page): Promise<unknown> {
-  return page.evaluate(() => {
-    const values: string[] = []
-    for (const storage of [localStorage, sessionStorage]) {
-      for (let index = 0; index < storage.length; index += 1) {
-        const key = storage.key(index)
-        if (!key) continue
-        if (key === 'user' || /user|account|profile|auth|identity/i.test(key)) {
-          const value = storage.getItem(key)
-          if (value) values.push(value)
-        }
-      }
-    }
-    const pickUser = (value: unknown): Record<string, unknown> | null => {
-      if (!value || typeof value !== 'object') return null
-      const payload = value as Record<string, unknown>
-      const source = (payload.user && typeof payload.user === 'object'
-        ? payload.user
-        : payload.data && typeof payload.data === 'object'
-          ? payload.data
-          : payload.state && typeof payload.state === 'object' && typeof (payload.state as Record<string, unknown>).user === 'object'
-            ? (payload.state as Record<string, unknown>).user
-            : payload) as Record<string, unknown>
-      const id = Number(source.id ?? source.user_id ?? source.uid)
-      const hasIdentity = Number.isSafeInteger(id) && id > 0
-        || typeof source.username === 'string'
-        || typeof source.display_name === 'string'
-      const hasBalance = Number.isFinite(Number(source.quota))
-        || Number.isFinite(Number(source.balance))
-      return hasIdentity || hasBalance ? source : null
-    }
-    for (const raw of values) {
-      if (raw.length > 500_000) continue
-      try {
-        const parsed = JSON.parse(raw)
-        const user = pickUser(parsed)
-        if (user) return user
       } catch {
         // Ignore unrelated or partially-written storage values.
       }

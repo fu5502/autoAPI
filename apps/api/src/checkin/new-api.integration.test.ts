@@ -1332,7 +1332,7 @@ describe('New API response parsing', () => {
 })
 
 describe('NewApiService keeps valid sessions on proxy error pages', () => {
-  it('keeps Any Router valid when the dashboard APIs return an HTML 403', async () => {
+  it('reports browser verification without refreshing from stored dashboard data', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('Any Router', 'https://anyrouter.top')
@@ -1348,11 +1348,67 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
     const service = new NewApiService(database, browser, new EventBus())
     const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
 
-    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 2_000_000, loginVerified: true })
+    expect(result).toMatchObject({
+      status: 'manual_required',
+      message: '线上服务器浏览器被站点验证拦截，请在本机已授权浏览器完成验证后重新刷新余额',
+      loginVerified: true,
+    })
     expect(navigatedTo).toEqual(['https://anyrouter.top/console'])
-    expect(requestedPaths).toEqual(['/api/status', '/api/user/self', '/api/user/self'])
+    expect(requestedPaths).toEqual(['/api/status', '/api/user/self', '/api/user/self', '/api/user/auth/refresh'])
     preserveSiteResult(database, site.id, result)
-    expect(database.getSite(site.id)?.authStatus).toBe('valid')
+    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'valid', lastBalanceRaw: 500_000 })
+  })
+
+  it('does not use a stored dashboard user as proof of a fresh login', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('Stale Dashboard', 'https://stale-dashboard.example')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 500_000 })
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const { page, requestedPaths } = createStorageBackedPage(
+      { id: 9, username: 'stale-user', quota: 2_000_000 },
+      () => ({ httpStatus: 200, contentType: 'text/plain; charset=UTF-8', success: false, message: '站点返回了非 JSON 响应' }),
+    )
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      message: '站点 API 返回了页面而非 JSON，已保留当前登录状态，请确认站点 API 地址',
+      loginVerified: true,
+    })
+    expect(requestedPaths.length).toBeGreaterThan(0)
+    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'valid', lastBalanceRaw: 500_000 })
+  })
+
+  it('stops check-in and refresh immediately when the site redirects to login', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('Login Redirect', 'https://login-redirect.example')
+    const requestedPaths: string[] = []
+    const page = {
+      url: () => 'https://login-redirect.example/login',
+      goto: async () => undefined,
+      evaluate: async (_callback: unknown, input?: { pathname?: string }) => {
+        if (input?.pathname) requestedPaths.push(input.pathname)
+        return null
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+
+    const checkin = await service.checkinSite(site, database.startRun('manual').id)
+    const refresh = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(checkin).toMatchObject({ status: 'manual_required', message: '站点已跳转到登录页，请重新授权', loginVerified: false })
+    expect(refresh).toMatchObject({ status: 'manual_required', message: '站点已跳转到登录页，请重新授权', loginVerified: false })
+    expect(requestedPaths).toEqual([])
   })
 
   it('moves 42 API to balance-only mode when its authenticated check-in endpoint returns an HTML 404', async () => {
