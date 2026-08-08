@@ -37,13 +37,28 @@ export class BrowserManager {
     return this.busy
   }
 
-  async run<T>(options: { interactive: boolean; closeBrowserWhenDone?: boolean }, task: (context: BrowserContext, page: Page) => Promise<T>): Promise<T> {
+  async run<T>(
+    options: { interactive: boolean; closeBrowserWhenDone?: boolean; timeoutMs?: number },
+    task: (context: BrowserContext, page: Page) => Promise<T>,
+  ): Promise<T> {
     let release!: () => void
     const slot = new Promise<void>((resolve) => { release = resolve })
     const previous = this.queue
     this.queue = previous.then(() => slot)
     await previous
     this.busy = true
+    let timeout: NodeJS.Timeout | null = null
+    let timedOut = false
+    let taskPromise: Promise<T> | null = null
+    const timeoutPromise = options.timeoutMs === undefined
+      ? null
+      : new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          timedOut = true
+          void this.cancelActive().catch(() => undefined)
+          reject(new Error(`站点执行超过 ${options.timeoutMs! / 1000} 秒，已终止`))
+        }, options.timeoutMs)
+      })
     try {
       let context = await this.ensureContext()
       let page: Page
@@ -60,8 +75,15 @@ export class BrowserManager {
       page.setDefaultNavigationTimeout(45_000)
       await setWindowState(context, page, options.interactive ? 'normal' : 'minimized')
       if (options.interactive) await page.bringToFront()
-      return await task(context, page)
+      taskPromise = Promise.resolve().then(() => task(context, page))
+      return timeoutPromise
+        ? await Promise.race([taskPromise, timeoutPromise])
+        : await taskPromise
+    } catch (error) {
+      if (timedOut) taskPromise?.catch(() => undefined)
+      throw error
     } finally {
+      if (timeout) clearTimeout(timeout)
       const page = this.activePage
       this.activePage = null
       // Keep Chrome's sole startup target alive only when the task left it

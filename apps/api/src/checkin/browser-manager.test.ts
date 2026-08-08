@@ -115,6 +115,29 @@ describe('BrowserManager connection recovery', () => {
 
     expect(taskPage.close).toHaveBeenCalledOnce()
   })
+
+  it('enforces a hard per-site timeout and closes the active task page', async () => {
+    const manager = new BrowserManager()
+    const taskPage = {
+      url: () => 'https://example.com/',
+      isClosed: () => false,
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    } as unknown as Page
+    const context = {
+      pages: () => [taskPage],
+      newPage: vi.fn(async () => taskPage),
+    } as unknown as BrowserContext
+    vi.spyOn(manager as unknown as { ensureContext: () => Promise<BrowserContext> }, 'ensureContext').mockResolvedValue(context)
+
+    await expect(manager.run(
+      { interactive: false, closeBrowserWhenDone: false, timeoutMs: 50 },
+      async () => new Promise<void>(() => undefined),
+    )).rejects.toThrow('站点执行超过')
+
+    expect(taskPage.close).toHaveBeenCalled()
+  })
 })
 
 describe('Chrome profile lock recovery', () => {

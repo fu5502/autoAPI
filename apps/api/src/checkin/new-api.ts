@@ -287,6 +287,7 @@ const yiApiMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const trueSotaMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const fastAiTokenMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const fengwindMainSiteUrl = 'https://api.fengwind.com/'
+const siteOperationTimeoutMs = 15_000
 
 export class NewApiService {
   readonly authSessions = new Map<string, AuthSessionState>()
@@ -813,6 +814,7 @@ export class NewApiService {
       return await this.browser.run({
         interactive: isHybgzsWelfareSite(site.baseUrl) || site.adapter === 'hybgzs-welfare',
         closeBrowserWhenDone: true,
+        timeoutMs: siteOperationTimeoutMs,
       }, async (context, page) => {
         this.beginAuthenticationProbe()
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
@@ -971,7 +973,7 @@ export class NewApiService {
     const requestTimeoutMs = this.db.getSettings().requestTimeoutSeconds * 1000
     this.db.markSiteRunning(site.id)
     try {
-      return await this.browser.run({ interactive: false, closeBrowserWhenDone: true }, async (context, page) => {
+      return await this.browser.run({ interactive: false, closeBrowserWhenDone: true, timeoutMs: siteOperationTimeoutMs }, async (context, page) => {
         this.beginAuthenticationProbe()
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.applyImportedCookies(context, site)

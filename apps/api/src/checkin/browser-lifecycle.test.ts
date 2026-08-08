@@ -54,9 +54,9 @@ describe('automated browser task lifecycle', () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('Example', 'https://example.com')
-    const options: Array<{ interactive: boolean; closeBrowserWhenDone?: boolean }> = []
+    const options: Array<{ interactive: boolean; closeBrowserWhenDone?: boolean; timeoutMs?: number }> = []
     const browser = {
-      run: vi.fn(async (runOptions: { interactive: boolean; closeBrowserWhenDone?: boolean }, _task: unknown) => {
+      run: vi.fn(async (runOptions: { interactive: boolean; closeBrowserWhenDone?: boolean; timeoutMs?: number }, _task: unknown) => {
         options.push(runOptions)
         throw new Error('test stop before browser task')
       }),
@@ -67,8 +67,8 @@ describe('automated browser task lifecycle', () => {
     await service.refreshBalanceSite(site, database.startRun('manual').id)
 
     expect(options).toEqual([
-      { interactive: false, closeBrowserWhenDone: true },
-      { interactive: false, closeBrowserWhenDone: true },
+      { interactive: false, closeBrowserWhenDone: true, timeoutMs: 15_000 },
+      { interactive: false, closeBrowserWhenDone: true, timeoutMs: 15_000 },
     ])
   })
 })
