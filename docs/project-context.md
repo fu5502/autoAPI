@@ -8,7 +8,7 @@
 线上项目目录：/opt/autoapi/app
 当前发布分支：main
 最近功能基线提交：`40ea83d fix: preserve check-in sessions on proxy error pages`
-最新发布提交：`3c24862 ci: sync compose definition before deploy`
+最新发布提交：`0875186 docs: document GitHub deployment flow`
 
 当前状态快照：
 
