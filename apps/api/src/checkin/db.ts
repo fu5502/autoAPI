@@ -462,12 +462,12 @@ export class AppDatabase {
     return Number(this.db.prepare('DELETE FROM site_channel_links WHERE site_id = ? AND channel_id = ?').run(siteId, channelId).changes) > 0
   }
 
-  createSite(name: string, baseUrl: string, note = '', faviconUrl: string | null = null): Site {
+  createSite(name: string, baseUrl: string, note = '', faviconUrl: string | null = null, checkinMode: CheckinMode = 'checkin'): Site {
     const timestamp = nowIso()
     const result = this.db.prepare(`
-      INSERT INTO sites (name, base_url, note, favicon_url, favicon_custom, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(name, baseUrl, note, faviconUrl, Number(Boolean(faviconUrl)), timestamp, timestamp)
+      INSERT INTO sites (name, base_url, note, favicon_url, favicon_custom, checkin_mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(name, baseUrl, note, faviconUrl, Number(Boolean(faviconUrl)), checkinMode, timestamp, timestamp)
     return this.getSite(Number(result.lastInsertRowid))!
   }
 

@@ -61,6 +61,11 @@ interface ModernAccessTokenObserver {
   dispose(): void
 }
 
+interface NewApiBalanceRead {
+  auth: RemoteAuth
+  balance: number
+}
+
 interface CheckinStats {
   checked_in_today?: boolean
   records?: Array<{ checkin_date?: string; quota_awarded?: number }>
@@ -205,6 +210,7 @@ export interface OfficialApiKeyExtraction {
 }
 
 const chyTrafficMoney = { currencySymbol: 'GB', quotaPerUnit: 1, displayScale: 1 }
+const aihubMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const sub2ApiMoney = { currencySymbol: '白晶', quotaPerUnit: 1, displayScale: 1 }
 const fengwindWelfareMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const hybgzsWelfareMoney = { currencySymbol: '$', quotaPerUnit: 500_000, displayScale: 1 }
@@ -694,13 +700,14 @@ export class NewApiService {
         // authenticated request, so avoid rotating the user's session just
         // to discover that there is nothing to claim.
         if (remoteStatus?.checkin_enabled === false) {
-          const latestBalance = await this.readNewApiBalanceWithoutRefresh(page, site, requestTimeoutMs, modernAccessToken)
-          const message = latestBalance === null ? '签到功能未启用' : '签到功能未启用，余额已刷新'
+          const balanceRead = await this.readNewApiBalanceWithoutRefresh(page, site, requestTimeoutMs, modernAccessToken)
+          if (balanceRead) this.persistNewApiBalance(site, balanceRead, money)
+          const message = balanceRead === null ? '签到功能未启用' : '签到功能未启用，余额已刷新'
           return this.makeResult(site, runId, startedAt, 'disabled', message, {
             beforeRaw: site.lastBalanceRaw,
-            afterRaw: latestBalance ?? site.lastBalanceRaw,
+            afterRaw: balanceRead?.balance ?? site.lastBalanceRaw,
             money,
-            loginVerified: latestBalance !== null,
+            loginVerified: balanceRead !== null,
           })
         }
 
@@ -711,8 +718,12 @@ export class NewApiService {
         }
 
         const authHeaders = buildAuthHeaders(auth)
-        const beforeUserResponse = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', authHeaders, requestTimeoutMs)
-        const beforeRaw = beforeUserResponse.success ? numberOrNull(beforeUserResponse.data?.quota) : null
+        const beforeUserResponse = await pageRequest<unknown>(page, '/api/user/self', 'GET', authHeaders, requestTimeoutMs)
+        const beforeUser = beforeUserResponse.success ? normalizeNewApiUser(beforeUserResponse.data) : null
+        const beforeRaw = beforeUser ? newApiUserBalance(beforeUser) : null
+        if (beforeUser && beforeRaw !== null) {
+          this.persistNewApiBalance(site, { auth: { ...auth, user: beforeUser }, balance: beforeRaw }, money)
+        }
 
         const month = localDateKey(new Date()).slice(0, 7)
         const checkinStatus = await pageRequest<CheckinStatusData>(page, `/api/user/checkin?month=${month}`, 'GET', authHeaders, requestTimeoutMs)
@@ -757,8 +768,9 @@ export class NewApiService {
           return this.makeResult(site, runId, startedAt, isManualMessage(message) ? 'manual_required' : 'failed', message, { beforeRaw, money, loginVerified })
         }
 
-        const afterUserResponse = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', authHeaders, requestTimeoutMs)
-        const afterRaw = afterUserResponse.success ? numberOrNull(afterUserResponse.data?.quota) : null
+        const afterUserResponse = await pageRequest<unknown>(page, '/api/user/self', 'GET', authHeaders, requestTimeoutMs)
+        const afterUser = afterUserResponse.success ? normalizeNewApiUser(afterUserResponse.data) : null
+        const afterRaw = afterUser ? newApiUserBalance(afterUser) : null
         return this.makeResult(site, runId, startedAt, 'success', checkin.message || '签到成功', {
           rewardRaw: numberOrNull(checkin.data?.quota_awarded),
           beforeRaw,
@@ -777,13 +789,6 @@ export class NewApiService {
     const startedAt = nowIso()
     const requestTimeoutMs = this.db.getSettings().requestTimeoutSeconds * 1000
     this.db.markSiteRunning(site.id)
-    if (isAnyRouterSite(site.baseUrl)) {
-      return this.makeResult(site, runId, startedAt, 'disabled', '自动签到已关闭；该站打开首页会触发签到，已跳过余额刷新', {
-        beforeRaw: site.lastBalanceRaw,
-        afterRaw: site.lastBalanceRaw,
-      })
-    }
-
     try {
       return await this.browser.run({ interactive: false }, async (context, page) => {
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
@@ -831,11 +836,15 @@ export class NewApiService {
           })
         }
 
-        await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
-        await this.openImportedStorage(page, site)
-        if (isFastAiTokenSite(site.baseUrl)) {
-          const dashboardUrl = getDashboardUrl(site.baseUrl)
-          if (dashboardUrl) await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
+        if (isAnyRouterSite(site.baseUrl)) {
+          await this.openBalanceDashboard(page, site)
+        } else {
+          await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
+          await this.openImportedStorage(page, site)
+          if (isFastAiTokenSite(site.baseUrl)) {
+            const dashboardUrl = getDashboardUrl(site.baseUrl)
+            if (dashboardUrl) await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
+          }
         }
         const challenge = await detectChallenge(page)
         if (challenge) return this.makeResult(site, runId, startedAt, 'manual_required', challenge)
@@ -885,16 +894,18 @@ export class NewApiService {
           })
         }
 
-        await this.openBalanceDashboard(page, site)
+        if (!isAnyRouterSite(site.baseUrl)) await this.openBalanceDashboard(page, site)
         const statusResponse = await this.getRemoteStatus(page, requestTimeoutMs)
         if (statusResponse.success && statusResponse.data?.checkin_enabled === false) {
-          const latestBalance = await this.readNewApiBalanceWithoutRefresh(page, site, requestTimeoutMs, modernAccessToken)
-          const message = latestBalance === null ? '自动签到已关闭，未读取到最新余额' : '自动签到已关闭，余额已刷新'
+          const money = deriveMoneySettings(statusResponse.data)
+          const balanceRead = await this.readNewApiBalanceWithoutRefresh(page, site, requestTimeoutMs, modernAccessToken)
+          if (balanceRead) this.persistNewApiBalance(site, balanceRead, money)
+          const message = balanceRead === null ? '自动签到已关闭，未读取到最新余额' : '自动签到已关闭，余额已刷新'
           return this.makeResult(site, runId, startedAt, 'disabled', message, {
             beforeRaw: site.lastBalanceRaw,
-            afterRaw: latestBalance ?? site.lastBalanceRaw,
-            money: deriveMoneySettings(statusResponse.data),
-            loginVerified: latestBalance !== null,
+            afterRaw: balanceRead?.balance ?? site.lastBalanceRaw,
+            money,
+            loginVerified: balanceRead !== null,
           })
         }
 
@@ -917,14 +928,17 @@ export class NewApiService {
           })
         }
 
-        const balance = numberOrNull(auth.user.quota)
+        const balance = newApiUserBalance(auth.user)
+        const money = deriveMoneySettings(statusResponse.data)
         if (balance === null) {
-          return this.makeResult(site, runId, startedAt, 'failed', '无法读取站点余额', { money: deriveMoneySettings(statusResponse.data) })
+          return this.makeResult(site, runId, startedAt, 'failed', '无法读取站点余额', { money, loginVerified: true })
         }
+        this.persistNewApiBalance(site, { auth, balance }, money)
         return this.makeResult(site, runId, startedAt, 'disabled', '自动签到已关闭，余额已刷新', {
           beforeRaw: site.lastBalanceRaw,
           afterRaw: balance,
-          money: deriveMoneySettings(statusResponse.data),
+          money,
+          loginVerified: true,
         })
       })
     } catch (error) {
@@ -1529,35 +1543,71 @@ export class NewApiService {
     site: Site,
     timeoutMs: number,
     observer?: ModernAccessTokenObserver,
-  ): Promise<number | null> {
-    const captured = await observer?.waitForToken(timeoutMs) ?? null
-    observer?.dispose()
-    this.rememberModernAccessToken(site.id, captured)
+  ): Promise<NewApiBalanceRead | null> {
+    const readAuthenticatedBalance = async (auth: RemoteAuth): Promise<NewApiBalanceRead | null> => {
+      const authenticated = await pageRequest<unknown>(page, '/api/user/self', 'GET', buildAuthHeaders(auth), timeoutMs)
+      if (!authenticated.success) return null
+      const user = normalizeNewApiUser(authenticated.data)
+      if (!user) return null
+      const balance = newApiUserBalance(user)
+      return balance === null ? null : { auth: { ...auth, user }, balance }
+    }
 
-    if (captured) {
-      const authenticated = await pageRequest<RemoteUser>(
-        page,
-        '/api/user/self',
-        'GET',
-        { Authorization: `Bearer ${captured.token}` },
-        timeoutMs,
-      )
-      const balance = authenticated.success ? numberOrNull(authenticated.data?.quota) : null
-      if (balance !== null) return balance
+    try {
+      const storedAccessToken = await readNewApiAccessToken(page)
+      if (storedAccessToken) {
+        const storedAuth: RemoteAuth = { adapter: 'new-api-modern', accessToken: storedAccessToken, user: {} }
+        const storedBalance = await readAuthenticatedBalance(storedAuth)
+        if (storedBalance) {
+          this.rememberModernAccessToken(site.id, { token: storedAccessToken, expiresAt: null })
+          return storedBalance
+        }
+      }
+
+      const captured = await observer?.waitForToken(timeoutMs) ?? null
+      this.rememberModernAccessToken(site.id, captured)
+      if (captured && captured.token !== storedAccessToken) {
+        const capturedBalance = await readAuthenticatedBalance({
+          adapter: 'new-api-modern',
+          accessToken: captured.token,
+          user: {},
+        })
+        if (capturedBalance) return capturedBalance
+      }
+    } finally {
+      observer?.dispose()
     }
 
     // A few older deployments accept the refresh cookie directly for this
     // read. It is safe to try because this is a GET and never rotates it.
-    const cookieAuthenticated = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', {}, timeoutMs)
-    const cookieBalance = cookieAuthenticated.success ? numberOrNull(cookieAuthenticated.data?.quota) : null
-    if (cookieBalance !== null) return cookieBalance
+    const cookieBalance = await readAuthenticatedBalance({ adapter: 'new-api-modern', user: {} })
+    if (cookieBalance) return cookieBalance
 
     // Legacy New API installations can still identify the user without the
     // modern refresh endpoint. Explicitly disable modern auth detection here.
     const legacyAuth = await this.detectAuthentication(page, site.legacyUserId, timeoutMs, false)
     if (!legacyAuth) return null
-    const legacyUser = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', buildAuthHeaders(legacyAuth), timeoutMs)
-    return legacyUser.success ? numberOrNull(legacyUser.data?.quota) : null
+    return readAuthenticatedBalance(legacyAuth)
+  }
+
+  private persistNewApiBalance(
+    site: Site,
+    balanceRead: NewApiBalanceRead,
+    money: ReturnType<typeof deriveMoneySettings>,
+  ): void {
+    this.db.updateSiteAuth(site.id, {
+      adapter: balanceRead.auth.adapter,
+      authStatus: 'valid',
+      baseUrl: site.baseUrl,
+      username: balanceRead.auth.user.display_name || balanceRead.auth.user.username || null,
+      legacyUserId: balanceRead.auth.legacyUserId ?? null,
+      currencySymbol: money.currencySymbol,
+      quotaPerUnit: money.quotaPerUnit,
+      displayScale: money.displayScale,
+      lastBalanceRaw: balanceRead.balance,
+      lastBalanceAmount: quotaToAmount(balanceRead.balance, money.quotaPerUnit, money.displayScale),
+      lastError: null,
+    })
   }
 
   private async detectAuthentication(
@@ -1574,6 +1624,21 @@ export class NewApiService {
         const payload = response.data as RemoteUser & { user?: RemoteUser }
         const user = payload.user ?? payload
         return { adapter: 'local-api', sessionToken: localApiToken, user }
+      }
+    }
+
+    if (allowModern) {
+      const storedAccessToken = await readNewApiAccessToken(page)
+      if (storedAccessToken) {
+        const self = await pageRequest<unknown>(
+          page,
+          '/api/user/self',
+          'GET',
+          { Authorization: `Bearer ${storedAccessToken}` },
+          timeoutMs,
+        )
+        const user = self.success ? normalizeNewApiUser(self.data) : null
+        if (user) return { adapter: 'new-api-modern', accessToken: storedAccessToken, user }
       }
     }
 
@@ -2218,6 +2283,30 @@ function normalizeOfficialApiKey(value: string): string | null {
   return isOfficialApiKeyValue(candidate) ? candidate : null
 }
 
+async function readNewApiAccessToken(page: Page): Promise<string | null> {
+  const token = await page.evaluate(() => {
+    for (const storage of [localStorage, sessionStorage]) {
+      const rawUser = storage.getItem('user')
+      if (!rawUser || rawUser.length > 100_000) continue
+      try {
+        const parsed = JSON.parse(rawUser)
+        const candidates = [parsed, parsed?.user, parsed?.state?.user, parsed?.data, parsed?.data?.user]
+        for (const candidate of candidates) {
+          if (!candidate || typeof candidate !== 'object') continue
+          for (const field of ['token', 'access_token', 'accessToken']) {
+            const value = candidate[field]
+            if (typeof value === 'string' && value.trim()) return value.trim().replace(/^Bearer\s+/i, '')
+          }
+        }
+      } catch {
+        // New API stores this value as JSON. Ignore unrelated plain-text values.
+      }
+    }
+    return null
+  }).catch(() => null)
+  return typeof token === 'string' && token ? token : null
+}
+
 async function readSub2ApiToken(page: Page, kind: 'access' | 'refresh'): Promise<string | null> {
   return page.evaluate((tokenKind) => {
     const keys = tokenKind === 'refresh'
@@ -2243,6 +2332,40 @@ async function readYiApiAccessToken(page: Page): Promise<string | null> {
     }
     return null
   }).catch(() => null)
+}
+
+function normalizeNewApiUser(value: unknown): RemoteUser | null {
+  if (!value || typeof value !== 'object') return null
+  const payload = value as Record<string, unknown>
+  const nestedData = payload.data && typeof payload.data === 'object'
+    ? payload.data as Record<string, unknown>
+    : null
+  const nestedUser = payload.user && typeof payload.user === 'object'
+    ? payload.user as Record<string, unknown>
+    : nestedData?.user && typeof nestedData.user === 'object'
+      ? nestedData.user as Record<string, unknown>
+      : null
+  const source = nestedUser ?? nestedData ?? payload
+  const id = numberOrNull(source.id ?? payload.id)
+  const quota = numberOrNull(source.quota ?? payload.quota)
+  const balance = numberOrNull(source.balance ?? payload.balance)
+  const user: RemoteUser = {}
+  if (id !== null) user.id = id
+  if (typeof source.username === 'string') user.username = source.username
+  if (typeof source.display_name === 'string') user.display_name = source.display_name
+  if (quota !== null) user.quota = quota
+  if (balance !== null) user.balance = balance
+  return user.id !== undefined
+    || user.username !== undefined
+    || user.display_name !== undefined
+    || user.quota !== undefined
+    || user.balance !== undefined
+    ? user
+    : null
+}
+
+function newApiUserBalance(user: RemoteUser): number | null {
+  return numberOrNull(user.quota ?? user.balance)
 }
 
 function normalizeYiApiUser(value: unknown): RemoteUser | null {
@@ -2367,7 +2490,7 @@ function isChyTrafficSite(baseUrl: string): boolean {
 }
 
 function isSub2ApiSite(baseUrl: string): boolean {
-  return hasExactHostname(baseUrl, 'token.dialoguedui.com') || isFastAiTokenSite(baseUrl)
+  return hasExactHostname(baseUrl, 'token.dialoguedui.com') || isFastAiTokenSite(baseUrl) || isAihubSite(baseUrl)
 }
 
 function isFastAiTokenSite(baseUrl: string): boolean {
@@ -2375,7 +2498,13 @@ function isFastAiTokenSite(baseUrl: string): boolean {
 }
 
 function moneyForSub2ApiSite(site: Site) {
-  return isFastAiTokenSite(site.baseUrl) ? fastAiTokenMoney : sub2ApiMoney
+  if (isFastAiTokenSite(site.baseUrl)) return fastAiTokenMoney
+  if (isAihubSite(site.baseUrl)) return aihubMoney
+  return sub2ApiMoney
+}
+
+function isAihubSite(baseUrl: string): boolean {
+  return hasExactHostname(baseUrl, 'aihub.top') || hasExactHostname(baseUrl, 'www.aihub.top')
 }
 
 function isYiApiSite(baseUrl: string): boolean {

@@ -75,6 +75,20 @@
 .checkin-module .section-heading h2{ margin: 0; font-size: 15px; line-height: 1.4; font-weight: 720; letter-spacing: -.01em; }
 .checkin-module .section-heading p{ margin: 3px 0 0; color: var(--muted); font-size: 11px; }
 .checkin-module .section-heading > span{ color: var(--muted); font-size: 11px; }
+.checkin-module .site-management-groups{ display: grid; gap: 24px; }
+.checkin-module .site-management-tabs{ display: flex; align-items: center; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.checkin-module .site-management-tabs button{ min-height: 36px; display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; margin-bottom: -1px; border: 0; border-bottom: 2px solid transparent; border-radius: 5px 5px 0 0; color: var(--muted); background: transparent; font-size: 11px; font-weight: 650; cursor: pointer; }
+.checkin-module .site-management-tabs button:hover{ color: var(--text); background: var(--surface-soft); }
+.checkin-module .site-management-tabs button.active{ color: var(--brand-strong); border-bottom-color: var(--brand-strong); background: var(--surface-soft); }
+.checkin-module .site-management-tabs button strong{ color: inherit; font-size: 10px; font-variant-numeric: tabular-nums; }
+.checkin-module .site-management-group{ min-width: 0; }
+.checkin-module .site-group-heading{ min-height: 40px; display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.checkin-module .site-group-heading > div:nth-child(2){ min-width: 0; }
+.checkin-module .site-group-heading h3{ margin: 0; color: var(--text); font-size: 13px; line-height: 1.35; font-weight: 720; }
+.checkin-module .site-group-heading p{ margin: 2px 0 0; color: var(--muted); font-size: 10px; line-height: 1.35; }
+.checkin-module .site-group-heading > strong{ margin-left: auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.checkin-module .site-group-icon{ width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 6px; color: var(--green); background: var(--green-bg); }
+.checkin-module .site-management-group.relay .site-group-icon{ color: var(--blue); background: var(--blue-bg); }
 
 .checkin-module .table-wrap{ width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: white; box-shadow: var(--shadow-card); }
 .checkin-module .data-table{ width: 100%; min-width: 920px; border-collapse: collapse; table-layout: fixed; }
@@ -137,6 +151,8 @@
 .checkin-module .cell-error{ display: block; width: 140px; margin-top: 4px; color: var(--red); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .checkin-module .adapter-label{ color: var(--muted); font-size: 10px; }
 .checkin-module .message-cell{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.checkin-module .management-empty-row td{ height: 68px; color: var(--subtle); text-align: center !important; font-size: 10px; }
+.checkin-module .management-empty-row:hover{ background: transparent !important; }
 
 .checkin-module .activity-section{ padding-bottom: 12px; }
 .checkin-module .activity-list{ border-top: 1px solid var(--border); }
@@ -272,6 +288,11 @@
 .checkin-module .segmented button{ border: 0; border-radius: 4px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
 .checkin-module .segmented button.active{ background: white; color: var(--brand-strong); box-shadow: 0 1px 2px rgba(38,43,71,.1); font-weight: 680; }
 .checkin-module .modal-form{ padding: 18px; display: grid; gap: 15px; }
+.checkin-module .site-mode-fieldset{ min-width: 0; display: grid; gap: 6px; margin: 0; padding: 0; border: 0; }
+.checkin-module .site-mode-fieldset legend{ padding: 0; color: var(--text); font-size: 10px; font-weight: 650; }
+.checkin-module .site-mode-fieldset .segmented{ width: 100%; margin: 0; }
+.checkin-module .site-mode-fieldset .segmented button{ display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.checkin-module .site-mode-fieldset > small{ color: var(--muted); font-size: 9px; line-height: 1.45; }
 .checkin-module .modal-form label{ display: grid; gap: 7px; }
 .checkin-module .modal-form label > span{ font-size: 10px; font-weight: 650; }
 .checkin-module .modal-form label small{ color: var(--muted); font-weight: 400; }

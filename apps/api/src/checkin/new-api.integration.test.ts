@@ -62,6 +62,78 @@ describe('NewApiService CHY authorization', () => {
 })
 
 describe('NewApiService disabled New API check-in', () => {
+  it('reads an aixoras-style dashboard token from localStorage during a balance-only refresh', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('AtlasAPI', 'https://aixoras.com')
+    database.updateSiteAuth(site.id, {
+      adapter: 'unknown',
+      authStatus: 'valid',
+      lastBalanceRaw: 500_000,
+      lastBalanceAmount: 1,
+      lastError: '自动签到已关闭，未读取到最新余额',
+    })
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          const source = String(callback)
+          if (source.includes('sessionStorage') && source.includes('token')) return 'aixoras-dashboard-token'
+          return source.includes('document.title') ? { title: 'AtlasAPI', text: '' } : []
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { system_name: 'AtlasAPI', checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self') {
+          if (input.headers?.Authorization !== 'Bearer aixoras-dashboard-token') {
+            return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+          }
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 23, username: 'atlas-user', quota: 1_500_000 },
+          }
+        }
+        return { httpStatus: 500, contentType: 'application/json', success: false, message: 'refresh must not be called' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      message: '自动签到已关闭，余额已刷新',
+      balanceAfterRaw: 1_500_000,
+      balanceAfterAmount: 3,
+      loginVerified: true,
+    })
+    expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
+    expect(database.getSite(site.id)).toMatchObject({
+      adapter: 'new-api-modern',
+      authStatus: 'valid',
+      username: 'atlas-user',
+      currencySymbol: '$',
+      quotaPerUnit: 500_000,
+      lastBalanceRaw: 1_500_000,
+      lastBalanceAmount: 3,
+      lastError: null,
+    })
+  })
+
   it('reads the latest balance without rotating the dashboard session when check-in is disabled', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
@@ -110,6 +182,13 @@ describe('NewApiService disabled New API check-in', () => {
 
     expect(result).toMatchObject({ status: 'disabled', message: '签到功能未启用，余额已刷新', balanceAfterRaw: 42, loginVerified: true })
     expect(refreshedPaths).toEqual(['/api/status', '/api/user/self'])
+    expect(database.getSite(site.id)).toMatchObject({
+      adapter: 'new-api-modern',
+      authStatus: 'valid',
+      username: 'test-user',
+      lastBalanceRaw: 42,
+      lastError: null,
+    })
   })
 
   it('reuses the access token emitted by the page bootstrap without issuing another refresh', async () => {
@@ -616,5 +695,112 @@ describe('NewApiService 黑与白福利站签到', () => {
       balanceAfterRaw: 750_000,
       loginVerified: true,
     })
+  })
+})
+
+describe('NewApiService known balance-only sites', () => {
+  it('reads Aihub.top through its Sub2API auth profile', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('Aihub', 'https://aihub.top')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          if (String(callback).includes('auth_token')) return 'aihub-access-token'
+          return { title: 'Aihub', text: '' }
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/v1/auth/me') {
+          expect(input.headers?.Authorization).toBe('Bearer aihub-access-token')
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 8, username: 'aihub-user', balance: 8.62, quota: 8.62 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      balanceAfterRaw: 8.62,
+      balanceAfterAmount: 8.62,
+      loginVerified: true,
+    })
+    expect(requestedPaths).toEqual(['/api/v1/auth/me'])
+    expect(database.getSite(site.id)).toMatchObject({
+      adapter: 'sub2api',
+      authStatus: 'valid',
+      username: 'aihub-user',
+      currencySymbol: '$',
+      quotaPerUnit: 1,
+      lastBalanceRaw: 8.62,
+      lastBalanceAmount: 8.62,
+    })
+  })
+
+  it('refreshes AnyRouter from /dashboard without opening the check-in homepage', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('AnyRouter', 'https://anyrouter.top')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const requestedPaths: string[] = []
+    const navigatedTo: string[] = []
+    const page = {
+      goto: async (url: string) => { navigatedTo.push(url) },
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          if (String(callback).includes('localStorage')) return 'anyrouter-access-token'
+          return { title: 'AnyRouter dashboard', text: '' }
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self') {
+          expect(input.headers?.Authorization).toBe('Bearer anyrouter-access-token')
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 9, username: 'anyrouter-user', quota: 2_000_000 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      balanceAfterRaw: 2_000_000,
+      balanceAfterAmount: 4,
+      loginVerified: true,
+    })
+    expect(navigatedTo).toEqual(['https://anyrouter.top/dashboard'])
+    expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
   })
 })
