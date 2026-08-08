@@ -438,6 +438,51 @@ describe('NewApiService dashboard balance fallback', () => {
     })
   })
 
+  it('falls back to the imported cookie session when the FastAI access token is missing', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('FastAI cookie', 'https://www.fastaitoken.com')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 1 })
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          if (String(callback).includes('auth_token')) return null
+          return { title: 'FastAI Token', text: '' }
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/v1/auth/me') {
+          expect(input.headers?.Authorization).toBeUndefined()
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 9, username: 'cookie-user', balance: 8.25 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      balanceAfterRaw: 8.25,
+      balanceAfterAmount: 8.25,
+      loginVerified: true,
+    })
+    expect(requestedPaths).toEqual(['/api/v1/auth/me'])
+    expect(database.getSite(site.id)).toMatchObject({ adapter: 'sub2api', lastBalanceRaw: 8.25, lastBalanceAmount: 8.25 })
+  })
+
   it('continues from FastAI auth identity to user profile when auth/me has no balance', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)

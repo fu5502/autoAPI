@@ -2061,7 +2061,6 @@ export class NewApiService {
   ): Promise<{ accessToken: string; user: Sub2ApiUser } | null> {
     this.beginAuthenticationProbe()
     let activeToken = await readSub2ApiToken(page, 'access')
-    if (!activeToken) return null
 
     const readUser = async () => {
       let lastResponse: RemoteResponse<unknown> | null = null
@@ -2087,6 +2086,22 @@ export class NewApiService {
       return { response: lastResponse, user: authenticatedWithoutBalance?.user ?? null, unauthorized }
     }
 
+    const readCookieUser = async (): Promise<Sub2ApiUser | null> => {
+      for (const pathname of ['/api/v1/auth/me', '/api/v1/user/profile']) {
+        const response = await pageRequest<unknown>(page, pathname, 'GET', {}, timeoutMs)
+        this.noteAuthenticationResponse(response)
+        if (!response.success) continue
+        const user = normalizeSub2ApiUser(response.data)
+        if (user) return user
+      }
+      return null
+    }
+
+    if (!activeToken) {
+      const cookieUser = await readCookieUser()
+      return cookieUser ? { accessToken: '', user: cookieUser } : null
+    }
+
     let authenticated = await readUser()
     if (authenticated.unauthorized || (!authenticated.user && authenticated.response?.httpStatus === 401)) {
       const refreshToken = await readSub2ApiToken(page, 'refresh')
@@ -2109,6 +2124,10 @@ export class NewApiService {
           authenticated = await readUser()
         }
       }
+    }
+    if (!authenticated.user) {
+      const cookieUser = await readCookieUser()
+      if (cookieUser) return { accessToken: '', user: cookieUser }
     }
     return authenticated.user ? { accessToken: activeToken, user: authenticated.user } : null
   }
