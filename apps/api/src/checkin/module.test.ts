@@ -256,3 +256,28 @@ describe('check-in site icon routes', () => {
     await app.close()
   })
 })
+
+describe('check-in run cancellation routes', () => {
+  it('cancels a single running site for the active run', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const cancelActiveSite = vi.fn(async () => database.startRun('manual'))
+    const checkinModule = {
+      db: database,
+      events: { emit: vi.fn() },
+      coordinator: { cancelActiveSite },
+    } as unknown as CheckinModule
+    const app = Fastify()
+    await registerCheckinRoutes(app, checkinModule, async () => undefined, { agent: {} as OpsAgent })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/admin/checkin/runs/5/sites/7/cancel',
+      payload: {},
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(cancelActiveSite).toHaveBeenCalledWith(5, 7)
+    await app.close()
+  })
+})

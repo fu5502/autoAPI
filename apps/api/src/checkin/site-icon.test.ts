@@ -111,6 +111,37 @@ describe('site icon resolution', () => {
     expect(database.saveSiteIconAsset).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps a persisted fallback icon without re-reading the site page', async () => {
+    const site = {
+      id: 12,
+      baseUrl: 'https://relay.example',
+      faviconUrl: 'https://relay.example/favicon.ico',
+      faviconCustom: false,
+    }
+    const storedAssets = new Map<string, { url: string; body: Uint8Array; contentType: string }>()
+    const database = {
+      getSite: vi.fn(() => site),
+      updateSiteFavicon: vi.fn(),
+      getSiteIconAsset: vi.fn((_siteId: number, url: string) => storedAssets.get(url) ?? null),
+      saveSiteIconAsset: vi.fn((_siteId: number, asset: { url: string; body: Uint8Array; contentType: string }) => {
+        storedAssets.set(asset.url, asset)
+      }),
+    } as unknown as AppDatabase
+    const requests: string[] = []
+    const fetcherMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      requests.push(url)
+      if (url === 'https://relay.example/') throw new Error('site page must not be read after the icon is persisted')
+      return response(new Uint8Array([1, 2, 3]), 'image/x-icon')
+    })
+    const service = new SiteIconService(database, fetcherMock as unknown as typeof fetch)
+
+    await expect(service.getIconAsset(site.id)).resolves.toMatchObject({ contentType: 'image/x-icon' })
+    await expect(service.getIconAsset(site.id)).resolves.toMatchObject({ contentType: 'image/x-icon' })
+
+    expect(requests).toEqual(['https://relay.example/favicon.ico'])
+  })
+
   it('loads a custom icon directly and rejects credential-bearing addresses', async () => {
     const fetcherMock = vi.fn(async (_input: RequestInfo | URL) => response(new Uint8Array([7, 8, 9]), 'image/png'))
     const service = new SiteIconService({} as AppDatabase, fetcherMock as unknown as typeof fetch)

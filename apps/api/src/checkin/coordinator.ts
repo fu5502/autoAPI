@@ -11,6 +11,8 @@ import { quotaToAmount, roundAmount } from './utils.js'
 export class CheckinCoordinator {
   private activeRun: CheckinRun | null = null
   private cancelled = false
+  private cancelledSiteIds = new Set<number>()
+  private currentSiteId: number | null = null
   private readonly retryTimers = new Set<NodeJS.Timeout>()
 
   constructor(
@@ -68,6 +70,38 @@ export class CheckinCoordinator {
     return this.db.getRun(stale.id)
   }
 
+  async cancelActiveSite(runId: number, siteId: number): Promise<CheckinRun | null> {
+    const active = this.activeRun
+    if (active && active.id === runId) {
+      this.cancelledSiteIds.add(siteId)
+      this.logProgress(active.id, {
+        siteId,
+        level: 'warn',
+        message: '收到该站点终止请求，正在停止当前操作',
+      })
+      if (this.currentSiteId === siteId) {
+        await this.newApi.cancelActiveTask().catch(() => undefined)
+      }
+      return this.db.getRun(active.id)
+    }
+
+    const stale = this.db.listRecentRuns(200)
+      .find((run) => run.id === runId)
+    const site = this.db.getSite(siteId)
+    if (site?.lastStatus === 'running') this.db.recoverSiteRunning(siteId)
+    if (stale?.status === 'running') {
+      this.db.cancelRun(stale.id, {
+        success: stale.successCount,
+        failed: stale.failedCount,
+        skipped: stale.skippedCount,
+      })
+      for (const candidate of this.db.listSites().filter((item) => item.lastStatus === 'running')) {
+        this.db.recoverSiteRunning(candidate.id)
+      }
+    }
+    return stale ?? this.db.getRun(runId)
+  }
+
   private logProgress(
     runId: number,
     input: {
@@ -81,11 +115,18 @@ export class CheckinCoordinator {
     this.progress?.add({ runId, ...input })
   }
 
-  async run(trigger: RunTrigger, siteIds?: number[], retryAttempt = 0): Promise<CheckinRun> {
+  async run(
+    trigger: RunTrigger,
+    siteIds?: number[],
+    retryAttempt = 0,
+    options: { operation?: 'checkin' | 'balance_refresh' } = {},
+  ): Promise<CheckinRun> {
     if (this.activeRun) throw new Error('已有签到任务正在运行')
     const explicitlySelectedByUser = trigger === 'manual' && Boolean(siteIds?.length)
     const candidates = this.db.listSites().filter((site) => {
       if (siteIds && !siteIds.includes(site.id)) return false
+      if (options.operation === 'checkin' && site.checkinMode === 'balance_only') return false
+      if (options.operation === 'balance_refresh' && site.checkinMode !== 'balance_only') return false
       if (explicitlySelectedByUser || site.enabled) return true
       return trigger === 'retry' && Boolean(siteIds?.length)
     })
@@ -94,13 +135,16 @@ export class CheckinCoordinator {
     const run = this.db.startRun(trigger)
     this.activeRun = run
     this.cancelled = false
+    this.cancelledSiteIds.clear()
+    this.currentSiteId = null
+    const runLabel = options.operation === 'balance_refresh' ? '余额刷新' : '签到'
     const failedSiteIds: number[] = []
     let success = 0
     let failed = 0
     let skipped = 0
 
     try {
-      this.events.emit({ type: 'run_started', title: '签到任务已开始', message: `正在处理 ${candidates.length} 个站点`, data: { runId: run.id } })
+      this.events.emit({ type: 'run_started', title: `${runLabel}任务已开始`, message: `正在处理 ${candidates.length} 个站点`, data: { runId: run.id } })
       this.logProgress(run.id, { message: `开始处理 ${candidates.length} 个站点` })
       for (const [siteIndex, site] of candidates.entries()) {
         if (this.cancelled) {
@@ -111,72 +155,116 @@ export class CheckinCoordinator {
           })
           break
         }
-        const balanceOnly = site.checkinMode === 'balance_only' || (trigger !== 'manual' && !site.enabled)
-        let operation: 'checkin' | 'balance_refresh' = balanceOnly ? 'balance_refresh' : 'checkin'
-        this.logProgress(run.id, {
-          siteId: site.id,
-          siteName: site.name,
-          operation,
-          message: operation === 'checkin' ? `正在签到：${site.name}` : `正在刷新余额：${site.name}`,
-        })
-        let result: CheckinResult
-        if (balanceOnly) {
-          result = await this.newApi.refreshBalanceSite(site, run.id)
-        } else {
-          const checkinResult = await this.newApi.checkinSite(site, run.id)
-          const shouldFallback = shouldRefreshBalanceAfterCheckin(checkinResult)
-          if (checkinResult.status === 'disabled' || shouldFallback) {
-            this.db.updateSiteCheckinMode(site.id, 'balance_only')
-            operation = 'balance_refresh'
+        this.currentSiteId = site.id
+        try {
+          if (this.cancelledSiteIds.has(site.id)) {
+            skipped += 1
+            this.db.recoverSiteRunning(site.id)
+            this.logProgress(run.id, {
+              siteId: site.id,
+              siteName: site.name,
+              level: 'warn',
+              message: `${site.name}：该站点已终止，跳过`,
+            })
+            continue
           }
-          result = shouldFallback
-            ? await this.newApi.refreshBalanceSite(site, run.id)
-            : checkinResult
-        }
-        const { id: _id, siteName: _siteName, ...storedResult } = result
-        this.logProgress(run.id, {
-          siteId: site.id,
-          siteName: site.name,
-          operation,
-          level: result.status === 'failed' || result.status === 'manual_required' ? 'warn' : result.status === 'success' || result.status === 'already_checked' ? 'success' : 'info',
-          message: `${site.name}：${result.message}`,
-        })
-        this.db.applyResult(site.id, storedResult, {
-          preserveLastStatus: operation === 'balance_refresh'
-            && result.status === 'disabled'
-            && !['never', 'disabled'].includes(site.lastStatus),
-        })
-        await this.balanceSync?.syncSite(site.id).catch((error) => {
-          this.events.emit({
-            type: 'state_changed',
-            title: '渠道余额同步失败',
-            message: `${site.name}: ${error instanceof Error ? error.message : '未知错误'}`,
+          const balanceOnly = options.operation === 'balance_refresh'
+            || site.checkinMode === 'balance_only'
+            || (trigger !== 'manual' && !site.enabled)
+          let operation: 'checkin' | 'balance_refresh' = balanceOnly ? 'balance_refresh' : 'checkin'
+          this.logProgress(run.id, {
+            siteId: site.id,
+            siteName: site.name,
+            operation,
+            message: operation === 'checkin' ? `正在签到：${site.name}` : `正在刷新余额：${site.name}`,
           })
-        })
+          let result: CheckinResult
+          if (balanceOnly) {
+            result = await this.newApi.refreshBalanceSite(site, run.id)
+          } else {
+            const checkinResult = await this.newApi.checkinSite(site, run.id)
+            const shouldFallback = shouldRefreshBalanceAfterCheckin(checkinResult)
+            if (checkinResult.status === 'disabled' || shouldFallback) {
+              this.db.updateSiteCheckinMode(site.id, 'balance_only')
+              operation = 'balance_refresh'
+            }
+            result = shouldFallback
+              ? await this.newApi.refreshBalanceSite(site, run.id)
+              : checkinResult
+          }
+          if (this.cancelledSiteIds.has(site.id)) {
+            skipped += 1
+            this.db.recoverSiteRunning(site.id)
+            this.logProgress(run.id, {
+              siteId: site.id,
+              siteName: site.name,
+              level: 'warn',
+              message: `${site.name}：该站点已终止`,
+            })
+            continue
+          }
+          const { id: _id, siteName: _siteName, ...storedResult } = result
+          this.logProgress(run.id, {
+            siteId: site.id,
+            siteName: site.name,
+            operation,
+            level: result.status === 'failed' || result.status === 'manual_required' ? 'warn' : result.status === 'success' || result.status === 'already_checked' ? 'success' : 'info',
+            message: `${site.name}：${result.message}`,
+          })
+          this.db.applyResult(site.id, storedResult, {
+            preserveLastStatus: operation === 'balance_refresh'
+              && result.status === 'disabled'
+              && !['never', 'disabled'].includes(site.lastStatus),
+          })
+          await this.balanceSync?.syncSite(site.id).catch((error) => {
+            this.events.emit({
+              type: 'state_changed',
+              title: '渠道余额同步失败',
+              message: `${site.name}: ${error instanceof Error ? error.message : '未知错误'}`,
+            })
+          })
 
-        if (['success', 'already_checked'].includes(result.status) || (operation === 'balance_refresh' && balanceRefreshSucceeded(result))) success += 1
-        else if (result.status === 'disabled') skipped += 1
-        else {
-          failed += 1
-          if (result.status === 'failed') failedSiteIds.push(site.id)
+          if (['success', 'already_checked'].includes(result.status) || (operation === 'balance_refresh' && balanceRefreshSucceeded(result))) success += 1
+          else if (result.status === 'disabled') skipped += 1
+          else {
+            failed += 1
+            if (result.status === 'failed') failedSiteIds.push(site.id)
+          }
+
+          this.events.emit({
+            type: 'site_result',
+            title: resultTitle(result, operation),
+            message: `${site.name}: ${result.message}`,
+            data: { result, siteId: site.id, runId: run.id, operation },
+          })
+        } catch (error) {
+          if (this.cancelledSiteIds.has(site.id)) {
+            skipped += 1
+            this.db.recoverSiteRunning(site.id)
+            this.logProgress(run.id, {
+              siteId: site.id,
+              siteName: site.name,
+              level: 'warn',
+              message: `${site.name}：该站点已终止`,
+            })
+            continue
+          }
+          throw error
+        } finally {
+          this.currentSiteId = null
         }
-
-        this.events.emit({
-          type: 'site_result',
-          title: resultTitle(result, operation),
-          message: `${site.name}: ${result.message}`,
-          data: { result, siteId: site.id, runId: run.id, operation },
-        })
       }
     } finally {
       const cancelled = this.cancelled
       this.activeRun = null
       this.cancelled = false
+      this.cancelledSiteIds.clear()
+      this.currentSiteId = null
       const counts = { success, failed, skipped }
       const completed = (cancelled ? this.db.cancelRun(run.id, counts) : this.db.completeRun(run.id, counts))!
       this.events.emit({
         type: 'run_completed',
-        title: cancelled ? '签到任务已取消' : completed.status === 'completed' ? '签到任务完成' : '签到任务已结束',
+        title: cancelled ? `${runLabel}任务已取消` : completed.status === 'completed' ? `${runLabel}任务完成` : `${runLabel}任务已结束`,
         message: cancelled ? `任务已取消：成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}` : `成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}`,
         data: { run: completed },
       })
@@ -205,6 +293,8 @@ export class CheckinCoordinator {
     const run = this.db.startRun('manual')
     this.activeRun = run
     this.cancelled = false
+    this.cancelledSiteIds.clear()
+    this.currentSiteId = null
     this.events.emit({
       type: 'run_started',
       title: '余额刷新已开始',
@@ -226,52 +316,105 @@ export class CheckinCoordinator {
           })
           break
         }
-        this.logProgress(run.id, {
-          siteId: site.id,
-          siteName: site.name,
-          operation: 'balance_refresh',
-          message: `正在刷新余额：${site.name}`,
-        })
-        let result: CheckinResult
+        this.currentSiteId = site.id
         try {
-          result = await this.newApi.refreshBalanceSite(site, run.id)
-        } catch (error) {
-          result = balanceRefreshFailure(site, run.id, error)
-        }
-        const { id: _id, siteName: _siteName, ...storedResult } = result
-        this.logProgress(run.id, {
-          siteId: site.id,
-          siteName: site.name,
-          operation: 'balance_refresh',
-          level: balanceRefreshSucceeded(result) ? 'success' : result.status === 'manual_required' ? 'warn' : result.status === 'failed' ? 'error' : 'info',
-          message: `${site.name}：${result.message}`,
-        })
-        this.db.applyResult(site.id, storedResult, {
-          preserveLastStatus: result.status === 'disabled' && !['never', 'disabled'].includes(site.lastStatus),
-        })
-        await this.balanceSync?.syncSite(site.id, options).catch((error) => {
-          this.events.emit({
-            type: 'state_changed',
-            title: '渠道余额同步失败',
-            message: `${site.name}: ${error instanceof Error ? error.message : '未知错误'}`,
+          if (this.cancelledSiteIds.has(site.id)) {
+            skipped += 1
+            this.db.recoverSiteRunning(site.id)
+            this.logProgress(run.id, {
+              siteId: site.id,
+              siteName: site.name,
+              level: 'warn',
+              message: `${site.name}：该站点已终止，跳过`,
+            })
+            continue
+          }
+          this.logProgress(run.id, {
+            siteId: site.id,
+            siteName: site.name,
+            operation: 'balance_refresh',
+            message: `正在刷新余额：${site.name}`,
           })
-        })
+          let result: CheckinResult
+          try {
+            result = await this.newApi.refreshBalanceSite(site, run.id)
+          } catch (error) {
+            if (this.cancelledSiteIds.has(site.id)) {
+              skipped += 1
+              this.db.recoverSiteRunning(site.id)
+              this.logProgress(run.id, {
+                siteId: site.id,
+                siteName: site.name,
+                level: 'warn',
+                message: `${site.name}：该站点已终止`,
+              })
+              continue
+            }
+            result = balanceRefreshFailure(site, run.id, error)
+          }
+          if (this.cancelledSiteIds.has(site.id)) {
+            skipped += 1
+            this.db.recoverSiteRunning(site.id)
+            this.logProgress(run.id, {
+              siteId: site.id,
+              siteName: site.name,
+              level: 'warn',
+              message: `${site.name}：该站点已终止`,
+            })
+            continue
+          }
+          const { id: _id, siteName: _siteName, ...storedResult } = result
+          this.logProgress(run.id, {
+            siteId: site.id,
+            siteName: site.name,
+            operation: 'balance_refresh',
+            level: balanceRefreshSucceeded(result) ? 'success' : result.status === 'manual_required' ? 'warn' : result.status === 'failed' ? 'error' : 'info',
+            message: `${site.name}：${result.message}`,
+          })
+          this.db.applyResult(site.id, storedResult, {
+            preserveLastStatus: result.status === 'disabled' && !['never', 'disabled'].includes(site.lastStatus),
+          })
+          await this.balanceSync?.syncSite(site.id, options).catch((error) => {
+            this.events.emit({
+              type: 'state_changed',
+              title: '渠道余额同步失败',
+              message: `${site.name}: ${error instanceof Error ? error.message : '未知错误'}`,
+            })
+          })
 
-        if (balanceRefreshSucceeded(result)) success += 1
-        else if (result.status === 'failed' || result.status === 'manual_required') failed += 1
-        else skipped += 1
+          if (balanceRefreshSucceeded(result)) success += 1
+          else if (result.status === 'failed' || result.status === 'manual_required') failed += 1
+          else skipped += 1
 
-        this.events.emit({
-          type: 'site_result',
-          title: balanceRefreshSucceeded(result) ? '余额刷新成功' : result.status === 'manual_required' ? '余额刷新需要授权' : '余额刷新未完成',
-          message: `${site.name}: ${result.message}`,
-          data: { result, siteId: site.id, runId: run.id, operation: 'balance_refresh' },
-        })
+          this.events.emit({
+            type: 'site_result',
+            title: balanceRefreshSucceeded(result) ? '余额刷新成功' : result.status === 'manual_required' ? '余额刷新需要授权' : '余额刷新未完成',
+            message: `${site.name}: ${result.message}`,
+            data: { result, siteId: site.id, runId: run.id, operation: 'balance_refresh' },
+          })
+        } catch (error) {
+          if (this.cancelledSiteIds.has(site.id)) {
+            skipped += 1
+            this.db.recoverSiteRunning(site.id)
+            this.logProgress(run.id, {
+              siteId: site.id,
+              siteName: site.name,
+              level: 'warn',
+              message: `${site.name}：该站点已终止`,
+            })
+            continue
+          }
+          throw error
+        } finally {
+          this.currentSiteId = null
+        }
       }
     } finally {
       const cancelled = this.cancelled
       this.activeRun = null
       this.cancelled = false
+      this.cancelledSiteIds.clear()
+      this.currentSiteId = null
       const counts = { success, failed, skipped }
       const completed = (cancelled ? this.db.cancelRun(run.id, counts) : this.db.completeRun(run.id, counts))!
       this.events.emit({
@@ -301,6 +444,8 @@ export class CheckinCoordinator {
     const run = this.db.startRun('manual')
     this.activeRun = run
     this.cancelled = false
+    this.cancelledSiteIds.clear()
+    this.currentSiteId = null
     this.events.emit({
       type: 'run_started',
       title: operation === 'checkin' ? '本地签到已开始' : '本地余额刷新已开始',

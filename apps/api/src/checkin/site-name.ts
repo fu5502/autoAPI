@@ -45,12 +45,15 @@ export function initialSiteName(baseUrl: string, requestedName?: string): string
 
 export function shouldRefreshGeneratedSiteName(site: Site): boolean {
   const current = site.name.trim().toLowerCase()
-  const hostname = hostnameOf(site.baseUrl)
-  return !current || current === hostname || current === `www.${hostname}`
+  const hostname = hostnameOf(site.baseUrl)?.replace(/^www\./, '') ?? null
+  return !current || !hostname || current === hostname || current === `www.${hostname}`
 }
 
 export function officialNameForAuth(site: Site, apiName?: unknown): string {
-  const name = resolveOfficialSiteName(site.baseUrl, site.adapter, apiName)
-  if (!name || (!shouldRefreshGeneratedSiteName(site) && !knownNamesByAdapter[site.adapter])) return site.name
-  return name
+  if (!shouldRefreshGeneratedSiteName(site)) return site.name
+  const hostname = hostnameOf(site.baseUrl)
+  if (hostname && knownNamesByHostname[hostname]) return knownNamesByHostname[hostname]
+  const pageName = cleanName(apiName)
+  if (pageName) return pageName
+  return knownNamesByAdapter[site.adapter] ?? site.name
 }

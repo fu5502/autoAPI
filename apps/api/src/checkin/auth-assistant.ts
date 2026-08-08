@@ -4,6 +4,7 @@ import type { SecretBox } from '../security/secret-box.js'
 import type { AppDatabase } from './db.js'
 import type { EventBus } from './events.js'
 import type { Site } from './types.js'
+import { officialNameForAuth } from './site-name.js'
 import { nowIso } from './utils.js'
 
 const PAIR_TTL_MS = 10 * 60_000
@@ -224,6 +225,7 @@ export class AuthAssistantService {
       if (!snapshot.cookies.length && !Object.keys(snapshot.localStorageByHost).length) {
         throw new Error('当前页面没有读取到 Cookie 或 Local Storage，请先登录目标签到站点')
       }
+      const resolvedName = officialNameForAuth(site, pageTitle)
       const serializedSnapshot = JSON.stringify(snapshot)
       if (Buffer.byteLength(serializedSnapshot, 'utf8') > MAX_SNAPSHOT_BYTES) {
         throw new Error('授权助手登录状态超过 8 MB 限制，请减少站点存储后重试')
@@ -232,7 +234,7 @@ export class AuthAssistantService {
       this.db.updateSiteAuth(pairing.siteId, {
         adapter: site.adapter,
         authStatus: 'valid',
-        ...(pageTitle ? { name: pageTitle } : {}),
+        ...(resolvedName !== site.name ? { name: resolvedName } : {}),
         lastError: null,
       })
       pairing.status = 'received'
@@ -303,6 +305,34 @@ export class AuthAssistantService {
       return snapshot
     } catch {
       return null
+    }
+  }
+
+  updateSnapshotLocalStorage(siteId: number, host: string, values: Record<string, string>): boolean {
+    if (!this.secrets || !values) return false
+    const stored = this.db.getSiteAuthSnapshot(siteId)
+    if (!stored) return false
+    try {
+      const snapshot = JSON.parse(this.secrets.decrypt(stored.encrypted)) as BrowserAuthSnapshot
+      if (!snapshot || !isRecord(snapshot.localStorageByHost)) return false
+      const normalizedHost = host.toLowerCase().replace(/\.$/, '')
+      const items = snapshot.localStorageByHost[normalizedHost] ??= {}
+      let changed = false
+      for (const [key, value] of Object.entries(values)) {
+        if (!key || key.length > 512 || typeof value !== 'string' || value.length > MAX_STORAGE_VALUE_LENGTH) continue
+        if (items[key] !== value) {
+          items[key] = value
+          changed = true
+        }
+      }
+      if (!changed) return false
+      snapshot.updatedAt = nowIso()
+      const serialized = JSON.stringify(snapshot)
+      if (Buffer.byteLength(serialized, 'utf8') > MAX_SNAPSHOT_BYTES) return false
+      this.db.saveSiteAuthSnapshot(siteId, this.secrets.encrypt(serialized))
+      return true
+    } catch {
+      return false
     }
   }
 

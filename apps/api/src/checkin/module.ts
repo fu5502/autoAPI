@@ -691,9 +691,12 @@ export async function registerCheckinRoutes(
     });
     checkin.post("/checkin/run", async (request, reply) => {
       if (module.coordinator.getActiveRun()) return reply.code(409).send({ error: "已有签到任务正在运行" });
-      const body = request.body as { siteIds?: unknown } | undefined;
+      const body = request.body as { siteIds?: unknown; operation?: unknown } | undefined;
       const siteIds = body?.siteIds === undefined ? undefined : z.array(z.number().int().positive()).max(100).parse(body.siteIds);
-      const task = module.coordinator.run("manual", siteIds);
+      const operation = body?.operation === undefined
+        ? undefined
+        : z.enum(["checkin", "balance_refresh"]).parse(body.operation);
+      const task = module.coordinator.run("manual", siteIds, 0, operation === undefined ? {} : { operation });
       void task.catch((error) => {
         module.events.emit({
           type: "state_changed",
@@ -707,6 +710,13 @@ export async function registerCheckinRoutes(
     checkin.post<{ Params: { id: string } }>("/runs/:id/cancel", async (request, reply) => {
       const runId = parseId(request.params.id);
       const run = await module.coordinator.cancelActiveRun(runId);
+      if (!run) return reply.code(404).send({ error: { message: "任务不存在或已结束", type: "not_found" } });
+      return run;
+    });
+    checkin.post<{ Params: { id: string; siteId: string } }>("/runs/:id/sites/:siteId/cancel", async (request, reply) => {
+      const runId = parseId(request.params.id);
+      const siteId = parseId(request.params.siteId);
+      const run = await module.coordinator.cancelActiveSite(runId, siteId);
       if (!run) return reply.code(404).send({ error: { message: "任务不存在或已结束", type: "not_found" } });
       return run;
     });

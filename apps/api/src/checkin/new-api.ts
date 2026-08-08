@@ -479,7 +479,7 @@ export class NewApiService {
     }
 
     if (site.adapter === 'sub2api' || isSub2ApiSite(site.baseUrl)) {
-      const auth = await this.detectSub2ApiAuthentication(page, timeoutMs)
+      const auth = await this.detectSub2ApiAuthentication(page, timeoutMs, site)
       return auth ? { baseUrl: site.baseUrl, protocol: 'sub2api', headers: { Authorization: `Bearer ${auth.accessToken}` } } : null
     }
 
@@ -694,7 +694,7 @@ export class NewApiService {
                 return
               }
             } else if (sub2ApiSite) {
-              const auth = await this.detectSub2ApiAuthentication(page, 30_000)
+              const auth = await this.detectSub2ApiAuthentication(page, 30_000, site)
               if (auth) {
                 const money = moneyForSub2ApiSite(site)
                 this.db.updateSiteAuth(site.id, {
@@ -1055,7 +1055,7 @@ export class NewApiService {
         }
 
         if (sub2ApiSite) {
-          const auth = await this.detectSub2ApiAuthentication(page, requestTimeoutMs)
+          const auth = await this.detectSub2ApiAuthentication(page, requestTimeoutMs, site)
           const money = moneyForSub2ApiSite(site)
           if (!auth) {
             if (challenge) {
@@ -1262,7 +1262,7 @@ export class NewApiService {
     timeoutMs: number,
   ): Promise<CheckinResult> {
     const money = moneyForSub2ApiSite(site)
-    const auth = await this.detectSub2ApiAuthentication(page, timeoutMs)
+    const auth = await this.detectSub2ApiAuthentication(page, timeoutMs, site)
     if (!auth) {
       return this.authenticationRequiredResult(site, runId, startedAt, { money })
     }
@@ -1323,7 +1323,7 @@ export class NewApiService {
     }
 
     const reward = numberOrNull(checkin.data?.record?.reward_amount)
-    const afterAuth = await this.detectSub2ApiAuthentication(page, timeoutMs)
+    const afterAuth = await this.detectSub2ApiAuthentication(page, timeoutMs, site)
     const afterBalance = numberOrNull(afterAuth?.user.balance)
     const alreadyChecked = checkin.data?.alreadyChecked === true
     return this.makeResult(site, runId, startedAt, alreadyChecked ? 'already_checked' : 'success', alreadyChecked ? '今日已签到' : '签到成功', {
@@ -2058,6 +2058,7 @@ export class NewApiService {
   private async detectSub2ApiAuthentication(
     page: Page,
     timeoutMs = 30_000,
+    site?: Pick<Site, 'id' | 'baseUrl'>,
   ): Promise<{ accessToken: string; user: Sub2ApiUser } | null> {
     this.beginAuthenticationProbe()
     let activeToken = await readSub2ApiToken(page, 'access')
@@ -2104,6 +2105,14 @@ export class NewApiService {
 
     let authenticated = await readUser()
     if (authenticated.unauthorized || (!authenticated.user && authenticated.response?.httpStatus === 401)) {
+      const cookieUser = await readCookieUser()
+      if (cookieUser && numberOrNull(cookieUser.balance ?? cookieUser.quota) !== null) {
+        // Prefer the imported browser session over a token refresh. Some
+        // Sub2API deployments rotate or revoke the old refresh token, which can
+        // also invalidate the cookie session on the next balance refresh.
+        this.beginAuthenticationProbe()
+        return { accessToken: '', user: cookieUser }
+      }
       const refreshToken = await readSub2ApiToken(page, 'refresh')
       if (refreshToken) {
         const refreshed = await pageRequest<{ access_token?: string; refresh_token?: string }>(
@@ -2121,6 +2130,13 @@ export class NewApiService {
             localStorage.setItem('auth_token', accessToken)
             if (nextRefreshToken) localStorage.setItem('refresh_token', nextRefreshToken)
           }, { accessToken: activeToken, refreshToken: refreshed.data.refresh_token ?? null }).catch(() => undefined)
+          if (site) {
+            const host = new URL(site.baseUrl).hostname.toLowerCase().replace(/\.$/, '')
+            const values: Record<string, string> = { auth_token: activeToken }
+            if (refreshed.data.refresh_token) values.refresh_token = refreshed.data.refresh_token
+            this.authAssistant?.updateSnapshotLocalStorage(site.id, host, values)
+          }
+          this.beginAuthenticationProbe()
           authenticated = await readUser()
         }
       }

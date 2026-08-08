@@ -42,6 +42,7 @@
 .checkin-module .page-header h1{ margin: 0; font-size: 24px; line-height: 1.25; font-weight: 750; letter-spacing: -.01em; }
 .checkin-module .page-header p{ margin: 6px 0 0; color: var(--muted); font-size: 12px; }
 .checkin-module .header-actions{ display: flex; gap: 9px; align-items: center; }
+.checkin-module .header-run-actions{ display: inline-flex; gap: 8px; align-items: center; }
 .checkin-module .button{ min-height: 36px; border: 1px solid transparent; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 14px; cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap; transition: transform .12s ease, box-shadow .15s ease, background .15s ease; }
 .checkin-module .button:disabled{ opacity: .48; cursor: not-allowed; }
 .checkin-module .button.primary{ color: white; background: var(--brand-gradient); border-color: transparent; box-shadow: 0 6px 16px rgba(33,110,91,.18); }
@@ -130,6 +131,10 @@
 .checkin-module .amount.positive{ color: var(--green); font-weight: 650; }
 .checkin-module .reward-cell{ display: grid; gap: 3px; font-variant-numeric: tabular-nums; }
 .checkin-module .reward-cell.static{ cursor: default; }
+.checkin-module .reward-cell.interactive{ width: 100%; min-width: 0; padding: 3px 5px; border: 1px solid transparent; border-radius: 5px; background: transparent; text-align: left; cursor: pointer; align-content: center; }
+.checkin-module .reward-cell.interactive:hover:not(:disabled){ border-color: var(--border); background: var(--surface-soft); }
+.checkin-module .reward-cell.interactive:disabled{ opacity: .55; cursor: not-allowed; }
+.checkin-module .reward-cell.interactive .spin{ width: 12px; height: 12px; color: var(--brand); }
 .checkin-module .reward-cell strong{ color: var(--subtle); font-size: 10px; }
 .checkin-module .reward-cell strong.today{ color: var(--green); }
 .checkin-module .reward-cell strong.previous{ color: var(--amber); }
@@ -1564,7 +1569,8 @@
 .checkin-module .run-progress-popover {
   position: absolute;
   right: 0;
-  bottom: calc(100% + 10px);
+  top: 100%;
+  bottom: auto;
   z-index: 40;
   width: min(360px, 78vw);
   max-height: 260px;
@@ -1580,7 +1586,6 @@
   visibility: hidden;
   transform: translateY(4px);
   transition: opacity .14s ease, transform .14s ease, visibility .14s ease;
-  pointer-events: none;
 }
 
 .checkin-module .run-progress-wrap:hover .run-progress-popover,
@@ -1620,11 +1625,18 @@
 
 .checkin-module .run-progress-line {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
+}
+
+.checkin-module .run-progress-line.current {
+  padding: 3px 4px;
+  border: 1px solid #b9d8cd;
+  border-radius: 6px;
+  background: var(--green-bg, #e8f3ef);
 }
 
 .checkin-module .run-progress-line time {
@@ -1637,6 +1649,37 @@
 .checkin-module .run-progress-line.success { color: var(--green, #216e5b); }
 .checkin-module .run-progress-line.warn { color: var(--amber, #a16207); }
 .checkin-module .run-progress-line.error { color: var(--red, #b4482a); }
+
+.checkin-module .run-progress-message {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checkin-module .run-progress-cancel {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--red, #b4482a);
+  cursor: pointer;
+}
+
+.checkin-module .run-progress-cancel:hover:not(:disabled) {
+  border-color: #e6b9aa;
+  background: var(--red-bg, #f8ebe7);
+}
+
+.checkin-module .run-progress-cancel:disabled {
+  opacity: .5;
+  cursor: wait;
+}
 
 .checkin-module .run-progress-empty {
   display: block;
@@ -1663,3 +1706,17 @@
 :root[data-theme="dark"] .checkin-module .run-progress-line.success { color: #75ceb0; }
 :root[data-theme="dark"] .checkin-module .run-progress-line.warn { color: #f2c56b; }
 :root[data-theme="dark"] .checkin-module .run-progress-line.error { color: #ec947b; }
+
+:root[data-theme="dark"] .checkin-module .run-progress-line.current {
+  border-color: #2f5f64;
+  background: #17383b;
+}
+
+:root[data-theme="dark"] .checkin-module .run-progress-cancel {
+  color: #ec947b;
+}
+
+:root[data-theme="dark"] .checkin-module .run-progress-cancel:hover:not(:disabled) {
+  border-color: #8a4b45;
+  background: #3a211f;
+}

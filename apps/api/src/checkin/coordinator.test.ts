@@ -87,6 +87,69 @@ describe('CheckinCoordinator manual balance fallback', () => {
     expect(coordinator.getActiveRun()).toBeNull()
   })
 
+  it('cancels only the running site and continues with the remaining sites', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const firstSite = database.createSite('A', 'https://a.example')
+    const secondSite = database.createSite('B', 'https://b.example')
+    let release!: () => void
+    let activeRunId = 0
+    let cancelled = false
+    const refreshBalanceSite = vi.fn(async (site: { id: number }) => {
+      if (site.id === firstSite.id) {
+        await new Promise<void>((resolve) => { release = resolve })
+        if (cancelled) return result(firstSite.id, activeRunId, 'failed', '站点页面正在跳转，请稍后重试')
+        return result(firstSite.id, activeRunId, 'disabled', '余额已刷新', 42)
+      }
+      return result(secondSite.id, activeRunId, 'disabled', '余额已刷新', 7)
+    })
+    const cancelActiveTask = vi.fn(async () => { cancelled = true })
+    const newApi = { refreshBalanceSite, cancelActiveTask } as unknown as NewApiService
+    const coordinator = new CheckinCoordinator(database, newApi, new EventBus(), new TelegramNotifier(database))
+    const task = coordinator.refreshBalance([firstSite.id, secondSite.id])
+
+    await vi.waitFor(() => expect(coordinator.getActiveRun()).not.toBeNull())
+    const runId = coordinator.getActiveRun()!.id
+    activeRunId = runId
+    await coordinator.cancelActiveSite(runId, firstSite.id)
+
+    expect(cancelActiveTask).toHaveBeenCalledOnce()
+    release()
+    const run = await task
+
+    expect(run).toMatchObject({ status: 'completed', successCount: 1, skippedCount: 1, failedCount: 0 })
+    expect(refreshBalanceSite).toHaveBeenCalledTimes(2)
+    expect(database.getSite(firstSite.id)).toMatchObject({ lastStatus: 'never' })
+    expect(database.getSite(secondSite.id)).toMatchObject({ lastStatus: 'disabled' })
+  })
+
+  it('separates one-click check-in and refresh runs by site mode', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const welfare = database.createSite('公益站', 'https://welfare.example')
+    const relay = database.createSite('中转站', 'https://relay.example')
+    database.updateSite(relay.id, { checkinMode: 'balance_only' })
+    const checkinSite = vi.fn(async (_site: unknown, runId: number) => ({
+      ...result(welfare.id, runId, 'disabled', '余额已刷新', 1),
+      status: 'success' as const,
+      rewardRaw: 1,
+      rewardAmount: 1,
+    }))
+    const refreshBalanceSite = vi.fn(async (_site: unknown, runId: number) => result(relay.id, runId, 'disabled', '余额已刷新', 10))
+    const newApi = { checkinSite, refreshBalanceSite } as unknown as NewApiService
+    const coordinator = new CheckinCoordinator(database, newApi, new EventBus(), new TelegramNotifier(database))
+
+    const checkinRun = await coordinator.run('manual', undefined, 0, { operation: 'checkin' })
+    expect(checkinRun).toMatchObject({ successCount: 1 })
+    expect(checkinSite).toHaveBeenCalledTimes(1)
+    expect(refreshBalanceSite).not.toHaveBeenCalled()
+
+    const refreshRun = await coordinator.run('manual', undefined, 0, { operation: 'balance_refresh' })
+    expect(refreshRun).toMatchObject({ successCount: 1 })
+    expect(checkinSite).toHaveBeenCalledTimes(1)
+    expect(refreshBalanceSite).toHaveBeenCalledTimes(1)
+  })
+
   it('recovers stale running runs and site states on startup', () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)

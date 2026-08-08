@@ -37,7 +37,7 @@ function toBase64Url(value: Uint8Array) {
 describe('autoAPI authorization assistant', () => {
   it('claims a code, stores encrypted browser state, and records success', async () => {
     const { database, service } = makeService()
-    const site = database.createSite('我的自定义站点名称', 'https://cdk.hybgzs.com/dashboard')
+    const site = database.createSite('cdk.hybgzs.com', 'https://cdk.hybgzs.com/dashboard')
     const pairing = service.createPair(site)
     const claim = service.claim(pairing.code)
     const encrypted = encryptPayload({
@@ -50,11 +50,28 @@ describe('autoAPI authorization assistant', () => {
     const status = service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
 
     expect(status).toMatchObject({ status: 'received', cookieCount: 1, localStorageCount: 1 })
-    expect(database.getSite(site.id)).toMatchObject({ name: '黑与白福利站 控制台', authStatus: 'valid', authSyncStatus: 'success' })
+    expect(database.getSite(site.id)).toMatchObject({ name: '黑与白福利站', authStatus: 'valid', authSyncStatus: 'success' })
     expect(database.listAuthSyncEvents(site.id)[0]).toMatchObject({ status: 'success', cookieCount: 1, localStorageCount: 1 })
     const stored = database.getSiteAuthSnapshot(site.id)
     expect(stored?.encrypted).toBeTruthy()
     expect(stored?.encrypted).not.toContain('secret-cookie')
+  })
+
+  it('keeps a manually edited site name when a later authorization is synced', async () => {
+    const { database, service } = makeService()
+    const site = database.createSite('我的固定站点名', 'https://relay.example')
+    const pairing = service.createPair(site)
+    const claim = service.claim(pairing.code)
+    const encrypted = encryptPayload({
+      siteOrigin: 'https://relay.example',
+      pageTitle: '页面里的另一个标题',
+      cookies: [{ name: 'session', value: 'cookie', domain: '.relay.example', path: '/', secure: true, httpOnly: true }],
+      localStorage: { access_token: 'storage' },
+    }, claim.secret)
+
+    service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
+
+    expect(database.getSite(site.id)?.name).toBe('我的固定站点名')
   })
 
   it('rejects a page from another origin and records the failure', () => {

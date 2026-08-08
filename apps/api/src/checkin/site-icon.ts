@@ -229,7 +229,7 @@ export class SiteIconService {
         return asset
       }
     }
-    if (refresh || !url || (!site.faviconCustom && isFallbackIconUrl(url, site.baseUrl) && !this.renderedIconAttempts.has(siteId))) {
+    if (refresh || !url) {
       url = await this.getIconUrl(siteId, true)
     }
     if (!url) return null

@@ -151,6 +151,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
   const [toasts, setToasts] = useState<Toast[]>([])
   const [activeRunId, setActiveRunId] = useState<number | null>(null)
   const [cancellingRunId, setCancellingRunId] = useState<number | null>(null)
+  const [cancellingSiteId, setCancellingSiteId] = useState<number | null>(null)
   const [progressByRun, setProgressByRun] = useState<Record<number, RunProgressEntry[]>>({})
   const browserNotifications = useRef(false)
 
@@ -378,15 +379,15 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
     notify(title, `${status.siteName}: ${status.message}`, complete ? 'success' : status.status === 'manual_required' ? 'warning' : 'danger')
   }, [notify, refresh])
 
-  const runCheckin = async (siteIds?: number[]) => {
+  const runCheckin = async (siteIds?: number[], operation: 'checkin' | 'balance_refresh' = 'checkin') => {
     const selectedSite = siteIds?.length === 1 ? state?.sites.find((site) => site.id === siteIds[0]) : null
-    if (selectedSite && supportsLocalBrowserExecution(selectedSite)) {
+    if (selectedSite && operation === 'checkin' && supportsLocalBrowserExecution(selectedSite)) {
       await startLocalExecution(selectedSite, 'checkin')
       return
     }
-    const balanceOnly = Boolean(selectedSite && isBalanceOnlySite(selectedSite))
+    const balanceOnly = operation === 'balance_refresh' || Boolean(selectedSite && isBalanceOnlySite(selectedSite))
     try {
-      const run = await api.runCheckin(siteIds)
+      const run = await api.runCheckin(siteIds, operation)
       if (run?.id) {
         setActiveRunId(run.id)
         setProgressByRun((current) => ({ ...current, [run.id]: current[run.id] ?? [] }))
@@ -396,15 +397,15 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
         notify(
           balanceOnly ? '余额刷新任务已提交' : '签到任务已提交',
           balanceOnly
-            ? `正在刷新 ${selectedSite?.name ?? '所选站点'} 的余额`
-            : siteIds?.length === 1 ? '正在处理所选站点' : '正在依次签到或刷新全部启用站点',
+            ? selectedSite ? `正在刷新 ${selectedSite.name} 的余额` : '正在刷新全部中转站余额'
+            : siteIds?.length === 1 ? '正在处理所选站点' : '正在依次签到全部公益站',
         )
       } else {
-        notify('签到任务未启动', '没有可执行的站点，或任务已被取消', 'warning')
+        notify(balanceOnly ? '刷新任务未启动' : '签到任务未启动', '没有可执行的站点，或任务已被取消', 'warning')
       }
       void refresh(true)
     } catch (cause) {
-      notify('无法开始签到', cause instanceof Error ? cause.message : '未知错误', 'danger')
+      notify(balanceOnly ? '无法开始刷新' : '无法开始签到', cause instanceof Error ? cause.message : '未知错误', 'danger')
     }
   }
 
@@ -423,6 +424,24 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
       notify('终止任务失败', cause instanceof Error ? cause.message : '未知错误', 'danger')
     } finally {
       setCancellingRunId(null)
+    }
+  }
+
+  const cancelActiveSite = async (runId: number, siteId: number) => {
+    if (cancellingSiteId !== null) return
+    setCancellingSiteId(siteId)
+    try {
+      const run = await api.cancelRunSite(runId, siteId)
+      notify(
+        run.status === 'running' ? '已提交终止该站点' : '该站点操作已终止',
+        run.status === 'running' ? '正在停止当前站点操作，后续站点会继续处理' : '当前站点已停止',
+        'warning',
+      )
+      void refresh(true)
+    } catch (cause) {
+      notify('终止站点失败', cause instanceof Error ? cause.message : '未知错误', 'danger')
+    } finally {
+      setCancellingSiteId(null)
     }
   }
 
@@ -557,7 +576,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
       <div className="checkin-main-area">
         {loading && !state ? <LoadingScreen /> : error && !state ? <ErrorScreen message={error} retry={() => void refresh()} /> : state ? (
           <>
-            {view === 'dashboard' && <Dashboard state={state} onAdd={() => setAddOpen(true)} onRun={runCheckin} onLocalExecution={startLocalExecution} onAuthorize={openAuthAssistant} onImport={startChannelImport} importedSiteIds={importedSiteIds} onSelect={setSelectedSite} onRefresh={() => refresh(true)} notify={notify} activeRunId={activeRunId} cancellingRunId={cancellingRunId} onCancelRun={cancelActiveRun} progressByRun={progressByRun} />}
+            {view === 'dashboard' && <Dashboard state={state} onAdd={() => setAddOpen(true)} onRun={runCheckin} onRunRefresh={() => void runCheckin(undefined, 'balance_refresh')} onLocalExecution={startLocalExecution} onAuthorize={openAuthAssistant} onImport={startChannelImport} importedSiteIds={importedSiteIds} onSelect={setSelectedSite} onRefresh={() => refresh(true)} notify={notify} activeRunId={activeRunId} cancellingRunId={cancellingRunId} cancellingSiteId={cancellingSiteId} onCancelRun={cancelActiveRun} onCancelSite={cancelActiveSite} progressByRun={progressByRun} />}
             {view === 'history' && <HistoryView state={state} />}
             {view === 'settings' && <SettingsView settings={state.settings} onSaved={() => refresh(true)} notify={notify} />}
           </>
@@ -584,7 +603,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
           setChannelImportStatus(null)
         }
       }} />}
-      {selectedSite && state && <SiteDrawer site={selectedSite} results={state.recentResults.filter((result) => result.siteId === selectedSite.id)} authEvents={state.authSyncEvents.filter((event) => event.siteId === selectedSite.id)} onClose={() => setSelectedSite(null)} onRun={() => runCheckin([selectedSite.id])} onAuthorize={() => void openAuthAssistant(selectedSite)} activeRunId={activeRunId} cancellingRunId={cancellingRunId} onCancelRun={cancelActiveRun} progressByRun={progressByRun} />}
+      {selectedSite && state && <SiteDrawer site={selectedSite} results={state.recentResults.filter((result) => result.siteId === selectedSite.id)} authEvents={state.authSyncEvents.filter((event) => event.siteId === selectedSite.id)} onClose={() => setSelectedSite(null)} onRun={() => runCheckin([selectedSite.id])} onAuthorize={() => void openAuthAssistant(selectedSite)} activeRunId={activeRunId} cancellingRunId={cancellingRunId} cancellingSiteId={cancellingSiteId} onCancelRun={cancelActiveRun} onCancelSite={cancelActiveSite} progressByRun={progressByRun} />}
       <ToastRegion toasts={toasts} dismiss={(id) => setToasts((items) => items.filter((item) => item.id !== id))} />
     </section>
   )
@@ -599,7 +618,7 @@ function PageHeader({ title, description, actions }: { title: string; descriptio
   )
 }
 
-function RunLogPopover({ busy, logs, siteId, label, runId, onCancel, cancelling, children }: {
+function RunLogPopover({ busy, logs, siteId, label, runId, onCancel, cancelling, onCancelSite, cancellingSiteId, runningSiteId, children }: {
   busy: boolean
   logs: RunProgressEntry[]
   siteId?: number
@@ -607,10 +626,14 @@ function RunLogPopover({ busy, logs, siteId, label, runId, onCancel, cancelling,
   runId?: number | null
   onCancel?: (runId: number) => void
   cancelling?: boolean
+  onCancelSite?: (runId: number, siteId: number) => void
+  cancellingSiteId?: number | null
+  runningSiteId?: number | null
   children: ReactNode
 }) {
   if (!busy) return <>{children}</>
   const visible = logs.filter((entry) => siteId === undefined || entry.siteId === null || entry.siteId === siteId)
+  const currentSiteId = runningSiteId ?? null
   return (
     <span className="run-progress-wrap">
       {children}
@@ -618,9 +641,20 @@ function RunLogPopover({ busy, logs, siteId, label, runId, onCancel, cancelling,
         <span className="run-progress-popover-head">{label ?? '工作中'} · 实时日志{runId && onCancel ? <IconButton title={cancelling ? '正在终止' : '终止任务'} onClick={() => onCancel(runId)} disabled={cancelling === true}><Square size={12} /></IconButton> : null}</span>
         <span className="run-progress-popover-lines">
           {visible.length ? visible.slice(-60).map((entry) => (
-            <span className={`run-progress-line ${entry.level}`} key={entry.id}>
+            <span className={`run-progress-line ${entry.level} ${entry.siteId !== null && entry.siteId === currentSiteId ? 'current' : ''}`} key={entry.id}>
               <time>{formatDateTime(entry.ts, 'time')}</time>
-              <span>{entry.siteName ? `${entry.siteName} · ` : ''}{entry.message}</span>
+              <span className="run-progress-message">{entry.siteName ? `${entry.siteName} · ` : ''}{entry.message}</span>
+              {entry.siteId !== null && entry.siteId === currentSiteId && runId && onCancelSite ? (
+                <button
+                  type="button"
+                  className="run-progress-cancel"
+                  title={cancellingSiteId === entry.siteId ? '正在终止' : '终止当前站点'}
+                  onClick={() => onCancelSite(runId, entry.siteId!)}
+                  disabled={cancellingSiteId === entry.siteId}
+                >
+                  <Square size={9} />
+                </button>
+              ) : null}
             </span>
           )) : <span className="run-progress-empty">正在启动任务…</span>}
         </span>
@@ -629,10 +663,11 @@ function RunLogPopover({ busy, logs, siteId, label, runId, onCancel, cancelling,
   )
 }
 
-function Dashboard({ state, onAdd, onRun, onLocalExecution, onAuthorize, onImport, importedSiteIds, onSelect, onRefresh, notify, activeRunId, cancellingRunId, onCancelRun, progressByRun }: {
+function Dashboard({ state, onAdd, onRun, onRunRefresh, onLocalExecution, onAuthorize, onImport, importedSiteIds, onSelect, onRefresh, notify, activeRunId, cancellingRunId, cancellingSiteId, onCancelRun, onCancelSite, progressByRun }: {
   state: AppState
   onAdd: () => void
   onRun: (ids?: number[]) => void
+  onRunRefresh: () => void
   onLocalExecution: (site: Site, operation: LocalExecutionOperation) => Promise<void>
   onAuthorize: (site: Site) => void
   onImport: (site: Site) => Promise<void>
@@ -642,10 +677,13 @@ function Dashboard({ state, onAdd, onRun, onLocalExecution, onAuthorize, onImpor
   notify: (title: string, message: string, tone?: Toast['tone']) => void
   activeRunId: number | null
   cancellingRunId: number | null
+  cancellingSiteId: number | null
   onCancelRun: (runId: number) => void
+  onCancelSite: (runId: number, siteId: number) => void
   progressByRun: Record<number, RunProgressEntry[]>
 }) {
   const busy = Boolean(activeRunId) || state.sites.some((site) => site.lastStatus === 'running')
+  const runningSiteId = state.sites.find((site) => site.lastStatus === 'running')?.id ?? null
   return (
     <div className="page">
       <PageHeader
@@ -653,13 +691,16 @@ function Dashboard({ state, onAdd, onRun, onLocalExecution, onAuthorize, onImpor
         description={formatDate()}
         actions={<>
           <button className="button secondary" onClick={onAdd}><Plus size={17} />添加站点</button>
-          <RunLogPopover busy={busy} logs={progressByRun[activeRunId ?? -1] ?? []} label="签到/刷新中" runId={activeRunId} onCancel={onCancelRun} cancelling={cancellingRunId === activeRunId}>
-            <button className="button primary" onClick={() => onRun()} disabled={busy}>{busy ? <LoaderCircle size={17} className="spin" /> : <Play size={17} fill="currentColor" />}{busy ? '执行中' : '一键签到 / 刷新'}</button>
+          <RunLogPopover busy={busy} logs={progressByRun[activeRunId ?? -1] ?? []} label="签到/刷新中" runId={activeRunId} onCancel={onCancelRun} cancelling={cancellingRunId === activeRunId} onCancelSite={onCancelSite} cancellingSiteId={cancellingSiteId} runningSiteId={runningSiteId}>
+            <span className="header-run-actions">
+              <button className="button primary" onClick={() => onRun()} disabled={busy}>{busy ? <LoaderCircle size={17} className="spin" /> : <Play size={17} fill="currentColor" />}{busy ? '执行中' : '一键签到'}</button>
+              <button className="button secondary" onClick={onRunRefresh} disabled={busy}>{busy ? <LoaderCircle size={17} className="spin" /> : <RefreshCw size={17} />}{busy ? '执行中' : '一键刷新'}</button>
+            </span>
           </RunLogPopover>
         </>}
       />
       <SummaryBand state={state} />
-      <SitesView state={state} onRun={onRun} onLocalExecution={onLocalExecution} onAuthorize={onAuthorize} onImport={onImport} importedSiteIds={importedSiteIds} onSelect={onSelect} onRefresh={onRefresh} notify={notify} activeRunId={activeRunId} cancellingRunId={cancellingRunId} onCancelRun={onCancelRun} progressByRun={progressByRun} />
+      <SitesView state={state} onRun={onRun} onLocalExecution={onLocalExecution} onAuthorize={onAuthorize} onImport={onImport} importedSiteIds={importedSiteIds} onSelect={onSelect} onRefresh={onRefresh} notify={notify} activeRunId={activeRunId} cancellingRunId={cancellingRunId} cancellingSiteId={cancellingSiteId} onCancelRun={onCancelRun} onCancelSite={onCancelSite} progressByRun={progressByRun} />
       <RecentActivityWithDeletions results={state.recentResults} deletions={state.recentDeletions ?? []} sites={state.sites} />
     </div>
   )
@@ -747,7 +788,7 @@ function RecentActivity({ results, sites }: { results: CheckinResult[]; sites: S
   )
 }
 
-function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, importedSiteIds, onSelect, onRefresh, notify, activeRunId, cancellingRunId, onCancelRun, progressByRun }: {
+function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, importedSiteIds, onSelect, onRefresh, notify, activeRunId, cancellingRunId, cancellingSiteId, onCancelRun, onCancelSite, progressByRun }: {
   state: AppState
   onRun: (ids?: number[]) => void
   onLocalExecution: (site: Site, operation: LocalExecutionOperation) => Promise<void>
@@ -759,7 +800,9 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
   notify: (title: string, message: string, tone?: Toast['tone']) => void
   activeRunId: number | null
   cancellingRunId: number | null
+  cancellingSiteId: number | null
   onCancelRun: (runId: number) => void
+  onCancelSite: (runId: number, siteId: number) => void
   progressByRun: Record<number, RunProgressEntry[]>
 }) {
   const [query, setQuery] = useState('')
@@ -768,6 +811,7 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
   const [editingSite, setEditingSite] = useState<Site | null>(null)
   const [importingSiteId, setImportingSiteId] = useState<number | null>(null)
   const [refreshingBalanceSiteId, setRefreshingBalanceSiteId] = useState<number | null>(null)
+  const runningSiteId = state.sites.find((site) => site.lastStatus === 'running')?.id ?? null
   const sites = useMemo(() => state.sites.filter((site) => {
     const searchMatch = `${site.name} ${site.baseUrl} ${site.note}`.toLowerCase().includes(query.toLowerCase())
     const filterMatch = filter === 'all' || (filter === 'valid' && site.authStatus === 'valid') || (filter === 'attention' && (['expired', 'manual_required', 'unknown'].includes(site.authStatus) || ['failed', 'manual_required'].includes(site.lastStatus))) || (filter === 'disabled' && !site.enabled)
@@ -855,13 +899,13 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
           <td>{balanceOnly
             ? <div className="balance-status-cell"><StatusBadge tone={balanceRefreshStatusTone(site)}>{balanceRefreshStatusLabel(site)}</StatusBadge><small className={balanceRefreshTimingClass(site.lastBalanceUpdatedAt)}>{balanceRefreshTimingLabel(site.lastBalanceUpdatedAt)}</small></div>
             : <StatusBadge tone={siteCheckinTone(site)}>{siteCheckinLabel(site)}</StatusBadge>}</td>
-          {!balanceOnly ? <td><div className="reward-cell static" data-interactive="false" onClick={(event) => event.stopPropagation()}><strong className={rewardTimingTone(site.lastRewardAt)}>{formatAmount(site.lastRewardAmount, site.currencySymbol)}</strong><small>{site.lastRewardAt ? rewardTimingLabel(site.lastRewardAt) : '--'}</small></div></td> : null}
+          {!balanceOnly ? <td><button type="button" className={`reward-cell interactive ${rewardTimingTone(site.lastRewardAt)}`} title="点击立即签到" disabled={Boolean(activeRunId) || refreshingBalanceSiteId !== null} onClick={() => onRun([site.id])}>{activeRunId && site.lastStatus === 'running' ? <LoaderCircle size={13} className="spin" /> : null}<strong className={rewardTimingTone(site.lastRewardAt)}>{formatAmount(site.lastRewardAmount, site.currencySymbol)}</strong><small>{site.lastRewardAt ? rewardTimingLabel(site.lastRewardAt) : '--'}</small></button></td> : null}
           <td><div className="site-balance-cell"><button type="button" className={`site-balance-button balance-value ${site.lastBalanceAmount === null ? 'empty' : isLowBalance(site.lastBalanceAmount) ? 'low' : ''}`} title={balanceOnly ? '刷新登录账号余额' : '仅刷新余额，不执行签到'} disabled={refreshingBalanceSiteId !== null} onClick={(event) => { event.stopPropagation(); void refreshBalance(site) }}>{refreshingBalanceSiteId === site.id ? <RefreshCw size={13} className="spin" /> : null}<span>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></button><small className="balance-refresh-time">{formatBalanceRefreshTime(site.lastBalanceUpdatedAt)}</small></div></td>
           <td><StatusBadge tone={importedSiteIds.includes(site.id) ? 'success' : 'neutral'}>{importedSiteIds.includes(site.id) ? '是' : '否'}</StatusBadge></td>
           <td><div className="switch-control"><button className={`toggle ${site.enabled ? 'on' : ''}`} role="switch" aria-checked={site.enabled} aria-label={`${site.enabled ? '停用' : '启用'} ${site.name} ${balanceOnly ? '自动刷新余额' : '自动签到'}`} onClick={() => toggle(site)}><span /></button><small>{site.enabled ? (balanceOnly ? '自动刷新' : '自动签到') : '已关闭'}</small></div></td>
           <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title={balanceOnly ? '改为自动签到' : '改为仅刷新余额'} onClick={() => void switchMode(site)}><ArrowLeftRight size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton>{balanceOnly
-            ? <RunLogPopover busy={refreshingBalanceSiteId === site.id || (Boolean(activeRunId) && site.lastStatus === 'running')} logs={progressByRun[activeRunId ?? -1] ?? []} siteId={site.id} label="余额刷新中" runId={activeRunId} onCancel={onCancelRun} cancelling={cancellingRunId === activeRunId}><IconButton title="刷新余额" onClick={() => void refreshBalance(site)} disabled={refreshingBalanceSiteId !== null || Boolean(activeRunId)}><RefreshCw size={16} className={refreshingBalanceSiteId === site.id ? 'spin' : undefined} /></IconButton></RunLogPopover>
-            : <RunLogPopover busy={Boolean(activeRunId) && site.lastStatus === 'running'} logs={progressByRun[activeRunId ?? -1] ?? []} siteId={site.id} label="签到中" runId={activeRunId} onCancel={onCancelRun} cancelling={cancellingRunId === activeRunId}><IconButton title="立即签到" onClick={() => onRun([site.id])} disabled={Boolean(activeRunId) || refreshingBalanceSiteId !== null}>{Boolean(activeRunId) && site.lastStatus === 'running' ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}</IconButton></RunLogPopover>}<IconButton title={importedSiteIds.includes(site.id) ? '重新导入渠道池' : site.authStatus !== 'valid' ? '点击后先授权，授权成功后继续接入渠道或关联余额' : supportsAutomaticChannelImport(site) ? '导入渠道池' : '关联已有渠道并同步余额'} disabled={importingSiteId === site.id} onClick={() => void prepareImport(site)}><ArrowDownToLine size={16} className={importingSiteId === site.id ? 'spin' : undefined} /></IconButton><IconButton title="删除" danger onClick={() => remove(site)}><Trash2 size={16} /></IconButton></div></td>
+            ? <RunLogPopover busy={refreshingBalanceSiteId === site.id || (Boolean(activeRunId) && site.lastStatus === 'running')} logs={progressByRun[activeRunId ?? -1] ?? []} siteId={site.id} label="余额刷新中" runId={activeRunId} onCancel={onCancelRun} cancelling={cancellingRunId === activeRunId} onCancelSite={onCancelSite} cancellingSiteId={cancellingSiteId} runningSiteId={runningSiteId}><IconButton title="刷新余额" onClick={() => void refreshBalance(site)} disabled={refreshingBalanceSiteId !== null || Boolean(activeRunId)}><RefreshCw size={16} className={refreshingBalanceSiteId === site.id ? 'spin' : undefined} /></IconButton></RunLogPopover>
+            : <RunLogPopover busy={Boolean(activeRunId) && site.lastStatus === 'running'} logs={progressByRun[activeRunId ?? -1] ?? []} siteId={site.id} label="签到中" runId={activeRunId} onCancel={onCancelRun} cancelling={cancellingRunId === activeRunId} onCancelSite={onCancelSite} cancellingSiteId={cancellingSiteId} runningSiteId={runningSiteId}><IconButton title="立即签到" onClick={() => onRun([site.id])} disabled={Boolean(activeRunId) || refreshingBalanceSiteId !== null}>{Boolean(activeRunId) && site.lastStatus === 'running' ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}</IconButton></RunLogPopover>}<IconButton title={importedSiteIds.includes(site.id) ? '重新导入渠道池' : site.authStatus !== 'valid' ? '点击后先授权，授权成功后继续接入渠道或关联余额' : supportsAutomaticChannelImport(site) ? '导入渠道池' : '关联已有渠道并同步余额'} disabled={importingSiteId === site.id} onClick={() => void prepareImport(site)}><ArrowDownToLine size={16} className={importingSiteId === site.id ? 'spin' : undefined} /></IconButton><IconButton title="删除" danger onClick={() => remove(site)}><Trash2 size={16} /></IconButton></div></td>
         </tr>) : <tr className="management-empty-row"><td colSpan={balanceOnly ? 8 : 9}>{query || filter !== 'all' ? '当前筛选条件下没有站点' : balanceOnly ? '暂无仅刷新余额的中转站' : '暂无支持签到的公益站'}</td></tr>}</tbody>
       </table>
     </div>
@@ -1560,14 +1604,14 @@ function LocalExecutionModal({ site, execution, onClose, onFinished }: { site: S
   </Modal>
 }
 
-function SiteDrawer({ site, results, authEvents, onClose, onRun, onAuthorize, activeRunId, cancellingRunId, onCancelRun, progressByRun }: { site: Site; results: CheckinResult[]; authEvents: AppState['authSyncEvents']; onClose: () => void; onRun: () => void; onAuthorize: () => void; activeRunId: number | null; cancellingRunId: number | null; onCancelRun: (runId: number) => void; progressByRun: Record<number, RunProgressEntry[]> }) {
+function SiteDrawer({ site, results, authEvents, onClose, onRun, onAuthorize, activeRunId, cancellingRunId, cancellingSiteId, onCancelRun, onCancelSite, progressByRun }: { site: Site; results: CheckinResult[]; authEvents: AppState['authSyncEvents']; onClose: () => void; onRun: () => void; onAuthorize: () => void; activeRunId: number | null; cancellingRunId: number | null; cancellingSiteId: number | null; onCancelRun: (runId: number) => void; onCancelSite: (runId: number, siteId: number) => void; progressByRun: Record<number, RunProgressEntry[]> }) {
   const balanceOnly = isBalanceOnlySite(site)
   const busy = Boolean(activeRunId) && site.lastStatus === 'running'
   return <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={`${site.name} 详情`}>
     <button className="drawer-backdrop" onClick={onClose} aria-label="关闭" />
     <aside className="drawer">
       <header><div><SiteAvatar site={site} large /><div><h2>{site.name}</h2><a href={site.baseUrl} target="_blank" rel="noreferrer">{site.baseUrl}<ExternalLink size={13} /></a></div></div><IconButton title="关闭" onClick={onClose}><X size={18} /></IconButton></header>
-      <div className="drawer-actions"><RunLogPopover busy={busy} logs={progressByRun[activeRunId ?? -1] ?? []} siteId={site.id} label={balanceOnly ? '余额刷新中' : '签到中'} runId={activeRunId} onCancel={onCancelRun} cancelling={cancellingRunId === activeRunId}><button className="button primary" onClick={onRun} disabled={busy}>{busy ? <LoaderCircle size={16} className="spin" /> : balanceOnly ? <RefreshCw size={16} /> : <Play size={16} />}{busy ? '执行中' : balanceOnly ? '刷新余额' : '立即签到'}</button></RunLogPopover><button className="button secondary" onClick={onAuthorize}><KeyRound size={16} />重新授权</button></div>
+      <div className="drawer-actions"><RunLogPopover busy={busy} logs={progressByRun[activeRunId ?? -1] ?? []} siteId={site.id} label={balanceOnly ? '余额刷新中' : '签到中'} runId={activeRunId} onCancel={onCancelRun} cancelling={cancellingRunId === activeRunId} onCancelSite={onCancelSite} cancellingSiteId={cancellingSiteId} runningSiteId={busy ? site.id : null}><button className="button primary" onClick={onRun} disabled={busy}>{busy ? <LoaderCircle size={16} className="spin" /> : balanceOnly ? <RefreshCw size={16} /> : <Play size={16} />}{busy ? '执行中' : balanceOnly ? '刷新余额' : '立即签到'}</button></RunLogPopover><button className="button secondary" onClick={onAuthorize}><KeyRound size={16} />重新授权</button></div>
       <dl className="site-facts"><div><dt>适配器</dt><dd>{siteAdapterLabel(site)}</dd></div><div><dt>登录账号</dt><dd>{site.username || '--'}</dd></div><div><dt>当前余额</dt><dd className={isLowBalance(site.lastBalanceAmount) ? 'danger-text' : undefined}>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</dd></div><div><dt>{balanceOnly ? '最近刷新' : '最近签到'}</dt><dd>{formatDateTime(site.lastCheckedAt)}</dd></div></dl>
       {site.note ? <div className="drawer-note"><h3>站点备注</h3><p>{site.note}</p></div> : null}
       <div className="drawer-section"><h3>最近授权同步</h3>{authEvents.length ? authEvents.slice(0, 5).map((event) => <div className="drawer-result" key={event.id}><StatusBadge tone={event.status === 'success' ? 'success' : event.status === 'failed' ? 'danger' : 'neutral'}>{event.status === 'success' ? '同步成功' : event.status === 'failed' ? '同步失败' : event.status === 'claimed' ? '已连接' : '处理中'}</StatusBadge><span>{event.message}{event.status === 'success' ? `（${event.cookieCount} Cookie / ${event.localStorageCount} 存储）` : ''}</span><time>{formatDateTime(event.completedAt ?? event.startedAt)}</time></div>) : <p className="empty-inline">暂无授权记录</p>}</div>

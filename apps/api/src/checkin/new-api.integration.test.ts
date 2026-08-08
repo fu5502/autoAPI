@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { createSecretBox } from '../security/secret-box.js'
+import { AuthAssistantService } from './auth-assistant.js'
 import type { BrowserManager } from './browser-manager.js'
 import { AppDatabase } from './db.js'
 import { EventBus } from './events.js'
@@ -481,6 +483,135 @@ describe('NewApiService dashboard balance fallback', () => {
     })
     expect(requestedPaths).toEqual(['/api/v1/auth/me'])
     expect(database.getSite(site.id)).toMatchObject({ adapter: 'sub2api', lastBalanceRaw: 8.25, lastBalanceAmount: 8.25 })
+  })
+
+  it('prefers the imported FastAI cookie session over refreshing an expired token', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('FastAI token refresh guard', 'https://www.fastaitoken.com')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 1 })
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          if (String(callback).includes('auth_token')) return 'fastai-expired-token'
+          return { title: 'FastAI Token', text: '' }
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/v1/auth/me') {
+          if (input.headers?.Authorization) {
+            expect(input.headers.Authorization).toBe('Bearer fastai-expired-token')
+            return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+          }
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 10, username: 'cookie-user', balance: 6.5 },
+          }
+        }
+        if (input.pathname === '/api/v1/user/profile') {
+          return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+        }
+        if (input.pathname === '/api/v1/auth/refresh') {
+          throw new Error('refresh must not be called when the cookie session works')
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      balanceAfterRaw: 6.5,
+      balanceAfterAmount: 6.5,
+      loginVerified: true,
+    })
+    expect(requestedPaths).toEqual(['/api/v1/auth/me', '/api/v1/user/profile', '/api/v1/auth/me'])
+    expect(requestedPaths).not.toContain('/api/v1/auth/refresh')
+    expect(database.getSite(site.id)).toMatchObject({ adapter: 'sub2api', authStatus: 'valid', lastBalanceRaw: 6.5 })
+  })
+
+  it('persists rotated FastAI tokens back into the auth snapshot', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('FastAI token rotation', 'https://www.fastaitoken.com')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 1 })
+    const secrets = createSecretBox('fastai-token-rotation-test-key')
+    database.saveSiteAuthSnapshot(site.id, secrets.encrypt(JSON.stringify({
+      siteOrigin: 'https://www.fastaitoken.com',
+      cookies: [],
+      localStorageByHost: {
+        'www.fastaitoken.com': {
+          auth_token: 'old-access',
+          refresh_token: 'old-refresh',
+        },
+      },
+      updatedAt: new Date().toISOString(),
+    })))
+    const authAssistant = new AuthAssistantService(database, secrets, new EventBus())
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      addInitScript: async () => undefined,
+      reload: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string>; accessToken?: string; refreshToken?: string | null }) => {
+        if (!input?.pathname) {
+          if (String(callback).includes('auth_token')) return 'old-access'
+          if (String(callback).includes('refresh_token')) return 'old-refresh'
+          return { title: 'FastAI Token', text: '' }
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/v1/auth/me') {
+          if (input.headers?.Authorization === 'Bearer new-access') {
+            return {
+              httpStatus: 200,
+              contentType: 'application/json',
+              success: true,
+              data: { id: 11, username: 'fastai-user', balance: 5.25 },
+            }
+          }
+          return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+        }
+        if (input.pathname === '/api/v1/user/profile') {
+          return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+        }
+        if (input.pathname === '/api/v1/auth/refresh') {
+          expect(input.headers?.['Content-Type']).toBe('application/json')
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { access_token: 'new-access', refresh_token: 'new-refresh' },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus(), { authAssistant })
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
+
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 5.25, balanceAfterAmount: 5.25, loginVerified: true })
+    expect(requestedPaths).toContain('/api/v1/auth/refresh')
+    const snapshot = await authAssistant.getSnapshot(site.id)
+    expect(snapshot?.localStorageByHost['www.fastaitoken.com']).toMatchObject({
+      auth_token: 'new-access',
+      refresh_token: 'new-refresh',
+    })
   })
 
   it('continues from FastAI auth identity to user profile when auth/me has no balance', async () => {
