@@ -71,7 +71,7 @@ export class SiteIconService {
     const resolved = await resolveSiteIcon(baseUrl, this.fetcher)
     if (!this.browser || (!forceRenderedPage && !shouldInspectRenderedPage(pageUrl, resolved))) return resolved
 
-    return this.browser.run({ interactive: false }, async (_context, page) => {
+    return this.browser.run({ interactive: false, closeBrowserWhenDone: true }, async (_context, page) => {
       await page.goto(pageUrl, { waitUntil: 'domcontentloaded' })
       await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => undefined)
       await page.waitForFunction(() => (
@@ -271,7 +271,7 @@ export class SiteIconService {
     const direct = await fetchIconAsset(iconUrl, baseUrl, this.fetcher)
     if (direct || !allowBrowser || !this.browser) return direct
 
-    return this.browser.runContext(async (context) => {
+    return this.browser.run({ interactive: false, closeBrowserWhenDone: true }, async (context) => {
       const response = await context.request.get(iconUrl, {
         timeout: 15_000,
         headers: { Accept: 'image/avif,image/webp,image/svg+xml,image/png,image/*,*/*;q=0.8', Referer: getIconPageUrl(baseUrl) },

@@ -415,7 +415,7 @@ export class NewApiService {
     }
 
     const timeoutMs = this.db.getSettings().requestTimeoutSeconds * 1000
-    return this.browser.run({ interactive: false }, async (context, page) => {
+    return this.browser.run({ interactive: false, closeBrowserWhenDone: true }, async (context, page) => {
       await this.openImportedSitePage(context, page, site)
       const resolved = await this.resolveOfficialApiImportContext(context, page, site, timeoutMs)
       if (!resolved) {

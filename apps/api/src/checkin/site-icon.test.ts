@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { BrowserContext, Page } from 'playwright-core'
+import type { BrowserManager } from './browser-manager.js'
 import type { AppDatabase } from './db.js'
 import { getIconPageUrl, resolveSiteIcon, SiteIconService } from './site-icon.js'
 
@@ -117,5 +119,28 @@ describe('site icon resolution', () => {
     await expect(service.getCustomIconAsset('https://user:password@assets.example/brand.png', 'https://relay.example/v1')).resolves.toBeNull()
     expect(fetcherMock).toHaveBeenCalledTimes(1)
     expect(String(fetcherMock.mock.calls[0]?.[0])).toBe('https://assets.example/brand.png')
+  })
+
+  it('closes Chromium after the browser fallback loads an icon', async () => {
+    const fetcher = vi.fn(async () => response(null, 'text/plain', 503)) as unknown as typeof fetch
+    const browserResponse = {
+      ok: () => true,
+      body: async () => new Uint8Array([1, 2, 3]),
+      headers: () => ({ 'content-type': 'image/png' }),
+    }
+    const context = {
+      request: { get: vi.fn(async () => browserResponse) },
+    } as unknown as BrowserContext
+    const browser = {
+      run: vi.fn(async (_options, task: (context: BrowserContext, page: Page) => Promise<unknown>) => task(context, {} as Page)),
+    } as unknown as BrowserManager
+    const service = new SiteIconService({} as AppDatabase, fetcher, browser)
+
+    await expect(service.getCustomIconAsset('https://assets.example/brand.png', 'https://relay.example/v1')).resolves.toMatchObject({ contentType: 'image/png' })
+
+    expect(browser.run).toHaveBeenCalledWith(
+      { interactive: false, closeBrowserWhenDone: true },
+      expect.any(Function),
+    )
   })
 })
