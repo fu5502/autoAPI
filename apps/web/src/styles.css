@@ -1911,6 +1911,83 @@ th:last-child {
 .status-disabled { color: #7a858a; }
 .status-disabled .status-dot { background: #9ba5a9; }
 
+.channel-status-cell {
+  position: relative;
+  display: grid;
+  justify-items: start;
+  min-width: 112px;
+  gap: 3px;
+}
+
+.channel-status-trigger {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  gap: 4px;
+  padding: 1px 4px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.channel-status-trigger:hover:not(:disabled) {
+  background: var(--red-soft);
+  border-color: #e2b4a7;
+}
+
+.channel-status-trigger:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.channel-status-menu {
+  position: absolute;
+  z-index: 12;
+  top: 30px;
+  left: 0;
+  display: grid;
+  min-width: 88px;
+  gap: 2px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  box-shadow: var(--shadow);
+}
+
+.channel-status-menu button {
+  min-height: 28px;
+  padding: 0 9px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  text-align: left;
+}
+
+.channel-status-menu button:hover:not(:disabled) {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.channel-status-menu button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.isolation-countdown {
+  padding-left: 4px;
+  color: var(--red);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .mono {
   font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 }
@@ -1987,6 +2064,22 @@ th:last-child {
 .channel-summary > div:first-child strong { font-size: 16px; line-height: 1.4; overflow-wrap: anywhere; }
 
 .detail-list .detail-row:last-child { border-bottom: 0; }
+
+.detail-empty {
+  min-height: 62px;
+  padding: 21px 18px;
+  color: var(--faint);
+  font-size: 11px;
+  text-align: center;
+}
+
+.detail-row-deleted {
+  color: var(--faint);
+  background: color-mix(in srgb, var(--surface) 92%, var(--faint));
+}
+
+.detail-row-deleted strong { color: var(--muted); }
+.detail-row-deleted time { color: var(--faint); font-size: 10px; white-space: nowrap; }
 
 .detail-row {
   display: grid;

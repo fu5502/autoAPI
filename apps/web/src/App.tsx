@@ -1,6 +1,6 @@
 import { Fragment, lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Clock3, Coins, Copy, GitBranch, Gauge, KeyRound, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun, WalletCards, type LucideIcon } from "lucide-react";
+import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Clock3, Coins, Copy, GitBranch, Gauge, KeyRound, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun, Trash2, WalletCards, type LucideIcon } from "lucide-react";
 import { ApiError, api, clearAdminSession, getAdminToken, hasAdminSession } from "./api";
 import { ChannelTable } from "./components/ChannelTable";
 import { ChannelEditor } from "./components/ChannelEditor";
@@ -23,6 +23,20 @@ type HealthScope = "all" | "available" | "abnormal" | "no-data";
 type HealthSort = "available" | "requests";
 type HealthTone = "available" | "degraded" | "abnormal" | "no-data";
 type ColorTheme = "light" | "dark";
+
+type DeletedChannelRecord = {
+  id: string;
+  name: string;
+  status: Channel["status"];
+  isolationReason: string | null;
+  consecutiveFailures: number;
+  deletedAt: string;
+};
+
+type RemoveChannelInput = {
+  id: string;
+  record: Omit<DeletedChannelRecord, "deletedAt">;
+};
 
 const colorThemeStorageKey = "autoapi-color-theme";
 const activeViewStorageKey = "autoapi-active-view";
@@ -60,6 +74,7 @@ export default function App() {
   const [baseUrlCopied, setBaseUrlCopied] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [deletedChannelRecords, setDeletedChannelRecords] = useState<DeletedChannelRecord[]>([]);
   const [probeResult, setProbeResult] = useState<ProbeResponse | null>(null);
   const [requestFilters, setRequestFilters] = useState<RequestFilters>({ window: "24h", limit: 20, offset: 0, client: "", channel: "", model: "", sourceIp: "" });
   const [requestRefreshInterval, setRequestRefreshInterval] = useState<number | false>(30_000);
@@ -108,16 +123,32 @@ export default function App() {
     },
   });
   const removeChannel = useMutation({
-    mutationFn: api.deleteChannel,
-    onSuccess: async () => {
+    mutationFn: ({ id }: RemoveChannelInput) => api.deleteChannel(id),
+    onSuccess: async (_result, variables) => {
       setActionError(null);
+      setActionNotice(`已删除渠道“${variables.record.name}”，记录已保留在隔离详情中`);
+      setDeletedChannelRecords((current) => [
+        { ...variables.record, deletedAt: new Date().toISOString() },
+        ...current.filter((record) => record.id !== variables.id),
+      ].slice(0, 10));
       await refreshAll(queryClient);
     },
-    onError: (error) => setActionError(error instanceof Error ? error.message : "渠道删除失败，请重试。"),
+    onError: (error) => {
+      setActionNotice(null);
+      setActionError(error instanceof Error ? error.message : "渠道删除失败，请重试。");
+    },
   });
   const toggleChannel = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => api.setChannelEnabled(id, enabled),
-    onSuccess: () => void refreshAll(queryClient),
+    onSuccess: (_result, variables) => {
+      setActionError(null);
+      setActionNotice(variables.enabled ? "渠道已设为可用，正在重新检测" : "渠道已禁用");
+      void refreshAll(queryClient);
+    },
+    onError: (error) => {
+      setActionNotice(null);
+      setActionError(error instanceof Error ? error.message : "渠道状态更新失败，请重试。");
+    },
   });
   const reorderChannels = useMutation({
     mutationFn: (channelIds: string[]) => api.reorderChannels(channelIds),
@@ -140,6 +171,7 @@ export default function App() {
     }).catch((error: unknown) => {
       if (active && error instanceof ApiError && error.status === 401) {
         clearAdminSession();
+        setDeletedChannelRecords([]);
         setAuthenticated(false);
       }
     });
@@ -150,6 +182,7 @@ export default function App() {
     if (!authenticated || !authError) return;
     clearAdminSession();
     queryClient.clear();
+    setDeletedChannelRecords([]);
     setAuthenticated(false);
     setAdminUsername("管理员");
   }, [authenticated, authError, queryClient]);
@@ -174,6 +207,7 @@ export default function App() {
   }
 
   function authenticatedSuccessfully(username: string) {
+    setDeletedChannelRecords([]);
     setAdminUsername(username);
     setAuthenticated(true);
     void queryClient.resetQueries();
@@ -181,6 +215,7 @@ export default function App() {
 
   function logout() {
     clearAdminSession();
+    setDeletedChannelRecords([]);
     setAuthenticated(false);
     setAdminUsername("管理员");
     queryClient.clear();
@@ -189,11 +224,21 @@ export default function App() {
   function requestDelete(channel: Channel) {
     if (!window.confirm(`确定删除渠道“${channel.name}”吗？该渠道的模型路由也会被删除。`)) return;
     setActionError(null);
-    removeChannel.mutate(channel.id);
+    removeChannel.mutate({
+      id: channel.id,
+      record: {
+        id: channel.id,
+        name: channel.name,
+        status: channel.status,
+        isolationReason: channel.isolationReason,
+        consecutiveFailures: channel.consecutiveFailures,
+      },
+    });
   }
 
-  function toggle(channel: Channel) {
-    toggleChannel.mutate({ id: channel.id, enabled: !channel.enabled });
+  function toggle(channel: Channel, enabled = !channel.enabled) {
+    setActionError(null);
+    toggleChannel.mutate({ id: channel.id, enabled });
   }
 
   async function copyBaseUrl() {
@@ -240,8 +285,8 @@ export default function App() {
         {view !== "checkin" && failed && !authError ? <ErrorState error={failed} onRetry={refreshed} /> : null}
         {view !== "checkin" && !loading && !failed && status.data && channels.data && pools.data && usage.data ? (
           <>
-            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} /> : null}
-            {view === "channels" ? <ChannelsView channels={channels.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} onRefreshBalances={() => refreshBalances.mutate()} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} onAddChannel={() => setProviderOpen(true)} /> : null}
+            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} /> : null}
+            {view === "channels" ? <ChannelsView channels={channels.data} deletedChannelRecords={deletedChannelRecords} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} onRefreshBalances={() => refreshBalances.mutate()} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} onAddChannel={() => setProviderOpen(true)} /> : null}
             {view === "pools" ? <PoolsView pools={pools.data} onAddRoute={() => setAliasOpen(true)} /> : null}
             {view === "usage" ? <UsageView usage={usage.data} window={usageWindow} onWindowChange={setUsageWindow} /> : null}
             {view === "requests" ? <RequestsView page={requests.data} filters={requestFilters} refreshInterval={requestRefreshInterval} onRefreshIntervalChange={setRequestRefreshInterval} onFilterChange={(next) => setRequestFilters({ ...next, offset: 0 })} onRefresh={() => void requests.refetch()} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} /> : null}
@@ -327,7 +372,7 @@ function Overview({
   onProbe: (id: string) => void;
   onEdit: (channel: Channel) => void;
   onDelete: (channel: Channel) => void;
-  onToggle: (channel: Channel) => void;
+  onToggle: (channel: Channel, enabled?: boolean) => void;
   togglingId: string | null;
   deletingId: string | null;
   onReorder: (channelIds: string[]) => Promise<void>;
@@ -465,7 +510,7 @@ function PoolHealthLegend() {
   );
 }
 
-function ChannelsView({ channels, syncingBalanceId, balanceRefreshPending, onSyncBalance, onRefreshBalances, probingId, onProbe, onEdit, onDelete, onToggle, togglingId, deletingId, onReorder, onAddChannel }: { channels: Channel[]; syncingBalanceId: number | null; balanceRefreshPending: boolean; onSyncBalance: (siteId: number) => void; onRefreshBalances: () => void; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel) => void; togglingId: string | null; deletingId: string | null; onReorder: (channelIds: string[]) => Promise<void>; onAddChannel: () => void }) {
+function ChannelsView({ channels, deletedChannelRecords, syncingBalanceId, balanceRefreshPending, onSyncBalance, onRefreshBalances, probingId, onProbe, onEdit, onDelete, onToggle, togglingId, deletingId, onReorder, onAddChannel }: { channels: Channel[]; deletedChannelRecords: DeletedChannelRecord[]; syncingBalanceId: number | null; balanceRefreshPending: boolean; onSyncBalance: (siteId: number) => void; onRefreshBalances: () => void; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel, enabled?: boolean) => void; togglingId: string | null; deletingId: string | null; onReorder: (channelIds: string[]) => Promise<void>; onAddChannel: () => void }) {
   return (
     <div className="view-stack">
       <section className="channel-summary">
@@ -479,7 +524,7 @@ function ChannelsView({ channels, syncingBalanceId, balanceRefreshPending, onSyn
         <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
       </section>
       <section className="surface detail-list">
-        <SectionHead title="隔离详情" meta="自动熔断状态" />
+        <SectionHead title="隔离详情" meta={deletedChannelRecords.length > 0 ? `自动熔断状态 · 已删除 ${deletedChannelRecords.length} 条` : "自动熔断状态"} />
         {channels.filter((channel) => channel.status === "isolated" || channel.status === "degraded").map((channel) => (
           <div className="detail-row" key={channel.id}>
             <ShieldAlert size={17} />
@@ -487,6 +532,14 @@ function ChannelsView({ channels, syncingBalanceId, balanceRefreshPending, onSyn
             <span>连续失败 {channel.consecutiveFailures} 次</span>
           </div>
         ))}
+        {deletedChannelRecords.map((record) => (
+          <div className="detail-row detail-row-deleted" key={`${record.id}-${record.deletedAt}`}>
+            <Trash2 size={17} />
+            <div><strong>{record.name}</strong><span>已删除 · 删除前{formatChannelStatus(record.status)} · {record.isolationReason ? translateReason(record.isolationReason) : "无隔离原因"}</span></div>
+            <time dateTime={record.deletedAt}>{formatDateTime(record.deletedAt)}</time>
+          </div>
+        ))}
+        {channels.every((channel) => channel.status !== "isolated" && channel.status !== "degraded") && deletedChannelRecords.length === 0 ? <div className="detail-empty">暂无隔离或删除记录</div> : null}
       </section>
     </div>
   );
@@ -1146,6 +1199,17 @@ function formatKnownBalance(channels: Channel[]) {
   if (knownBalances.length === 0) return "—";
   const total = knownBalances.reduce((sum, balance) => sum + balance, 0);
   return `$${total.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 8 })}`;
+}
+
+function formatChannelStatus(status: Channel["status"]) {
+  const labels: Record<Channel["status"], string> = {
+    healthy: "可用",
+    degraded: "降级",
+    isolated: "已隔离",
+    pending: "检测中",
+    disabled: "已禁用",
+  };
+  return labels[status];
 }
 
 function translateReason(reason: string | null) {

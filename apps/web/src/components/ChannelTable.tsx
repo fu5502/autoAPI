@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronRight, Copy, GripVertical, Pause, Pencil, Play, RefreshCw, Trash2, WalletCards } from "lucide-react";
 import type { Channel } from "../types";
 import { getAdminToken } from "../api";
@@ -26,7 +26,7 @@ export function ChannelTable({
   onProbe: (id: string) => void;
   onEdit: (channel: Channel) => void;
   onDelete: (channel: Channel) => void;
-  onToggle: (channel: Channel) => void;
+  onToggle: (channel: Channel, enabled?: boolean) => void;
   togglingId: string | null;
   deletingId: string | null;
   onReorder: (channelIds: string[]) => Promise<void>;
@@ -160,7 +160,7 @@ export function ChannelTable({
                 <td><span className="channel-model-count">{channel.models.length}</span></td>
                 <td><strong className="channel-routing-number">{channel.priority}</strong></td>
                 <td><span className="channel-routing-number">{channel.weight}</span></td>
-                <td><StatusDot status={channel.status} /></td>
+                <td><ChannelStatusControl channel={channel} pending={togglingId === channel.id} onToggle={onToggle} /></td>
                 <td><span className="mono subtle">{channel.protocol}</span></td>
                 <td>{formatBalance(channel, onSyncBalance, syncingBalanceId, balanceRefreshPending)}</td>
                 <td>{channel.lastLatencyMs === null ? "—" : `${channel.lastLatencyMs} ms`}</td>
@@ -197,6 +197,75 @@ export function ChannelTable({
       </table>
     </div>
   );
+}
+
+function ChannelStatusControl({ channel, pending, onToggle }: { channel: Channel; pending: boolean; onToggle: (channel: Channel, enabled?: boolean) => void }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function closeOnOutside(event: PointerEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener("pointerdown", closeOnOutside);
+    return () => document.removeEventListener("pointerdown", closeOnOutside);
+  }, [open]);
+
+  if (channel.status !== "isolated") return <StatusDot status={channel.status} />;
+
+  function choose(enabled: boolean) {
+    setOpen(false);
+    onToggle(channel, enabled);
+  }
+
+  return (
+    <div className="channel-status-cell" ref={menuRef}>
+      <button
+        className="channel-status-trigger"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`${channel.name}已隔离，修改渠道状态`}
+        title="点击修改渠道状态"
+        disabled={pending}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((current) => !current);
+        }}
+      >
+        <StatusDot status={channel.status} />
+        <ChevronDown size={13} aria-hidden="true" />
+      </button>
+      <IsolationCountdown until={channel.cooldownUntil} />
+      {open ? <div className="channel-status-menu" role="menu">
+        <button type="button" role="menuitem" disabled={pending} onClick={() => choose(false)}>禁用</button>
+        <button type="button" role="menuitem" disabled={pending} onClick={() => choose(true)}>可用</button>
+      </div> : null}
+    </div>
+  );
+}
+
+function IsolationCountdown({ until }: { until: string | null }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!until) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [until]);
+
+  const expiresAt = until ? Date.parse(until) : Number.NaN;
+  const remainingMs = Number.isFinite(expiresAt) ? Math.max(0, expiresAt - now) : null;
+  const label = remainingMs === null ? "等待重新检测" : remainingMs > 0 ? `重试 ${formatCountdown(remainingMs)}` : "等待重新检测";
+  return <span className="isolation-countdown" aria-label={`隔离状态${label}`}>{label}</span>;
+}
+
+function formatCountdown(valueMs: number) {
+  const totalSeconds = Math.ceil(valueMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function ChannelSiteIcon({ channel }: { channel: Channel }) {
