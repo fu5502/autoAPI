@@ -85,6 +85,11 @@ jobs:
           set -euo pipefail
           docker save "$IMAGE_TAG" | gzip -1 | ssh -o BatchMode=yes -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" 'gunzip | docker load'
 
+      - name: Update compose definition
+        run: |
+          set -euo pipefail
+          scp -o BatchMode=yes -P "$DEPLOY_PORT" docker-compose.yml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/docker-compose.yml"
+
       - name: Restart application with transferred image
         run: |
           set -euo pipefail
