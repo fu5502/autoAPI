@@ -45,6 +45,16 @@
 
 本地授权助手失败时调用 `POST /auth-assistant/fail`，使用 `X-AutoAPI-Assistant-Token` 和配对任务 ID 上报失败原因。扩展弹窗可以复用当前自动授权任务作为手动同步兜底；授权任务只能使用一次，有效期 10 分钟。服务重启、取消、关闭登录页或超时后需要在后台重新发起授权。扩展目录为 `apps/auth-assistant`，可在 Chrome/Edge 的开发者模式中以“加载已解压的扩展程序”安装。
 
+## 签到执行与终止
+
+- `POST /admin/checkin/checkin/run`：启动签到任务。请求体支持 `siteIds` 和 `operation`，`operation` 可选 `checkin` 或 `balance_refresh`，分别对应“一键签到”和“一键刷新”；省略时按站点模式自动判断。
+- `POST /admin/checkin/runs/:id/cancel`：终止整个执行任务。
+- `POST /admin/checkin/runs/:id/sites/:siteId/cancel`：只终止当前执行中的站点，任务继续处理后续站点。
+- `GET /admin/checkin/runs/:id`：读取执行任务和已产生结果。
+- `GET /admin/checkin/progress/:id`：读取实时执行日志。
+
+签到与余额刷新使用站点级硬超时：单个站点浏览器任务最多执行 15 秒；超时或手动终止时会关闭当前页面，必要时强制结束浏览器进程，并清理该站点的 `running` 状态。
+
 ## Add a model route
 
 `POST /admin/model-aliases`
