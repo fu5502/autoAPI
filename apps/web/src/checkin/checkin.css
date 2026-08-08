@@ -129,6 +129,7 @@
 .checkin-module .amount{ font-variant-numeric: tabular-nums; }
 .checkin-module .amount.positive{ color: var(--green); font-weight: 650; }
 .checkin-module .reward-cell{ display: grid; gap: 3px; font-variant-numeric: tabular-nums; }
+.checkin-module .reward-cell.static{ cursor: default; }
 .checkin-module .reward-cell strong{ color: var(--subtle); font-size: 10px; }
 .checkin-module .reward-cell strong.today{ color: var(--green); }
 .checkin-module .reward-cell strong.previous{ color: var(--amber); }
