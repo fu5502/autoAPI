@@ -6,6 +6,36 @@ import { NewApiService } from './new-api.js'
 
 const databases: AppDatabase[] = []
 
+function createStorageBackedPage(
+  storedUser: { id: number; username: string; quota: number },
+  responseFor: (pathname: string) => unknown,
+) {
+  const requestedPaths: string[] = []
+  const navigatedTo: string[] = []
+  const page = {
+    goto: async (url: string) => {
+      navigatedTo.push(url)
+    },
+    evaluate: async (callback: unknown, input?: { pathname?: string }) => {
+      if (input?.pathname) {
+        requestedPaths.push(input.pathname)
+        return responseFor(input.pathname)
+      }
+      const source = String(callback)
+      if (source.includes('document.title')) return { title: 'Dashboard', text: '' }
+      if (source.includes('localStorage.length')) return [storedUser.id]
+      if (source.includes("getItem('user')") || source.includes('getItem("user")')) return storedUser
+      return null
+    },
+  }
+  return { page, requestedPaths, navigatedTo }
+}
+
+function preserveSiteResult(database: AppDatabase, siteId: number, result: Awaited<ReturnType<NewApiService['checkinSite']>>) {
+  const { id: _id, siteName: _siteName, ...storedResult } = result
+  database.applyResult(siteId, storedResult)
+}
+
 afterEach(() => {
   for (const database of databases.splice(0)) database.close()
 })
@@ -802,5 +832,92 @@ describe('NewApiService known balance-only sites', () => {
     })
     expect(navigatedTo).toEqual(['https://anyrouter.top/dashboard'])
     expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
+  })
+})
+
+describe('NewApiService keeps valid sessions on proxy error pages', () => {
+  it('keeps Any Router valid when the dashboard APIs return an HTML 403', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('Any Router', 'https://anyrouter.top')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 500_000 })
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const { page, requestedPaths, navigatedTo } = createStorageBackedPage(
+      { id: 9, username: 'anyrouter-user', quota: 2_000_000 },
+      () => ({ httpStatus: 403, contentType: 'text/html; charset=UTF-8', success: false, message: '站点要求浏览器验证，请人工处理' }),
+    )
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 2_000_000, loginVerified: true })
+    expect(navigatedTo).toEqual(['https://anyrouter.top/dashboard'])
+    expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
+    preserveSiteResult(database, site.id, result)
+    expect(database.getSite(site.id)?.authStatus).toBe('valid')
+  })
+
+  it('keeps 42 API valid when check-in endpoints return an HTML 404', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('42 API', 'https://api.42w.shop')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid' })
+    const { page, requestedPaths } = createStorageBackedPage(
+      { id: 42, username: 'forty-two', quota: 1_234_000 },
+      () => ({ httpStatus: 404, contentType: 'text/html; charset=UTF-8', success: false, message: '站点返回了非 JSON 响应' }),
+    )
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const result = await service.checkinSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({ status: 'failed', loginVerified: true })
+    expect(requestedPaths).toEqual(['/api/status', '/api/user/self', '/api/user/self', expect.stringMatching(/^\/api\/user\/checkin\?month=/)])
+    preserveSiteResult(database, site.id, result)
+    expect(database.getSite(site.id)?.authStatus).toBe('valid')
+  })
+
+  it('keeps 黑与白福利站 NEXT valid when the user endpoint returns an HTML 403', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('黑与白福利站 NEXT', 'https://cdk.hybgzs.com')
+    database.updateSiteAuth(site.id, { adapter: 'hybgzs-welfare', authStatus: 'valid' })
+    const { page, requestedPaths } = createStorageBackedPage(
+      { id: 1, username: 'unused', quota: 1 },
+      () => ({ httpStatus: 403, contentType: 'text/html; charset=UTF-8', success: false, message: '站点要求浏览器验证，请人工处理' }),
+    )
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({ status: 'failed', loginVerified: true })
+    expect(requestedPaths).toEqual(['/api/user/info'])
+    preserveSiteResult(database, site.id, result)
+    expect(database.getSite(site.id)?.authStatus).toBe('valid')
+  })
+
+  it('marks a JSON 401 as an actual authentication failure', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('黑与白福利站 NEXT', 'https://cdk.hybgzs.com')
+    database.updateSiteAuth(site.id, { adapter: 'hybgzs-welfare', authStatus: 'valid' })
+    const { page } = createStorageBackedPage(
+      { id: 1, username: 'unused', quota: 1 },
+      () => ({ httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }),
+    )
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({ status: 'manual_required', loginVerified: false, message: '登录状态已失效，请重新授权' })
+    preserveSiteResult(database, site.id, result)
+    expect(database.getSite(site.id)?.authStatus).toBe('manual_required')
   })
 })

@@ -61,6 +61,10 @@ interface ModernAccessTokenObserver {
   dispose(): void
 }
 
+interface AuthenticationProbeState {
+  definitiveFailure: boolean
+}
+
 interface NewApiBalanceRead {
   auth: RemoteAuth
   balance: number
@@ -224,6 +228,7 @@ export class NewApiService {
 
   private readonly interactiveAuthorizationEnabled: boolean
   private readonly modernAccessTokens = new Map<number, ModernAccessToken>()
+  private authenticationProbe: AuthenticationProbeState | null = null
 
   constructor(
     private readonly db: AppDatabase,
@@ -236,6 +241,41 @@ export class NewApiService {
   }
 
   private readonly authAssistant: AuthAssistantService | null
+
+  private beginAuthenticationProbe(): AuthenticationProbeState {
+    const probe = { definitiveFailure: false }
+    this.authenticationProbe = probe
+    return probe
+  }
+
+  private noteAuthenticationResponse(response: RemoteResponse): void {
+    const probe = this.authenticationProbe ?? this.beginAuthenticationProbe()
+    if (isDefinitiveAuthenticationResponse(response)) probe.definitiveFailure = true
+  }
+
+  private loginRemainsValid(site: Site): boolean {
+    return site.authStatus === 'valid' && !this.authenticationProbe?.definitiveFailure
+  }
+
+  private authenticationRequiredResult(
+    site: Site,
+    runId: number,
+    startedAt: string,
+    values: {
+      money?: ReturnType<typeof deriveMoneySettings>
+      beforeRaw?: number | null
+    } = {},
+  ): CheckinResult {
+    const loginVerified = this.loginRemainsValid(site)
+    return this.makeResult(
+      site,
+      runId,
+      startedAt,
+      loginVerified ? 'failed' : 'manual_required',
+      loginVerified ? '站点请求暂时不可用，已保留当前登录状态' : '登录状态已失效，请重新授权',
+      { ...values, loginVerified },
+    )
+  }
 
   private async applyImportedCookies(context: BrowserContext, site: Site): Promise<BrowserAuthSnapshot | null> {
     return this.authAssistant?.applyToContext(context, site.id) ?? null
@@ -665,10 +705,15 @@ export class NewApiService {
     this.db.markSiteRunning(site.id)
     try {
       return await this.browser.run({ interactive: isHybgzsWelfareSite(site.baseUrl) || site.adapter === 'hybgzs-welfare' }, async (context, page) => {
+        this.beginAuthenticationProbe()
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.openImportedSitePage(context, page, site)
         const challenge = await detectChallenge(page)
-        if (challenge) return this.makeResult(site, runId, startedAt, 'manual_required', challenge)
+        if (challenge) {
+          return this.makeResult(site, runId, startedAt, 'manual_required', challenge, {
+            loginVerified: this.loginRemainsValid(site),
+          })
+        }
 
         if (isChyTrafficSite(site.baseUrl)) {
           return this.checkinChyTrafficSite(page, site, runId, startedAt)
@@ -707,12 +752,12 @@ export class NewApiService {
             beforeRaw: site.lastBalanceRaw,
             afterRaw: balanceRead?.balance ?? site.lastBalanceRaw,
             money,
-            loginVerified: balanceRead !== null,
+            loginVerified: balanceRead !== null || this.loginRemainsValid(site),
           })
         }
 
         const auth = await this.detectAuthentication(page, site.legacyUserId, requestTimeoutMs)
-        if (!auth) return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权')
+        if (!auth) return this.authenticationRequiredResult(site, runId, startedAt)
         if (auth.adapter === 'local-api') {
           return this.checkinLocalApiSite(page, site, runId, startedAt, auth, requestTimeoutMs)
         }
@@ -729,11 +774,16 @@ export class NewApiService {
         const checkinStatus = await pageRequest<CheckinStatusData>(page, `/api/user/checkin?month=${month}`, 'GET', authHeaders, requestTimeoutMs)
         if (!checkinStatus.success) {
           const message = checkinStatus.message || '无法读取签到状态'
-          if (isManualMessage(message) || checkinStatus.httpStatus === 401 || checkinStatus.httpStatus === 403) {
-            return this.makeResult(site, runId, startedAt, 'manual_required', message, { beforeRaw, money })
+          const definitiveFailure = isDefinitiveAuthenticationFailure(checkinStatus) || isLoginRelatedMessage(message)
+          if (isManualMessage(message) || definitiveFailure) {
+            return this.makeResult(site, runId, startedAt, 'manual_required', message, {
+              beforeRaw,
+              money,
+              loginVerified: !definitiveFailure,
+            })
           }
-          if (message.includes('未启用')) return this.makeResult(site, runId, startedAt, 'disabled', message, { beforeRaw, money })
-          return this.makeResult(site, runId, startedAt, 'failed', message, { beforeRaw, money })
+          if (message.includes('未启用')) return this.makeResult(site, runId, startedAt, 'disabled', message, { beforeRaw, money, loginVerified: true })
+          return this.makeResult(site, runId, startedAt, 'failed', message, { beforeRaw, money, loginVerified: true })
         }
 
         const todayRecord = findTodayRecord(checkinStatus.data?.stats?.records)
@@ -764,11 +814,16 @@ export class NewApiService {
           const message = checkin.message || '签到失败'
           // 签到接口报错时，只有提示与登录/授权相关才认为登录失效；验证码之类的
           // 报错说明登录仍有效，只是这一步需要人工。
-          const loginVerified = !isLoginRelatedMessage(message) && ![401, 403].includes(checkin.httpStatus)
-          return this.makeResult(site, runId, startedAt, isManualMessage(message) ? 'manual_required' : 'failed', message, { beforeRaw, money, loginVerified })
+          const definitiveFailure = isDefinitiveAuthenticationFailure(checkin) || isLoginRelatedMessage(message)
+          return this.makeResult(site, runId, startedAt, isManualMessage(message) || definitiveFailure ? 'manual_required' : 'failed', message, {
+            beforeRaw,
+            money,
+            loginVerified: !definitiveFailure,
+          })
         }
 
         const afterUserResponse = await pageRequest<unknown>(page, '/api/user/self', 'GET', authHeaders, requestTimeoutMs)
+        this.noteAuthenticationResponse(afterUserResponse)
         const afterUser = afterUserResponse.success ? normalizeNewApiUser(afterUserResponse.data) : null
         const afterRaw = afterUser ? newApiUserBalance(afterUser) : null
         return this.makeResult(site, runId, startedAt, 'success', checkin.message || '签到成功', {
@@ -791,6 +846,7 @@ export class NewApiService {
     this.db.markSiteRunning(site.id)
     try {
       return await this.browser.run({ interactive: false }, async (context, page) => {
+        this.beginAuthenticationProbe()
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.applyImportedCookies(context, site)
         if (isTrueSotaSite(site.baseUrl)) {
@@ -808,7 +864,7 @@ export class NewApiService {
           await this.openImportedStorage(page, site)
           const auth = await this.detectHybgzsWelfareAuthentication(page, requestTimeoutMs)
           if (!auth) {
-            return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money: hybgzsWelfareMoney })
+            return this.authenticationRequiredResult(site, runId, startedAt, { money: hybgzsWelfareMoney })
           }
           const balance = await this.readHybgzsWelfareBalance(page, requestTimeoutMs)
           if (balance === null) {
@@ -825,9 +881,7 @@ export class NewApiService {
         if (site.adapter === 'fengwind-welfare' || isFengwindWelfareSite(site.baseUrl)) {
           const balance = await this.readFengwindMainSiteBalance(page, requestTimeoutMs)
           if (balance === null) {
-            return this.makeResult(site, runId, startedAt, 'manual_required', '无法读取 Fengwind 主站额度，请重新授权', {
-              money: fengwindWelfareMoney,
-            })
+            return this.authenticationRequiredResult(site, runId, startedAt, { money: fengwindWelfareMoney })
           }
           return this.makeResult(site, runId, startedAt, 'disabled', '自动签到已关闭，余额已刷新', {
             beforeRaw: site.lastBalanceRaw,
@@ -852,12 +906,16 @@ export class NewApiService {
         // SPA shell is behind a browser-verification page (for example Aihub).
         // Try the imported bearer token before treating that shell as a
         // manual-only challenge.
-        if (challenge && !sub2ApiSite) return this.makeResult(site, runId, startedAt, 'manual_required', challenge)
+        if (challenge && !sub2ApiSite) {
+          return this.makeResult(site, runId, startedAt, 'manual_required', challenge, {
+            loginVerified: this.loginRemainsValid(site),
+          })
+        }
 
         if (isChyTrafficSite(site.baseUrl)) {
           const traffic = await readChyTrafficPage(page)
           if (!traffic.authenticated) {
-            return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money: chyTrafficMoney })
+            return this.authenticationRequiredResult(site, runId, startedAt, { money: chyTrafficMoney })
           }
           if (traffic.stats.remaining === null) {
             return this.makeResult(site, runId, startedAt, 'failed', '无法读取站点剩余流量', { money: chyTrafficMoney })
@@ -873,7 +931,13 @@ export class NewApiService {
           const auth = await this.detectSub2ApiAuthentication(page, requestTimeoutMs)
           const money = moneyForSub2ApiSite(site)
           if (!auth) {
-            return this.makeResult(site, runId, startedAt, 'manual_required', challenge ?? '登录状态已失效，请重新授权', { money })
+            if (challenge) {
+              return this.makeResult(site, runId, startedAt, 'manual_required', challenge, {
+                money,
+                loginVerified: this.loginRemainsValid(site),
+              })
+            }
+            return this.authenticationRequiredResult(site, runId, startedAt, { money })
           }
           const balance = numberOrNull(auth.user.balance)
           if (balance === null) {
@@ -910,19 +974,22 @@ export class NewApiService {
             beforeRaw: site.lastBalanceRaw,
             afterRaw: balanceRead?.balance ?? site.lastBalanceRaw,
             money,
-            loginVerified: balanceRead !== null,
+            loginVerified: balanceRead !== null || this.loginRemainsValid(site),
           })
         }
 
         const auth = await this.detectAuthentication(page, site.legacyUserId, requestTimeoutMs)
-        if (!auth) return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权')
+        if (!auth) return this.authenticationRequiredResult(site, runId, startedAt)
 
         if (auth.adapter === 'local-api') {
           const status = await pageRequest<LocalApiCheckinStatus>(page, '/user/api/checkin', 'GET', buildAuthHeaders(auth), requestTimeoutMs)
+          this.noteAuthenticationResponse(status)
           if (!status.success) {
             const message = status.message || '无法读取 LocalAPI 积分余额'
-            return this.makeResult(site, runId, startedAt, [401, 403].includes(status.httpStatus) ? 'manual_required' : 'failed', message, {
+            const definitiveFailure = isDefinitiveAuthenticationFailure(status) || isLoginRelatedMessage(message)
+            return this.makeResult(site, runId, startedAt, isManualMessage(message) || definitiveFailure ? 'manual_required' : 'failed', message, {
               money: { currencySymbol: 'P', quotaPerUnit: 1, displayScale: 1 },
+              loginVerified: !definitiveFailure,
             })
           }
           const balance = numberOrNull(status.data?.points?.balance)
@@ -1015,10 +1082,12 @@ export class NewApiService {
     const headers = buildAuthHeaders(auth)
     const money = { currencySymbol: 'P', quotaPerUnit: 1, displayScale: 1 }
     const before = await pageRequest<LocalApiCheckinStatus>(page, '/user/api/checkin', 'GET', headers, timeoutMs)
+    this.noteAuthenticationResponse(before)
     if (!before.success) {
       const message = before.message || '无法读取 LocalAPI 签到状态'
-      const status = before.httpStatus === 401 || before.httpStatus === 403 ? 'manual_required' : 'failed'
-      return this.makeResult(site, runId, startedAt, status, message, { money })
+      const definitiveFailure = isDefinitiveAuthenticationFailure(before) || isLoginRelatedMessage(message)
+      const status: CheckinStatus = isManualMessage(message) || definitiveFailure ? 'manual_required' : 'failed'
+      return this.makeResult(site, runId, startedAt, status, message, { money, loginVerified: !definitiveFailure })
     }
 
     const beforePoints = numberOrNull(before.data?.points?.balance)
@@ -1039,8 +1108,15 @@ export class NewApiService {
     }
 
     const checkin = await pageRequest<LocalApiCheckinSuccess>(page, '/user/api/checkin', 'POST', headers, timeoutMs)
+    this.noteAuthenticationResponse(checkin)
     if (!checkin.success) {
-      return this.makeResult(site, runId, startedAt, 'failed', checkin.message || '签到失败', { beforeRaw: beforePoints, money })
+      const message = checkin.message || '签到失败'
+      const definitiveFailure = isDefinitiveAuthenticationFailure(checkin) || isLoginRelatedMessage(message)
+      return this.makeResult(site, runId, startedAt, isManualMessage(message) || definitiveFailure ? 'manual_required' : 'failed', message, {
+        beforeRaw: beforePoints,
+        money,
+        loginVerified: !definitiveFailure,
+      })
     }
     const afterPoints = numberOrNull(checkin.data?.status?.points?.balance)
     return this.makeResult(site, runId, startedAt, 'success', '签到成功', {
@@ -1061,7 +1137,7 @@ export class NewApiService {
     const money = moneyForSub2ApiSite(site)
     const auth = await this.detectSub2ApiAuthentication(page, timeoutMs)
     if (!auth) {
-      return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money })
+      return this.authenticationRequiredResult(site, runId, startedAt, { money })
     }
     this.db.updateSiteAuth(site.id, {
       adapter: 'sub2api',
@@ -1076,12 +1152,18 @@ export class NewApiService {
     const headers = { Authorization: `Bearer ${auth.accessToken}` }
     const beforeBalance = numberOrNull(auth.user.balance)
     const statusResponse = await pageRequest<Sub2ApiCheckinStatus>(page, '/checkin/api/status', 'GET', headers, timeoutMs)
+    this.noteAuthenticationResponse(statusResponse)
     if (!statusResponse.success) {
       const message = statusResponse.message || '无法读取 Sub2API 签到状态'
-      const status: CheckinStatus = [401, 403].includes(statusResponse.httpStatus) || isManualMessage(message)
+      const definitiveFailure = isDefinitiveAuthenticationFailure(statusResponse)
+      const status: CheckinStatus = definitiveFailure || isManualMessage(message)
         ? 'manual_required'
         : 'failed'
-      return this.makeResult(site, runId, startedAt, status, message, { beforeRaw: beforeBalance, money })
+      return this.makeResult(site, runId, startedAt, status, message, {
+        beforeRaw: beforeBalance,
+        money,
+        loginVerified: !definitiveFailure,
+      })
     }
 
     if (statusResponse.data?.config?.enabled === false) {
@@ -1099,12 +1181,18 @@ export class NewApiService {
     }
 
     const checkin = await pageRequest<Sub2ApiCheckinResult>(page, '/checkin/api/checkin', 'POST', headers, timeoutMs)
+    this.noteAuthenticationResponse(checkin)
     if (!checkin.success) {
       const message = checkin.message || '签到失败'
-      const status: CheckinStatus = [401, 403].includes(checkin.httpStatus) || isManualMessage(message)
+      const definitiveFailure = isDefinitiveAuthenticationFailure(checkin)
+      const status: CheckinStatus = definitiveFailure || isManualMessage(message)
         ? 'manual_required'
         : 'failed'
-      return this.makeResult(site, runId, startedAt, status, message, { beforeRaw: beforeBalance, money })
+      return this.makeResult(site, runId, startedAt, status, message, {
+        beforeRaw: beforeBalance,
+        money,
+        loginVerified: !definitiveFailure,
+      })
     }
 
     const reward = numberOrNull(checkin.data?.record?.reward_amount)
@@ -1128,7 +1216,7 @@ export class NewApiService {
   ): Promise<CheckinResult> {
     const auth = await this.detectFengwindWelfareAuthentication(page, timeoutMs)
     if (!auth) {
-      return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money: fengwindWelfareMoney })
+      return this.authenticationRequiredResult(site, runId, startedAt, { money: fengwindWelfareMoney })
     }
     this.db.updateSiteAuth(site.id, {
       adapter: 'fengwind-welfare',
@@ -1142,12 +1230,17 @@ export class NewApiService {
 
     const headers = { Authorization: `Bearer ${auth.accessToken}` }
     const statusResponse = await pageRequest<FengwindWelfareCheckinStatus>(page, '/api/checkin/status', 'GET', headers, timeoutMs)
+    this.noteAuthenticationResponse(statusResponse)
     if (!statusResponse.success) {
       const message = statusResponse.message || '无法读取 Fengwind 福利站签到状态'
-      const status: CheckinStatus = [401, 403].includes(statusResponse.httpStatus) || isManualMessage(message)
+      const definitiveFailure = isDefinitiveAuthenticationFailure(statusResponse)
+      const status: CheckinStatus = definitiveFailure || isManualMessage(message)
         ? 'manual_required'
         : 'failed'
-      return this.makeResult(site, runId, startedAt, status, message, { money: fengwindWelfareMoney })
+      return this.makeResult(site, runId, startedAt, status, message, {
+        money: fengwindWelfareMoney,
+        loginVerified: !definitiveFailure,
+      })
     }
     if (statusResponse.data?.enabled === false) {
       return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { money: fengwindWelfareMoney })
@@ -1164,14 +1257,19 @@ export class NewApiService {
     }
 
     const checkin = await pageRequest<FengwindWelfareCheckinResult>(page, '/api/checkin', 'POST', headers, timeoutMs)
+    this.noteAuthenticationResponse(checkin)
     if (!checkin.success) {
       const message = checkin.message || '签到失败'
-      const status: CheckinStatus = [401, 403].includes(checkin.httpStatus) || isManualMessage(message)
+      const definitiveFailure = isDefinitiveAuthenticationFailure(checkin)
+      const status: CheckinStatus = definitiveFailure || isManualMessage(message)
         ? 'manual_required'
         : isAlreadyCheckedMessage(message)
           ? 'already_checked'
           : 'failed'
-      return this.makeResult(site, runId, startedAt, status, message, { money: fengwindWelfareMoney })
+      return this.makeResult(site, runId, startedAt, status, message, {
+        money: fengwindWelfareMoney,
+        loginVerified: !definitiveFailure,
+      })
     }
 
     const reward = numberOrNull(
@@ -1200,7 +1298,7 @@ export class NewApiService {
     await page.goto(new URL('/gas-station/checkin', site.baseUrl).toString(), { waitUntil: 'domcontentloaded' })
     const auth = await this.detectHybgzsWelfareAuthentication(page, timeoutMs)
     if (!auth) {
-      return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money: hybgzsWelfareMoney })
+      return this.authenticationRequiredResult(site, runId, startedAt, { money: hybgzsWelfareMoney })
     }
 
     const beforeRaw = await this.readHybgzsWelfareBalance(page, timeoutMs)
@@ -1215,12 +1313,14 @@ export class NewApiService {
     })
 
     const config = await pageRequest<HybgzsWelfareCheckinConfig>(page, '/api/checkin/config', 'GET', {}, timeoutMs)
+    this.noteAuthenticationResponse(config)
     if (!config.success) {
       const message = config.message || '无法读取黑与白福利站签到状态'
-      return this.makeResult(site, runId, startedAt, [401, 403].includes(config.httpStatus) ? 'manual_required' : 'failed', message, {
+      const definitiveFailure = isDefinitiveAuthenticationFailure(config)
+      return this.makeResult(site, runId, startedAt, definitiveFailure || isManualMessage(message) ? 'manual_required' : 'failed', message, {
         beforeRaw,
         money: hybgzsWelfareMoney,
-        loginVerified: ![401, 403].includes(config.httpStatus),
+        loginVerified: !definitiveFailure,
       })
     }
     if (config.data?.hasCheckedInToday) {
@@ -1234,12 +1334,14 @@ export class NewApiService {
     }
 
     const status = await pageRequest<HybgzsWelfareCheckinStatus>(page, '/api/checkin/status', 'GET', {}, timeoutMs)
+    this.noteAuthenticationResponse(status)
     if (!status.success) {
       const message = status.message || '无法读取黑与白福利站签到配置'
-      return this.makeResult(site, runId, startedAt, [401, 403].includes(status.httpStatus) ? 'manual_required' : 'failed', message, {
+      const definitiveFailure = isDefinitiveAuthenticationFailure(status)
+      return this.makeResult(site, runId, startedAt, definitiveFailure || isManualMessage(message) ? 'manual_required' : 'failed', message, {
         beforeRaw,
         money: hybgzsWelfareMoney,
-        loginVerified: ![401, 403].includes(status.httpStatus),
+        loginVerified: !definitiveFailure,
       })
     }
     if (status.data?.enabled === false) {
@@ -1305,7 +1407,9 @@ export class NewApiService {
   }
 
   private async detectHybgzsWelfareAuthentication(page: Page, timeoutMs = 30_000): Promise<HybgzsWelfareUserInfo | null> {
+    this.beginAuthenticationProbe()
     const response = await pageRequest<HybgzsWelfareUserInfo>(page, '/api/user/info', 'GET', {}, timeoutMs)
+    this.noteAuthenticationResponse(response)
     if (!response.success || !response.data?.user?.id) return null
     return response.data
   }
@@ -1334,7 +1438,7 @@ export class NewApiService {
   ): Promise<CheckinResult> {
     const before = await readChyTrafficPage(page)
     if (!before.authenticated) {
-      return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money: chyTrafficMoney })
+      return this.authenticationRequiredResult(site, runId, startedAt, { money: chyTrafficMoney })
     }
 
     const beforeRemaining = before.stats.remaining
@@ -1362,6 +1466,7 @@ export class NewApiService {
       return this.makeResult(site, runId, startedAt, 'manual_required', challenge, {
         beforeRaw: beforeRemaining,
         money: chyTrafficMoney,
+        loginVerified: this.loginRemainsValid(site),
       })
     }
 
@@ -1406,15 +1511,20 @@ export class NewApiService {
     const statusResponse = await this.getRemoteStatus(page, timeoutMs)
     const auth = await this.detectAuthentication(page, site.legacyUserId, timeoutMs)
     if (!auth || auth.adapter === 'local-api') {
-      return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权')
+      return this.authenticationRequiredResult(site, runId, startedAt)
     }
 
     const money = deriveMoneySettings(statusResponse.data)
     const afterUser = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', buildAuthHeaders(auth), timeoutMs)
+    this.noteAuthenticationResponse(afterUser)
     if (!afterUser.success) {
       const message = afterUser.message || '页面打开后无法读取当前余额'
-      const status: CheckinStatus = [401, 403].includes(afterUser.httpStatus) ? 'manual_required' : 'failed'
-      return this.makeResult(site, runId, startedAt, status, message, { beforeRaw: site.lastBalanceRaw, money })
+      const definitiveFailure = isDefinitiveAuthenticationFailure(afterUser)
+      return this.makeResult(site, runId, startedAt, definitiveFailure ? 'manual_required' : 'failed', message, {
+        beforeRaw: site.lastBalanceRaw,
+        money,
+        loginVerified: !definitiveFailure,
+      })
     }
 
     const beforeRaw = site.lastBalanceRaw
@@ -1445,7 +1555,7 @@ export class NewApiService {
   ): Promise<CheckinResult> {
     const auth = await this.detectYiApiAuthentication(page, timeoutMs)
     if (!auth) {
-      return this.makeResult(site, runId, startedAt, 'manual_required', 'YiAPI 登录状态已失效，请重新授权', {
+      return this.authenticationRequiredResult(site, runId, startedAt, {
         beforeRaw: site.lastBalanceRaw,
         money: yiApiMoney,
       })
@@ -1490,7 +1600,7 @@ export class NewApiService {
     const beforeRaw = site.lastBalanceRaw
     const auth = await this.detectTrueSotaAuthentication(page, timeoutMs)
     if (!auth) {
-      return this.makeResult(site, runId, startedAt, 'manual_required', 'TrueSOTA 登录状态已失效，请重新授权', {
+      return this.authenticationRequiredResult(site, runId, startedAt, {
         beforeRaw,
         money: trueSotaMoney,
       })
@@ -1622,9 +1732,11 @@ export class NewApiService {
     allowModern = true,
     observedLegacyUserIds: Iterable<number> = [],
   ): Promise<RemoteAuth | null> {
+    this.beginAuthenticationProbe()
     const localApiToken = await page.evaluate(() => localStorage.getItem('localapi_user_token')).catch(() => null)
     if (typeof localApiToken === 'string' && localApiToken) {
       const response = await pageRequest<RemoteUser | { user?: RemoteUser }>(page, '/user/api/me', 'GET', { 'x-user-token': localApiToken }, timeoutMs)
+      this.noteAuthenticationResponse(response)
       if (response.success && response.data) {
         const payload = response.data as RemoteUser & { user?: RemoteUser }
         const user = payload.user ?? payload
@@ -1642,6 +1754,7 @@ export class NewApiService {
           { Authorization: `Bearer ${storedAccessToken}` },
           timeoutMs,
         )
+        this.noteAuthenticationResponse(self)
         const user = self.success ? normalizeNewApiUser(self.data) : null
         if (user) return { adapter: 'new-api-modern', accessToken: storedAccessToken, user }
       }
@@ -1674,9 +1787,24 @@ export class NewApiService {
 
     for (const userId of candidateIds) {
       const self = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', { 'New-API-User': String(userId) }, timeoutMs)
+      this.noteAuthenticationResponse(self)
       if (self.success && Number(self.data?.id) > 0) {
         return { adapter: 'new-api-legacy', legacyUserId: userId, user: self.data! }
       }
+    }
+
+    // A few reverse proxies reject automated API requests with an HTML 403/404
+    // even though the SPA already has a valid user session. Keep the persisted
+    // identity as a read-only fallback in that case; explicit JSON 401/403
+    // responses still take precedence and mark the session as invalid.
+    const storedUser = normalizeNewApiUser(await readStoredNewApiUser(page))
+    const storedUserId = numberOrNull(storedUser?.id)
+    if (
+      storedUser
+      && storedUserId !== null
+      && !this.authenticationProbe?.definitiveFailure
+    ) {
+      return { adapter: 'new-api-legacy', legacyUserId: storedUserId, user: storedUser }
     }
 
     if (!allowModern) return null
@@ -1684,6 +1812,7 @@ export class NewApiService {
       access_token?: string
       user?: RemoteUser
     }>(page, '/api/user/auth/refresh', 'POST', {}, timeoutMs)
+    this.noteAuthenticationResponse(modern)
     if (modern.success && modern.data?.access_token && modern.data.user) {
       return { adapter: 'new-api-modern', accessToken: modern.data.access_token, user: modern.data.user }
     }
@@ -1691,11 +1820,13 @@ export class NewApiService {
   }
 
   private async detectYiApiAuthentication(page: Page, timeoutMs = 30_000): Promise<RemoteAuth | null> {
+    this.beginAuthenticationProbe()
     const accessToken = await readYiApiAccessToken(page)
     if (!accessToken) return null
     const headers = { Authorization: `Bearer ${accessToken}` }
     for (const pathname of ['/api/v1/user/profile', '/api/v1/auth/me']) {
       const response = await pageRequest<unknown>(page, pathname, 'GET', headers, timeoutMs)
+      this.noteAuthenticationResponse(response)
       if (!response.success) continue
       const user = normalizeYiApiUser(response.data)
       if (!user) continue
@@ -1705,12 +1836,14 @@ export class NewApiService {
   }
 
   private async detectTrueSotaAuthentication(page: Page, timeoutMs = 30_000): Promise<RemoteAuth | null> {
+    this.beginAuthenticationProbe()
     let accessToken = await readSub2ApiToken(page, 'access')
     const readUser = async (): Promise<RemoteAuth | null> => {
       if (!accessToken) return null
       const headers = { Authorization: `Bearer ${accessToken}` }
       for (const pathname of ['/api/v1/auth/me', '/api/v1/user/profile']) {
         const response = await pageRequest<unknown>(page, pathname, 'GET', headers, timeoutMs)
+        this.noteAuthenticationResponse(response)
         if (!response.success) continue
         const user = normalizeYiApiUser(response.data)
         if (!user) continue
@@ -1732,6 +1865,7 @@ export class NewApiService {
       timeoutMs,
       JSON.stringify({ refresh_token: refreshToken }),
     )
+    this.noteAuthenticationResponse(refreshed)
     const refreshedToken = refreshed.success ? (refreshed.data?.access_token || refreshed.data?.token) : null
     if (!refreshedToken) return null
     accessToken = refreshedToken
@@ -1743,6 +1877,7 @@ export class NewApiService {
     page: Page,
     timeoutMs = 30_000,
   ): Promise<{ accessToken: string; user: Sub2ApiUser } | null> {
+    this.beginAuthenticationProbe()
     let activeToken = await readSub2ApiToken(page, 'access')
     if (!activeToken) return null
 
@@ -1758,6 +1893,7 @@ export class NewApiService {
           { Authorization: `Bearer ${activeToken}` },
           timeoutMs,
         )
+        this.noteAuthenticationResponse(response)
         lastResponse = response
         if (response.httpStatus === 401) unauthorized = true
         if (!response.success) continue
@@ -1781,6 +1917,7 @@ export class NewApiService {
           timeoutMs,
           JSON.stringify({ refresh_token: refreshToken }),
         )
+        this.noteAuthenticationResponse(refreshed)
         if (refreshed.success && refreshed.data?.access_token) {
           activeToken = refreshed.data.access_token
           await page.evaluate(({ accessToken, refreshToken: nextRefreshToken }) => {
@@ -1798,6 +1935,7 @@ export class NewApiService {
     page: Page,
     timeoutMs = 30_000,
   ): Promise<{ accessToken: string; user: FengwindWelfareUser } | null> {
+    this.beginAuthenticationProbe()
     const accessToken = await page.evaluate(() => localStorage.getItem('welfare_token')?.trim() || null).catch(() => null)
     if (!accessToken) return null
     const response = await pageRequest<FengwindWelfareUser>(
@@ -1807,6 +1945,7 @@ export class NewApiService {
       { Authorization: `Bearer ${accessToken}` },
       timeoutMs,
     )
+    this.noteAuthenticationResponse(response)
     return response.success && response.data
       ? { accessToken, user: response.data }
       : null
@@ -2312,6 +2451,21 @@ async function readNewApiAccessToken(page: Page): Promise<string | null> {
   return typeof token === 'string' && token ? token : null
 }
 
+async function readStoredNewApiUser(page: Page): Promise<unknown> {
+  return page.evaluate(() => {
+    for (const storage of [localStorage, sessionStorage]) {
+      const rawUser = storage.getItem('user')
+      if (!rawUser || rawUser.length > 100_000) continue
+      try {
+        return JSON.parse(rawUser)
+      } catch {
+        // Ignore unrelated or partially-written storage values.
+      }
+    }
+    return null
+  }).catch(() => null)
+}
+
 async function readSub2ApiToken(page: Page, kind: 'access' | 'refresh'): Promise<string | null> {
   return page.evaluate((tokenKind) => {
     const keys = tokenKind === 'refresh'
@@ -2684,6 +2838,17 @@ function isManualMessage(message: string): boolean {
 // 验证码、人机验证这类是「登录正常但签到那一步要人工」，登录列应保持有效。
 function isLoginRelatedMessage(message: string): boolean {
   return /登录|登陆|未授权|重新授权|token|session|unauthorized|forbidden/i.test(message)
+}
+
+function isDefinitiveAuthenticationResponse(response: Pick<RemoteResponse, 'httpStatus' | 'contentType' | 'message'>): boolean {
+  if (response.httpStatus === 401) return true
+  if (response.httpStatus !== 403) return false
+  return response.contentType.toLowerCase().includes('json') && isLoginRelatedMessage(response.message ?? 'Forbidden')
+}
+
+function isDefinitiveAuthenticationFailure(response: Pick<RemoteResponse, 'httpStatus' | 'contentType' | 'message'>): boolean {
+  if (isDefinitiveAuthenticationResponse(response)) return true
+  return response.contentType.toLowerCase().includes('json') && isLoginRelatedMessage(response.message ?? '')
 }
 
 function isAlreadyCheckedMessage(message: string): boolean {
