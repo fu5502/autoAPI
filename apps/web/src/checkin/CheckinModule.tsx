@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import { createPortal } from 'react-dom'
 import {
   ArrowDownToLine,
+  ArrowLeftRight,
   Activity,
   Bell,
   CalendarDays,
@@ -765,6 +766,20 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
       setRefreshingBalanceSiteId(null)
     }
   }
+  const switchMode = async (site: Site) => {
+    const nextMode: CheckinMode = isBalanceOnlySite(site) ? 'checkin' : 'balance_only'
+    try {
+      const updated = await api.updateSite(site.id, { checkinMode: nextMode })
+      await onRefresh()
+      notify(
+        nextMode === 'balance_only' ? '已切换为仅刷新余额' : '已切换为自动签到',
+        `${updated.name} 后续${nextMode === 'balance_only' ? '只刷新余额，不执行签到' : '按自动签到任务执行'}`,
+        'success',
+      )
+    } catch (cause) {
+      notify('切换失败', cause instanceof Error ? cause.message : '未知错误', 'danger')
+    }
+  }
 
   const renderSiteTable = (group: SiteManagementGroup, groupSites: Site[]) => {
     const balanceOnly = group === 'relay'
@@ -784,7 +799,7 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
           <td><div className="site-balance-cell"><button type="button" className={`site-balance-button balance-value ${site.lastBalanceAmount === null ? 'empty' : isLowBalance(site.lastBalanceAmount) ? 'low' : ''}`} title={balanceOnly ? '刷新登录账号余额' : '仅刷新余额，不执行签到'} disabled={refreshingBalanceSiteId !== null} onClick={(event) => { event.stopPropagation(); void refreshBalance(site) }}>{refreshingBalanceSiteId === site.id ? <RefreshCw size={13} className="spin" /> : null}<span>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></button><small className="balance-refresh-time">{formatBalanceRefreshTime(site.lastBalanceUpdatedAt)}</small></div></td>
           <td><StatusBadge tone={importedSiteIds.includes(site.id) ? 'success' : 'neutral'}>{importedSiteIds.includes(site.id) ? '是' : '否'}</StatusBadge></td>
           <td><div className="switch-control"><button className={`toggle ${site.enabled ? 'on' : ''}`} role="switch" aria-checked={site.enabled} aria-label={`${site.enabled ? '停用' : '启用'} ${site.name} ${balanceOnly ? '自动刷新余额' : '自动签到'}`} onClick={() => toggle(site)}><span /></button><small>{site.enabled ? (balanceOnly ? '自动刷新' : '自动签到') : '已关闭'}</small></div></td>
-          <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton>{balanceOnly
+          <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title={balanceOnly ? '改为自动签到' : '改为仅刷新余额'} onClick={() => void switchMode(site)}><ArrowLeftRight size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton>{balanceOnly
             ? <RunLogPopover busy={refreshingBalanceSiteId === site.id || (Boolean(activeRunId) && site.lastStatus === 'running')} logs={progressByRun[activeRunId ?? -1] ?? []} siteId={site.id} label="余额刷新中"><IconButton title="刷新余额" onClick={() => void refreshBalance(site)} disabled={refreshingBalanceSiteId !== null || Boolean(activeRunId)}><RefreshCw size={16} className={refreshingBalanceSiteId === site.id ? 'spin' : undefined} /></IconButton></RunLogPopover>
             : <RunLogPopover busy={Boolean(activeRunId) && site.lastStatus === 'running'} logs={progressByRun[activeRunId ?? -1] ?? []} siteId={site.id} label="签到中"><IconButton title="立即签到" onClick={() => onRun([site.id])} disabled={Boolean(activeRunId) || refreshingBalanceSiteId !== null}>{Boolean(activeRunId) && site.lastStatus === 'running' ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}</IconButton></RunLogPopover>}<IconButton title={importedSiteIds.includes(site.id) ? '重新导入渠道池' : site.authStatus !== 'valid' ? '点击后先授权，授权成功后继续接入渠道或关联余额' : supportsAutomaticChannelImport(site) ? '导入渠道池' : '关联已有渠道并同步余额'} disabled={importingSiteId === site.id} onClick={() => void prepareImport(site)}><ArrowDownToLine size={16} className={importingSiteId === site.id ? 'spin' : undefined} /></IconButton><IconButton title="删除" danger onClick={() => remove(site)}><Trash2 size={16} /></IconButton></div></td>
         </tr>) : <tr className="management-empty-row"><td colSpan={9}>{query || filter !== 'all' ? '当前筛选条件下没有站点' : balanceOnly ? '暂无仅刷新余额的中转站' : '暂无支持签到的公益站'}</td></tr>}</tbody>
