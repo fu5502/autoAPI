@@ -280,6 +280,7 @@ export interface OfficialApiKeyExtraction {
 const chyTrafficMoney = { currencySymbol: 'GB', quotaPerUnit: 1, displayScale: 1 }
 const aihubMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const sub2ApiMoney = { currencySymbol: '白晶', quotaPerUnit: 1, displayScale: 1 }
+const gateAiMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const fengwindWelfareMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const hybgzsWelfareMoney = { currencySymbol: '$', quotaPerUnit: 500_000, displayScale: 1 }
 const yiApiMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
@@ -2864,16 +2865,24 @@ function isChyTrafficSite(baseUrl: string): boolean {
 }
 
 function isSub2ApiSite(baseUrl: string): boolean {
-  return hasExactHostname(baseUrl, 'token.dialoguedui.com') || isFastAiTokenSite(baseUrl) || isAihubSite(baseUrl)
+  return hasExactHostname(baseUrl, 'token.dialoguedui.com')
+    || isFastAiTokenSite(baseUrl)
+    || isAihubSite(baseUrl)
+    || isGateAiSite(baseUrl)
 }
 
 function isFastAiTokenSite(baseUrl: string): boolean {
   return hasExactHostname(baseUrl, 'fastaitoken.com') || hasExactHostname(baseUrl, 'www.fastaitoken.com')
 }
 
+function isGateAiSite(baseUrl: string): boolean {
+  return hasExactHostname(baseUrl, 'gateai.cc') || hasExactHostname(baseUrl, 'www.gateai.cc')
+}
+
 function moneyForSub2ApiSite(site: Site) {
   if (isFastAiTokenSite(site.baseUrl)) return fastAiTokenMoney
   if (isAihubSite(site.baseUrl)) return aihubMoney
+  if (isGateAiSite(site.baseUrl)) return gateAiMoney
   return sub2ApiMoney
 }
 

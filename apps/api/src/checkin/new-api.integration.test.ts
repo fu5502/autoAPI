@@ -730,6 +730,59 @@ describe('NewApiService 黑与白福利站签到', () => {
 })
 
 describe('NewApiService known balance-only sites', () => {
+  it('reads Home - AI Gateway through its Sub2API auth profile', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('Home - AI Gateway', 'https://gateai.cc')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid', lastBalanceRaw: 1 })
+    const requestedPaths: string[] = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          if (String(callback).includes('auth_token')) return 'gateai-access-token'
+          return { title: 'Home - AI Gateway', text: '' }
+        }
+        requestedPaths.push(input.pathname)
+        if (input.pathname === '/api/v1/auth/me') {
+          expect(input.headers?.Authorization).toBe('Bearer gateai-access-token')
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 88, username: 'gateai-user', balance: 9.99 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const run = database.startRun('manual')
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      balanceAfterRaw: 9.99,
+      balanceAfterAmount: 9.99,
+      loginVerified: true,
+    })
+    expect(requestedPaths).toEqual(['/api/v1/auth/me'])
+    expect(database.getSite(site.id)).toMatchObject({
+      adapter: 'sub2api',
+      authStatus: 'valid',
+      username: 'gateai-user',
+      currencySymbol: '$',
+      quotaPerUnit: 1,
+      lastBalanceRaw: 9.99,
+      lastBalanceAmount: 9.99,
+    })
+  })
+
   it('reads Aihub.top through its Sub2API auth profile behind a browser challenge', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
