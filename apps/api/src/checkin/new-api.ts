@@ -287,7 +287,6 @@ const yiApiMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const trueSotaMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const fastAiTokenMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const fengwindMainSiteUrl = 'https://api.fengwind.com/'
-const siteOperationTimeoutMs = 15_000
 
 export class NewApiService {
   readonly authSessions = new Map<string, AuthSessionState>()
@@ -296,6 +295,10 @@ export class NewApiService {
   private readonly modernAccessTokens = new Map<number, ModernAccessToken>()
   private authenticationProbe: AuthenticationProbeState | null = null
   private readonly progress: RunProgressLog | null
+
+  private siteOperationTimeoutMs() {
+    return Math.max(1, this.db.getSettings().siteTimeoutSeconds * 1000)
+  }
 
   constructor(
     private readonly db: AppDatabase,
@@ -576,7 +579,7 @@ export class NewApiService {
     state.status = 'cancelled'
     state.message = '授权已取消'
     state.completedAt = nowIso()
-    await this.browser.cancelActive()
+    await this.browser.cancelActive({ force: false })
     const site = this.db.getSite(state.siteId)
     if (site) {
       this.db.updateSiteAuth(site.id, {
@@ -806,7 +809,7 @@ export class NewApiService {
     }
   }
 
-  async checkinSite(site: Site, runId: number): Promise<CheckinResult> {
+  async checkinSite(site: Site, runId: number, siteTimeoutMs = this.siteOperationTimeoutMs()): Promise<CheckinResult> {
     const startedAt = nowIso()
     const requestTimeoutMs = this.db.getSettings().requestTimeoutSeconds * 1000
     this.db.markSiteRunning(site.id)
@@ -814,7 +817,7 @@ export class NewApiService {
       return await this.browser.run({
         interactive: isHybgzsWelfareSite(site.baseUrl) || site.adapter === 'hybgzs-welfare',
         closeBrowserWhenDone: true,
-        timeoutMs: siteOperationTimeoutMs,
+        timeoutMs: siteTimeoutMs,
       }, async (context, page) => {
         this.beginAuthenticationProbe()
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
@@ -968,12 +971,12 @@ export class NewApiService {
     }
   }
 
-  async refreshBalanceSite(site: Site, runId: number): Promise<CheckinResult> {
+  async refreshBalanceSite(site: Site, runId: number, siteTimeoutMs = this.siteOperationTimeoutMs()): Promise<CheckinResult> {
     const startedAt = nowIso()
     const requestTimeoutMs = this.db.getSettings().requestTimeoutSeconds * 1000
     this.db.markSiteRunning(site.id)
     try {
-      return await this.browser.run({ interactive: false, closeBrowserWhenDone: true, timeoutMs: siteOperationTimeoutMs }, async (context, page) => {
+      return await this.browser.run({ interactive: false, closeBrowserWhenDone: true, timeoutMs: siteTimeoutMs }, async (context, page) => {
         this.beginAuthenticationProbe()
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.applyImportedCookies(context, site)

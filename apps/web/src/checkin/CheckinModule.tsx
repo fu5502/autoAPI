@@ -988,7 +988,8 @@ function SettingsView({ settings, onSaved, notify }: { settings: AppSettings; on
       <section className="settings-section"><div className="settings-intro"><RefreshCw size={19} /><div><h2>失败处理</h2><p>网络错误自动重试，人机验证只提醒不绕过</p></div></div><div className="settings-fields">
         <SettingRow label="自动重试次数" hint="仅对普通网络或服务端失败生效"><NumberInput value={draft.retryCount} min={0} max={5} onChange={(value) => setDraft({ ...draft, retryCount: value })} suffix="次" /></SettingRow>
         <SettingRow label="重试间隔" hint="每次失败后的等待时间"><NumberInput value={draft.retryDelayMinutes} min={1} max={120} onChange={(value) => setDraft({ ...draft, retryDelayMinutes: value })} suffix="分钟" /></SettingRow>
-        <SettingRow label="单次请求超时" hint="网络较慢时可适当增大"><NumberInput value={draft.requestTimeoutSeconds} min={10} max={120} onChange={(value) => setDraft({ ...draft, requestTimeoutSeconds: value })} suffix="秒" /></SettingRow>
+        <SettingRow label="单次请求超时" hint="单个页面请求的网络等待上限"><NumberInput value={draft.requestTimeoutSeconds} min={10} max={120} onChange={(value) => setDraft({ ...draft, requestTimeoutSeconds: value })} suffix="秒" /></SettingRow>
+        <SettingRow label="站点总超时" hint="一个站点签到、余额刷新及其 fallback 共用此上限"><NumberInput value={draft.siteTimeoutSeconds} min={5} max={120} onChange={(value) => setDraft({ ...draft, siteTimeoutSeconds: value })} suffix="秒" /></SettingRow>
       </div></section>
       <section className="settings-section"><div className="settings-intro"><Bell size={19} /><div><h2>通知与数据</h2><p>登录状态通过本地授权助手同步，并以加密快照保存</p></div></div><div className="settings-fields">
         <SettingRow label="浏览器通知" hint="页面打开时实时提示签到结果"><div className="inline-actions"><button type="button" className={`toggle ${draft.browserNotifications ? 'on' : ''}`} role="switch" aria-label="浏览器通知" aria-checked={draft.browserNotifications} onClick={() => setDraft({ ...draft, browserNotifications: !draft.browserNotifications })}><span /></button><button type="button" className="text-button" onClick={requestNotifications}>授权通知</button></div></SettingRow>
@@ -1643,6 +1644,7 @@ function formatBalanceRefreshTime(value: string | null | undefined): string {
 
 function balanceRefreshStatusLabel(site: Site): string {
   if (site.lastStatus === 'running') return '刷新中'
+  if (site.lastStatus === 'cancelled') return '已终止'
   if (site.lastStatus === 'failed') return '刷新失败'
   if (site.lastStatus === 'manual_required') return site.authStatus === 'valid' ? '需浏览器验证' : '需重新授权'
   if (site.lastBalanceUpdatedAt) return '余额已刷新'
@@ -1651,6 +1653,7 @@ function balanceRefreshStatusLabel(site: Site): string {
 
 function balanceRefreshStatusTone(site: Site): ReturnType<typeof statusTone> {
   if (site.lastStatus === 'running') return 'running'
+  if (site.lastStatus === 'cancelled') return 'neutral'
   if (site.lastStatus === 'failed') return 'danger'
   if (site.lastStatus === 'manual_required') return 'warning'
   return site.lastBalanceUpdatedAt ? 'success' : 'neutral'

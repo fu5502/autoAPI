@@ -51,6 +51,7 @@ const settingsSchema = z.object({
   retryCount: z.number().int().min(0).max(5),
   retryDelayMinutes: z.number().int().min(1).max(120),
   requestTimeoutSeconds: z.number().int().min(10).max(120),
+  siteTimeoutSeconds: z.number().int().min(5).max(120),
   browserNotifications: z.boolean(),
   telegramEnabled: z.boolean(),
   telegramBotToken: z.string().trim().max(256),

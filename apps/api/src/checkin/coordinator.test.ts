@@ -119,8 +119,26 @@ describe('CheckinCoordinator manual balance fallback', () => {
 
     expect(run).toMatchObject({ status: 'completed', successCount: 1, skippedCount: 1, failedCount: 0 })
     expect(refreshBalanceSite).toHaveBeenCalledTimes(2)
-    expect(database.getSite(firstSite.id)).toMatchObject({ lastStatus: 'never' })
+    expect(database.getSite(firstSite.id)).toMatchObject({ lastStatus: 'cancelled' })
     expect(database.getSite(secondSite.id)).toMatchObject({ lastStatus: 'disabled' })
+  })
+
+  it('cancels only the requested running site for a stale run', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const firstSite = database.createSite('A', 'https://a.example')
+    const secondSite = database.createSite('B', 'https://b.example')
+    const run = database.startRun('manual')
+    database.markSiteRunning(firstSite.id)
+    database.markSiteRunning(secondSite.id)
+    const coordinator = new CheckinCoordinator(database, {} as NewApiService, new EventBus(), new TelegramNotifier(database))
+
+    const cancelled = await coordinator.cancelActiveSite(run.id, firstSite.id)
+
+    expect(cancelled?.id).toBe(run.id)
+    expect(database.getRun(run.id)).toMatchObject({ status: 'failed' })
+    expect(database.getSite(firstSite.id)).toMatchObject({ lastStatus: 'cancelled' })
+    expect(database.getSite(secondSite.id)).toMatchObject({ lastStatus: 'running' })
   })
 
   it('separates one-click check-in and refresh runs by site mode', async () => {
@@ -187,6 +205,30 @@ describe('CheckinCoordinator manual balance fallback', () => {
 
     expect(checkinSite).toHaveBeenCalledOnce()
     expect(refreshBalanceSite).toHaveBeenCalledTimes(2)
+  })
+
+  it('shares one per-site deadline across check-in and balance fallback', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    database.saveSettings({ ...database.getSettings(), siteTimeoutSeconds: 5 })
+    const site = database.createSite('共享截止站', 'https://shared-deadline.example')
+    const timeouts: number[] = []
+    const checkinSite = vi.fn(async (_site: unknown, runId: number, timeoutMs: number) => {
+      timeouts.push(timeoutMs)
+      return result(site.id, runId, 'failed', 'Not Found')
+    })
+    const refreshBalanceSite = vi.fn(async (_site: unknown, runId: number, timeoutMs: number) => {
+      timeouts.push(timeoutMs)
+      return result(site.id, runId, 'disabled', '余额已刷新', 42)
+    })
+    const newApi = { checkinSite, refreshBalanceSite } as unknown as NewApiService
+    const coordinator = new CheckinCoordinator(database, newApi, new EventBus(), new TelegramNotifier(database))
+
+    await coordinator.run('manual', [site.id])
+
+    expect(timeouts).toHaveLength(2)
+    expect(timeouts.every((timeout) => timeout > 0 && timeout <= 5_000)).toBe(true)
+    expect(refreshBalanceSite).toHaveBeenCalledOnce()
   })
 
   it('does not perform a second browser run for ordinary upstream failures', async () => {

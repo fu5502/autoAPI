@@ -51,6 +51,7 @@ export const defaultSettings: AppSettings = {
   retryCount: 2,
   retryDelayMinutes: 5,
   requestTimeoutSeconds: 30,
+  siteTimeoutSeconds: 15,
   browserNotifications: true,
   telegramEnabled: false,
   telegramBotToken: '',
@@ -814,6 +815,11 @@ export class AppDatabase {
     this.db.prepare("UPDATE sites SET last_status = 'never', last_error = NULL, last_checked_at = ?, updated_at = ? WHERE id = ?").run(timestamp, timestamp, id)
   }
 
+  markSiteCancelled(id: number): void {
+    const timestamp = nowIso()
+    this.db.prepare("UPDATE sites SET last_status = 'cancelled', last_error = NULL, last_checked_at = ?, updated_at = ? WHERE id = ?").run(timestamp, timestamp, id)
+  }
+
   getLastRunStartedAt(trigger: RunTrigger): string | null {
     const row = this.db
       .prepare('SELECT started_at FROM checkin_runs WHERE trigger = ? ORDER BY started_at DESC LIMIT 1')
@@ -852,6 +858,7 @@ export class AppDatabase {
       retryCount: typeof values.retryCount === 'number' ? values.retryCount : defaultSettings.retryCount,
       retryDelayMinutes: typeof values.retryDelayMinutes === 'number' ? values.retryDelayMinutes : defaultSettings.retryDelayMinutes,
       requestTimeoutSeconds: typeof values.requestTimeoutSeconds === 'number' ? values.requestTimeoutSeconds : defaultSettings.requestTimeoutSeconds,
+      siteTimeoutSeconds: typeof values.siteTimeoutSeconds === 'number' ? values.siteTimeoutSeconds : defaultSettings.siteTimeoutSeconds,
       browserNotifications: typeof values.browserNotifications === 'boolean' ? values.browserNotifications : defaultSettings.browserNotifications,
       telegramEnabled: typeof values.telegramEnabled === 'boolean' ? values.telegramEnabled : defaultSettings.telegramEnabled,
       telegramBotToken: typeof values.telegramBotToken === 'string' ? values.telegramBotToken : defaultSettings.telegramBotToken,

@@ -86,13 +86,14 @@ export function authLabel(status: AuthStatus): string {
 
 export function checkinLabel(status: CheckinStatus): string {
   return {
-    never: '未签到', running: '执行中', success: '已签到', already_checked: '已签到', failed: '签到失败',
+    never: '未签到', running: '执行中', cancelled: '已终止', success: '已签到', already_checked: '已签到', failed: '签到失败',
     manual_required: '需手动签到', disabled: '未签到',
   }[status]
 }
 
 export function siteCheckinLabel(site: Site): string {
   if (site.lastStatus === 'running') return '执行中'
+  if (site.lastStatus === 'cancelled') return '已终止'
   if (site.lastStatus === 'failed') return '签到失败'
   if (site.lastStatus === 'manual_required') return '需手动签到'
   if (
@@ -105,6 +106,7 @@ export function siteCheckinLabel(site: Site): string {
 
 export function siteCheckinTone(site: Site): ReturnType<typeof statusTone> {
   if (site.lastStatus === 'running') return 'running'
+  if (site.lastStatus === 'cancelled') return 'neutral'
   if (site.lastStatus === 'failed') return 'danger'
   if (site.lastStatus === 'manual_required') return 'warning'
   if (

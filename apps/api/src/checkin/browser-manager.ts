@@ -32,6 +32,9 @@ export class BrowserManager {
   private chromeProcess: ChildProcess | null = null
   private chromeProcessId: number | null = null
   private busy = false
+  private forceShutdownRequested = false
+  private forceShutdownTask: Promise<void> | null = null
+  private shutdownTask: Promise<void> | null = null
 
   isBusy() {
     return this.busy
@@ -47,6 +50,7 @@ export class BrowserManager {
     this.queue = previous.then(() => slot)
     await previous
     this.busy = true
+    this.forceShutdownRequested = false
     let timeout: NodeJS.Timeout | null = null
     let timedOut = false
     let taskPromise: Promise<T> | null = null
@@ -55,7 +59,7 @@ export class BrowserManager {
       : new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           timedOut = true
-          void this.cancelActive().catch(() => undefined)
+          this.forceShutdownRequested = true
           reject(new Error(`站点执行超过 ${options.timeoutMs! / 1000} 秒，已终止`))
         }, options.timeoutMs)
       })
@@ -89,9 +93,11 @@ export class BrowserManager {
       // Keep Chrome's sole startup target alive only when the task left it
       // untouched. Once it navigated, it is a task page and must be closed.
       const preserveStartupPage = Boolean(page && !page.isClosed() && isStartupBlankPage(page))
-      if (options.closeBrowserWhenDone) {
+      const forceShutdown = timedOut || this.forceShutdownRequested
+      if (options.closeBrowserWhenDone || forceShutdown) {
         if (page && !page.isClosed()) await page.close().catch(() => undefined)
-        await this.shutdown()
+        if (forceShutdown) await this.forceShutdown().catch(() => undefined)
+        else await this.shutdown()
       } else if (!preserveStartupPage && page && !page.isClosed()) {
         await page.close().catch(() => undefined)
       }
@@ -116,7 +122,9 @@ export class BrowserManager {
     }
   }
 
-  async cancelActive() {
+  async cancelActive(options: { force?: boolean } = {}) {
+    const force = options.force ?? true
+    if (force) this.forceShutdownRequested = true
     const page = this.activePage
     if (page && !page.isClosed()) {
       await Promise.race([
@@ -124,10 +132,22 @@ export class BrowserManager {
         new Promise((resolve) => setTimeout(resolve, 1_500)),
       ])
     }
-    await this.forceShutdown().catch(() => undefined)
+    if (force) await this.forceShutdown().catch(() => undefined)
+    else await this.shutdown().catch(() => undefined)
   }
 
   async forceShutdown() {
+    this.forceShutdownRequested = true
+    if (this.forceShutdownTask) return this.forceShutdownTask
+    const task = this.performForceShutdown()
+    const tracked = task.finally(() => {
+      if (this.forceShutdownTask === tracked) this.forceShutdownTask = null
+    })
+    this.forceShutdownTask = tracked
+    return tracked
+  }
+
+  private async performForceShutdown() {
     const browser = this.activeBrowser
     const chromeProcess = this.chromeProcess
     const chromeProcessId = this.chromeProcessId ?? chromeProcess?.pid ?? null
@@ -146,6 +166,17 @@ export class BrowserManager {
   }
 
   async shutdown() {
+    if (this.forceShutdownTask) return this.forceShutdownTask
+    if (this.shutdownTask) return this.shutdownTask
+    const task = this.performShutdown()
+    const tracked = task.finally(() => {
+      if (this.shutdownTask === tracked) this.shutdownTask = null
+    })
+    this.shutdownTask = tracked
+    return tracked
+  }
+
+  private async performShutdown() {
     const browser = this.activeBrowser
     const chromeProcess = this.chromeProcess
     const chromeProcessId = this.chromeProcessId ?? chromeProcess?.pid ?? null

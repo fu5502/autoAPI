@@ -10,6 +10,7 @@ export type AuthStatus =
 export type CheckinStatus =
   | 'never'
   | 'running'
+  | 'cancelled'
   | 'success'
   | 'already_checked'
   | 'failed'
@@ -123,6 +124,7 @@ export interface AppSettings {
   retryCount: number
   retryDelayMinutes: number
   requestTimeoutSeconds: number
+  siteTimeoutSeconds: number
   browserNotifications: boolean
   telegramEnabled: boolean
   telegramBotToken: string

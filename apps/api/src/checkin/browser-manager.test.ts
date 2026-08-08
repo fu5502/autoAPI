@@ -130,6 +130,8 @@ describe('BrowserManager connection recovery', () => {
       newPage: vi.fn(async () => taskPage),
     } as unknown as BrowserContext
     vi.spyOn(manager as unknown as { ensureContext: () => Promise<BrowserContext> }, 'ensureContext').mockResolvedValue(context)
+    const forceShutdown = vi.spyOn(manager, 'forceShutdown').mockResolvedValue(undefined)
+    const shutdown = vi.spyOn(manager, 'shutdown')
 
     await expect(manager.run(
       { interactive: false, closeBrowserWhenDone: false, timeoutMs: 50 },
@@ -137,6 +139,8 @@ describe('BrowserManager connection recovery', () => {
     )).rejects.toThrow('站点执行超过')
 
     expect(taskPage.close).toHaveBeenCalled()
+    expect(forceShutdown).toHaveBeenCalledOnce()
+    expect(shutdown).not.toHaveBeenCalled()
   })
 
   it('force closes the active page and shuts down the browser on cancel', async () => {
@@ -152,6 +156,23 @@ describe('BrowserManager connection recovery', () => {
 
     expect(page.close).toHaveBeenCalledWith({ runBeforeUnload: false })
     expect(forceShutdown).toHaveBeenCalledOnce()
+  })
+
+  it('gracefully cancels an active authorization without force-killing', async () => {
+    const manager = new BrowserManager()
+    const page = {
+      isClosed: () => false,
+      close: vi.fn(async () => undefined),
+    } as unknown as Page
+    Object.assign(manager as unknown as Record<string, unknown>, { activePage: page })
+    const shutdown = vi.spyOn(manager, 'shutdown').mockResolvedValue(undefined)
+    const forceShutdown = vi.spyOn(manager, 'forceShutdown')
+
+    await manager.cancelActive({ force: false })
+
+    expect(page.close).toHaveBeenCalledWith({ runBeforeUnload: false })
+    expect(shutdown).toHaveBeenCalledOnce()
+    expect(forceShutdown).not.toHaveBeenCalled()
   })
 })
 

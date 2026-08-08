@@ -88,16 +88,13 @@ export class CheckinCoordinator {
     const stale = this.db.listRecentRuns(200)
       .find((run) => run.id === runId)
     const site = this.db.getSite(siteId)
-    if (site?.lastStatus === 'running') this.db.recoverSiteRunning(siteId)
+    if (site?.lastStatus === 'running') this.db.markSiteCancelled(siteId)
     if (stale?.status === 'running') {
       this.db.cancelRun(stale.id, {
         success: stale.successCount,
         failed: stale.failedCount,
         skipped: stale.skippedCount,
       })
-      for (const candidate of this.db.listSites().filter((item) => item.lastStatus === 'running')) {
-        this.db.recoverSiteRunning(candidate.id)
-      }
     }
     return stale ?? this.db.getRun(runId)
   }
@@ -116,10 +113,11 @@ export class CheckinCoordinator {
   }
 
   private async cancelBrowserTask() {
-    await Promise.race([
-      this.newApi.cancelActiveTask().catch(() => undefined),
-      new Promise((resolve) => setTimeout(resolve, 2_000)),
-    ])
+    await this.newApi.cancelActiveTask().catch(() => undefined)
+  }
+
+  private remainingSiteTimeoutMs(startedAt: number, siteTimeoutMs: number) {
+    return Math.max(1, siteTimeoutMs - (Date.now() - startedAt))
   }
 
   async run(
@@ -163,10 +161,12 @@ export class CheckinCoordinator {
           break
         }
         this.currentSiteId = site.id
+        const siteStartedAt = Date.now()
+        const siteTimeoutMs = this.db.getSettings().siteTimeoutSeconds * 1000
         try {
           if (this.cancelledSiteIds.has(site.id)) {
             skipped += 1
-            this.db.recoverSiteRunning(site.id)
+            this.db.markSiteCancelled(site.id)
             this.logProgress(run.id, {
               siteId: site.id,
               siteName: site.name,
@@ -187,21 +187,21 @@ export class CheckinCoordinator {
           })
           let result: CheckinResult
           if (balanceOnly) {
-            result = await this.newApi.refreshBalanceSite(site, run.id)
+            result = await this.newApi.refreshBalanceSite(site, run.id, this.remainingSiteTimeoutMs(siteStartedAt, siteTimeoutMs))
           } else {
-            const checkinResult = await this.newApi.checkinSite(site, run.id)
+            const checkinResult = await this.newApi.checkinSite(site, run.id, this.remainingSiteTimeoutMs(siteStartedAt, siteTimeoutMs))
             const shouldFallback = shouldRefreshBalanceAfterCheckin(checkinResult)
             if (checkinResult.status === 'disabled' || shouldFallback) {
               this.db.updateSiteCheckinMode(site.id, 'balance_only')
               operation = 'balance_refresh'
             }
             result = shouldFallback
-              ? await this.newApi.refreshBalanceSite(site, run.id)
+              ? await this.newApi.refreshBalanceSite(site, run.id, this.remainingSiteTimeoutMs(siteStartedAt, siteTimeoutMs))
               : checkinResult
           }
           if (this.cancelledSiteIds.has(site.id)) {
             skipped += 1
-            this.db.recoverSiteRunning(site.id)
+            this.db.markSiteCancelled(site.id)
             this.logProgress(run.id, {
               siteId: site.id,
               siteName: site.name,
@@ -247,7 +247,7 @@ export class CheckinCoordinator {
         } catch (error) {
           if (this.cancelledSiteIds.has(site.id)) {
             skipped += 1
-            this.db.recoverSiteRunning(site.id)
+            this.db.markSiteCancelled(site.id)
             this.logProgress(run.id, {
               siteId: site.id,
               siteName: site.name,
@@ -324,10 +324,12 @@ export class CheckinCoordinator {
           break
         }
         this.currentSiteId = site.id
+        const siteStartedAt = Date.now()
+        const siteTimeoutMs = this.db.getSettings().siteTimeoutSeconds * 1000
         try {
           if (this.cancelledSiteIds.has(site.id)) {
             skipped += 1
-            this.db.recoverSiteRunning(site.id)
+            this.db.markSiteCancelled(site.id)
             this.logProgress(run.id, {
               siteId: site.id,
               siteName: site.name,
@@ -344,11 +346,11 @@ export class CheckinCoordinator {
           })
           let result: CheckinResult
           try {
-            result = await this.newApi.refreshBalanceSite(site, run.id)
+            result = await this.newApi.refreshBalanceSite(site, run.id, this.remainingSiteTimeoutMs(siteStartedAt, siteTimeoutMs))
           } catch (error) {
             if (this.cancelledSiteIds.has(site.id)) {
               skipped += 1
-              this.db.recoverSiteRunning(site.id)
+              this.db.markSiteCancelled(site.id)
               this.logProgress(run.id, {
                 siteId: site.id,
                 siteName: site.name,
@@ -361,7 +363,7 @@ export class CheckinCoordinator {
           }
           if (this.cancelledSiteIds.has(site.id)) {
             skipped += 1
-            this.db.recoverSiteRunning(site.id)
+            this.db.markSiteCancelled(site.id)
             this.logProgress(run.id, {
               siteId: site.id,
               siteName: site.name,
@@ -402,7 +404,7 @@ export class CheckinCoordinator {
         } catch (error) {
           if (this.cancelledSiteIds.has(site.id)) {
             skipped += 1
-            this.db.recoverSiteRunning(site.id)
+            this.db.markSiteCancelled(site.id)
             this.logProgress(run.id, {
               siteId: site.id,
               siteName: site.name,
