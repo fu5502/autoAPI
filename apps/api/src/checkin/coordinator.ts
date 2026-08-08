@@ -4,6 +4,7 @@ import { CheckinBalanceSync, type CheckinBalanceSyncOptions } from './channel-ba
 import { EventBus } from './events.js'
 import type { LocalExecutionOperation, LocalExecutionReport } from './local-execution.js'
 import { NewApiService } from './new-api.js'
+import type { RunProgressLog } from './progress.js'
 import { TelegramNotifier } from './telegram.js'
 import { quotaToAmount, roundAmount } from './utils.js'
 
@@ -17,10 +18,24 @@ export class CheckinCoordinator {
     private readonly events: EventBus,
     private readonly telegram: TelegramNotifier,
     private readonly balanceSync?: CheckinBalanceSync,
+    private readonly progress?: RunProgressLog,
   ) {}
 
   getActiveRun() {
     return this.activeRun
+  }
+
+  private logProgress(
+    runId: number,
+    input: {
+      message: string
+      siteId?: number
+      siteName?: string
+      operation?: 'checkin' | 'balance_refresh'
+      level?: 'info' | 'success' | 'warn' | 'error'
+    },
+  ) {
+    this.progress?.add({ runId, ...input })
   }
 
   async run(trigger: RunTrigger, siteIds?: number[], retryAttempt = 0): Promise<CheckinRun> {
@@ -36,6 +51,7 @@ export class CheckinCoordinator {
     const run = this.db.startRun(trigger)
     this.activeRun = run
     this.events.emit({ type: 'run_started', title: '签到任务已开始', message: `正在处理 ${candidates.length} 个站点`, data: { runId: run.id } })
+    this.logProgress(run.id, { message: `开始处理 ${candidates.length} 个站点` })
     const failedSiteIds: number[] = []
     let success = 0
     let failed = 0
@@ -45,6 +61,12 @@ export class CheckinCoordinator {
       for (const site of candidates) {
         const balanceOnly = site.checkinMode === 'balance_only' || (trigger !== 'manual' && !site.enabled)
         let operation: 'checkin' | 'balance_refresh' = balanceOnly ? 'balance_refresh' : 'checkin'
+        this.logProgress(run.id, {
+          siteId: site.id,
+          siteName: site.name,
+          operation,
+          message: operation === 'checkin' ? `正在签到：${site.name}` : `正在刷新余额：${site.name}`,
+        })
         let result: CheckinResult
         if (balanceOnly) {
           result = await this.newApi.refreshBalanceSite(site, run.id)
@@ -60,6 +82,13 @@ export class CheckinCoordinator {
             : checkinResult
         }
         const { id: _id, siteName: _siteName, ...storedResult } = result
+        this.logProgress(run.id, {
+          siteId: site.id,
+          siteName: site.name,
+          operation,
+          level: result.status === 'failed' || result.status === 'manual_required' ? 'warn' : result.status === 'success' || result.status === 'already_checked' ? 'success' : 'info',
+          message: `${site.name}：${result.message}`,
+        })
         this.db.applyResult(site.id, storedResult)
         await this.balanceSync?.syncSite(site.id).catch((error) => {
           this.events.emit({
@@ -92,6 +121,10 @@ export class CheckinCoordinator {
         message: `成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}`,
         data: { run: completed },
       })
+      this.logProgress(run.id, {
+        level: failed > 0 ? 'warn' : 'success',
+        message: `任务结束：成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}`,
+      })
       await this.telegram.notifyRun(completed, this.db.listResults({ runId: run.id, limit: 500 }))
         .catch((error) => {
           this.events.emit({
@@ -118,12 +151,19 @@ export class CheckinCoordinator {
       message: `正在刷新 ${candidates.length} 个站点的余额`,
       data: { runId: run.id, operation: 'balance_refresh' },
     })
+    this.logProgress(run.id, { message: `开始刷新 ${candidates.length} 个站点的余额` })
 
     let success = 0
     let failed = 0
     let skipped = 0
     try {
       for (const site of candidates) {
+        this.logProgress(run.id, {
+          siteId: site.id,
+          siteName: site.name,
+          operation: 'balance_refresh',
+          message: `正在刷新余额：${site.name}`,
+        })
         let result: CheckinResult
         try {
           result = await this.newApi.refreshBalanceSite(site, run.id)
@@ -131,6 +171,13 @@ export class CheckinCoordinator {
           result = balanceRefreshFailure(site, run.id, error)
         }
         const { id: _id, siteName: _siteName, ...storedResult } = result
+        this.logProgress(run.id, {
+          siteId: site.id,
+          siteName: site.name,
+          operation: 'balance_refresh',
+          level: balanceRefreshSucceeded(result) ? 'success' : result.status === 'manual_required' ? 'warn' : result.status === 'failed' ? 'error' : 'info',
+          message: `${site.name}：${result.message}`,
+        })
         this.db.applyResult(site.id, storedResult)
         await this.balanceSync?.syncSite(site.id, options).catch((error) => {
           this.events.emit({
@@ -160,6 +207,10 @@ export class CheckinCoordinator {
         message: `成功 ${success}，失败或需授权 ${failed}，跳过 ${skipped}`,
         data: { run: completed, operation: 'balance_refresh' },
       })
+      this.logProgress(run.id, {
+        level: failed > 0 ? 'warn' : 'success',
+        message: `余额刷新结束：成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}`,
+      })
     }
     return this.db.getRun(run.id)!
   }
@@ -181,6 +232,12 @@ export class CheckinCoordinator {
       title: operation === 'checkin' ? '本地签到已开始' : '本地余额刷新已开始',
       message: `${site.name}: 正在接收本地授权助手执行结果`,
       data: { runId: run.id, siteId, operation, localExecution: true },
+    })
+    this.logProgress(run.id, {
+      siteId,
+      siteName: site.name,
+      operation,
+      message: operation === 'checkin' ? `正在本地执行签到：${site.name}` : `正在本地刷新余额：${site.name}`,
     })
 
     let success = 0
@@ -236,6 +293,10 @@ export class CheckinCoordinator {
         title: completed.status === 'completed' ? '本地执行已完成' : '本地执行已结束',
         message: `成功 ${success}，失败或需处理 ${failed}`,
         data: { run: completed, operation, localExecution: true },
+      })
+      this.logProgress(run.id, {
+        level: failed > 0 ? 'warn' : 'success',
+        message: `本地执行结束：成功 ${success}，失败或需处理 ${failed}`,
       })
       await this.telegram.notifyRun(completed, this.db.listResults({ runId: run.id, limit: 500 }))
         .catch((error) => {

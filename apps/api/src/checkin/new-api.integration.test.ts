@@ -25,6 +25,7 @@ function createStorageBackedPage(
       if (source.includes('document.title')) return { title: 'Dashboard', text: '' }
       if (source.includes('localStorage.length')) return [storedUser.id]
       if (source.includes("getItem('user')") || source.includes('getItem("user")')) return storedUser
+      if (source.includes('storage.key(') || source.includes('storage.getItem')) return storedUser
       return null
     },
   }

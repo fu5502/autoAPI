@@ -11,6 +11,7 @@ import { BrowserManager } from './browser-manager.js'
 import { AuthAssistantService, type BrowserAuthSnapshot } from './auth-assistant.js'
 import { AppDatabase } from './db.js'
 import { EventBus } from './events.js'
+import type { RunProgressLog } from './progress.js'
 import { localDateKey, nowIso, quotaToAmount, roundAmount, safeMessage } from './utils.js'
 
 interface RemoteResponse<T = unknown> {
@@ -125,6 +126,7 @@ interface ModernAccessTokenObserver {
 interface AuthenticationProbeState {
   definitiveFailure: boolean
   browserVerificationRequired: boolean
+  nonJsonResponse: boolean
 }
 
 interface NewApiBalanceRead {
@@ -291,21 +293,23 @@ export class NewApiService {
   private readonly interactiveAuthorizationEnabled: boolean
   private readonly modernAccessTokens = new Map<number, ModernAccessToken>()
   private authenticationProbe: AuthenticationProbeState | null = null
+  private readonly progress: RunProgressLog | null
 
   constructor(
     private readonly db: AppDatabase,
     private readonly browser: BrowserManager,
     private readonly events: EventBus,
-    options: { interactiveAuthorizationEnabled?: boolean; authAssistant?: AuthAssistantService } = {},
+    options: { interactiveAuthorizationEnabled?: boolean; authAssistant?: AuthAssistantService; progress?: RunProgressLog } = {},
   ) {
     this.interactiveAuthorizationEnabled = options.interactiveAuthorizationEnabled ?? true
     this.authAssistant = options.authAssistant ?? null
+    this.progress = options.progress ?? null
   }
 
   private readonly authAssistant: AuthAssistantService | null
 
   private beginAuthenticationProbe(): AuthenticationProbeState {
-    const probe = { definitiveFailure: false, browserVerificationRequired: false }
+    const probe = { definitiveFailure: false, browserVerificationRequired: false, nonJsonResponse: false }
     this.authenticationProbe = probe
     return probe
   }
@@ -314,6 +318,13 @@ export class NewApiService {
     const probe = this.authenticationProbe ?? this.beginAuthenticationProbe()
     if (isDefinitiveAuthenticationResponse(response)) probe.definitiveFailure = true
     if (isBrowserVerificationResponse(response)) probe.browserVerificationRequired = true
+    if (!response.success && !response.contentType.toLowerCase().includes('json') && response.message?.includes('非 JSON')) {
+      probe.nonJsonResponse = true
+    }
+  }
+
+  private logProgress(runId: number, site: Site, message: string, level: 'info' | 'success' | 'warn' | 'error' = 'info') {
+    this.progress?.add({ runId, siteId: site.id, siteName: site.name, message, level })
   }
 
   private loginRemainsValid(site: Site): boolean {
@@ -330,12 +341,17 @@ export class NewApiService {
     } = {},
   ): CheckinResult {
     const loginVerified = this.loginRemainsValid(site)
+    const message = !loginVerified
+      ? '登录状态已失效，请重新授权'
+      : this.authenticationProbe?.nonJsonResponse
+        ? '站点 API 返回了页面而非 JSON，已保留当前登录状态，请确认站点 API 地址'
+        : '站点请求暂时不可用，已保留当前登录状态'
     return this.makeResult(
       site,
       runId,
       startedAt,
       loginVerified ? 'failed' : 'manual_required',
-      loginVerified ? '站点请求暂时不可用，已保留当前登录状态' : '登录状态已失效，请重新授权',
+      message,
       { ...values, loginVerified },
     )
   }
@@ -796,6 +812,7 @@ export class NewApiService {
         this.beginAuthenticationProbe()
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.openImportedSitePage(context, page, site)
+        this.logProgress(runId, site, '站点页面已打开，正在检测签到能力')
         const challenge = await detectChallenge(page)
         if (challenge) {
           return this.makeResult(site, runId, startedAt, 'manual_required', challenge, {
@@ -826,6 +843,7 @@ export class NewApiService {
         }
 
         const statusResponse = await this.getRemoteStatus(page, requestTimeoutMs)
+        this.logProgress(runId, site, '已读取站点配置')
         const remoteStatus = statusResponse.data
         const money = deriveMoneySettings(remoteStatus)
         // New API 1.1+ rotates the dashboard refresh cookie whenever this
@@ -846,6 +864,7 @@ export class NewApiService {
 
         const auth = await this.detectAuthentication(page, site.legacyUserId, requestTimeoutMs)
         if (!auth) return this.authenticationRequiredResult(site, runId, startedAt)
+        this.logProgress(runId, site, '登录状态有效，开始执行签到')
         if (auth.adapter === 'local-api') {
           return this.checkinLocalApiSite(page, site, runId, startedAt, auth, requestTimeoutMs)
         }
@@ -909,6 +928,7 @@ export class NewApiService {
         }
 
         const checkinHeaders = buildCheckinHeaders(auth, checkinStatus.data?.checkin_nonce)
+        this.logProgress(runId, site, '正在提交签到请求')
         const checkin = await pageRequest<CheckinSuccessData>(page, '/api/user/checkin', 'POST', checkinHeaders, requestTimeoutMs)
         if (!checkin.success) {
           const message = checkin.message || '签到失败'
@@ -922,6 +942,7 @@ export class NewApiService {
           })
         }
 
+        this.logProgress(runId, site, '签到请求已提交成功', 'success')
         const afterUserResponse = await pageRequest<unknown>(page, '/api/user/self', 'GET', authHeaders, requestTimeoutMs)
         this.noteAuthenticationResponse(afterUserResponse)
         const afterUser = afterUserResponse.success ? normalizeNewApiUser(afterUserResponse.data) : null
@@ -949,6 +970,7 @@ export class NewApiService {
         this.beginAuthenticationProbe()
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.applyImportedCookies(context, site)
+        this.logProgress(runId, site, '已恢复登录状态，正在读取余额')
         if (isTrueSotaSite(site.baseUrl)) {
           await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
           await this.openImportedStorage(page, site)
@@ -2214,7 +2236,17 @@ async function pageRequest<T>(
 ): Promise<RemoteResponse<T>> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      return await pageRequestOnce(page, pathname, method, headers, timeoutMs, body)
+      const raw = await pageRequestOnce(page, pathname, method, headers, timeoutMs, body)
+      if (raw && typeof raw === 'object' && 'success' in raw) return raw as RemoteResponse<T>
+      const response = parseRemoteResponseBody<T>(raw)
+      // Some New API forks serve the SPA shell for every path while the app is
+      // still hydrating. Wait briefly and retry once instead of failing as if
+      // the site were unavailable.
+      if (!response.success && attempt === 0 && isSpaHtmlResponse(raw)) {
+        await page.waitForTimeout(1_000)
+        continue
+      }
+      return response
     } catch (error) {
       if (!isNavigationContextError(error) || attempt === 1) {
         return {
@@ -2276,6 +2308,16 @@ async function pageRequestOnce<T>(
 
 function isNavigationContextError(error: unknown): boolean {
   return error instanceof Error && /execution context was destroyed|most likely because of a navigation|target closed/i.test(error.message)
+}
+
+function isSpaHtmlResponse(raw: RawRemoteResponse): boolean {
+  const contentType = String(raw.contentType ?? '').toLowerCase()
+  const body = String(raw.body ?? '')
+  return contentType.includes('text/html')
+    || contentType.includes('application/xhtml+xml')
+    || /^\s*<!doctype\s+html/i.test(body)
+    || /^\s*<html[\s>]/i.test(body)
+    || /<div[^>]*(?:id=["'](?:root|app|__next)["'])/i.test(body)
 }
 
 async function contextRequest<T>(
@@ -2587,11 +2629,41 @@ async function readNewApiLegacyUserId(page: Page): Promise<number | null> {
 
 async function readStoredNewApiUser(page: Page): Promise<unknown> {
   return page.evaluate(() => {
+    const values: string[] = []
     for (const storage of [localStorage, sessionStorage]) {
-      const rawUser = storage.getItem('user')
-      if (!rawUser || rawUser.length > 100_000) continue
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index)
+        if (!key) continue
+        if (key === 'user' || /user|account|profile|auth|identity/i.test(key)) {
+          const value = storage.getItem(key)
+          if (value) values.push(value)
+        }
+      }
+    }
+    const pickUser = (value: unknown): Record<string, unknown> | null => {
+      if (!value || typeof value !== 'object') return null
+      const payload = value as Record<string, unknown>
+      const source = (payload.user && typeof payload.user === 'object'
+        ? payload.user
+        : payload.data && typeof payload.data === 'object'
+          ? payload.data
+          : payload.state && typeof payload.state === 'object' && typeof (payload.state as Record<string, unknown>).user === 'object'
+            ? (payload.state as Record<string, unknown>).user
+            : payload) as Record<string, unknown>
+      const id = Number(source.id ?? source.user_id ?? source.uid)
+      const hasIdentity = Number.isSafeInteger(id) && id > 0
+        || typeof source.username === 'string'
+        || typeof source.display_name === 'string'
+      const hasBalance = Number.isFinite(Number(source.quota))
+        || Number.isFinite(Number(source.balance))
+      return hasIdentity || hasBalance ? source : null
+    }
+    for (const raw of values) {
+      if (raw.length > 500_000) continue
       try {
-        return JSON.parse(rawUser)
+        const parsed = JSON.parse(raw)
+        const user = pickUser(parsed)
+        if (user) return user
       } catch {
         // Ignore unrelated or partially-written storage values.
       }

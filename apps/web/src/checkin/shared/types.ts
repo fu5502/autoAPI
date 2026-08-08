@@ -65,6 +65,17 @@ export interface CheckinRun {
   skippedCount: number
 }
 
+export interface RunProgressEntry {
+  id: string
+  ts: string
+  runId: number
+  siteId: number | null
+  siteName: string | null
+  operation: 'checkin' | 'balance_refresh' | null
+  level: 'info' | 'success' | 'warn' | 'error'
+  message: string
+}
+
 export interface CheckinResult {
   id: number
   runId: number

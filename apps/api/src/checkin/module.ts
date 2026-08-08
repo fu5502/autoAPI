@@ -11,6 +11,7 @@ import { LocalExecutionError, LocalExecutionService } from "./local-execution.js
 import { AppDatabase } from "./db.js";
 import { EventBus } from "./events.js";
 import { NewApiService } from "./new-api.js";
+import { RunProgressLog } from "./progress.js";
 import { DailyScheduler } from "./scheduler.js";
 import { isAllowedIconUrl, siteIconUrlMaxLength, SiteIconService } from "./site-icon.js";
 import { initialSiteName } from "./site-name.js";
@@ -116,6 +117,7 @@ export interface CheckinModule {
   db: AppDatabase;
   browser: BrowserManager;
   events: EventBus;
+  progress: RunProgressLog;
   newApi: NewApiService;
   coordinator: CheckinCoordinator;
   scheduler: DailyScheduler;
@@ -133,15 +135,17 @@ export function createCheckinModule(
   const db = new AppDatabase();
   const browser = new BrowserManager();
   const events = new EventBus();
+  const progress = new RunProgressLog(events);
   const authAssistant = new AuthAssistantService(db, options.secrets ?? null, events);
   const newApi = new NewApiService(db, browser, events, {
     interactiveAuthorizationEnabled,
     authAssistant,
+    progress,
   });
   const siteIcons = new SiteIconService(db, fetch, browser);
   const telegram = new TelegramNotifier(db);
   const balanceSync = new CheckinBalanceSync(db, store);
-  const coordinator = new CheckinCoordinator(db, newApi, events, telegram, balanceSync);
+  const coordinator = new CheckinCoordinator(db, newApi, events, telegram, balanceSync, progress);
   const localExecution = new LocalExecutionService(db, events, ({ siteId, operation, report }) => (
     coordinator.recordLocalExecution(siteId, operation, report)
   ));
@@ -151,7 +155,7 @@ export function createCheckinModule(
     interactiveAuthorizationEnabled,
     authAssistant,
     localExecution,
-    db, browser, events, newApi, coordinator, scheduler, siteIcons, telegram, balanceSync,
+    db, browser, events, progress, newApi, coordinator, scheduler, siteIcons, telegram, balanceSync,
     async close() {
       scheduler.stop();
       coordinator.stop();
@@ -697,6 +701,10 @@ export async function registerCheckinRoutes(
       const run = module.db.getRun(parseId(request.params.id));
       if (!run) return reply.code(404).send({ error: "任务不存在" });
       return { run, results: module.db.listResults({ runId: run.id, limit: 500 }) };
+    });
+    checkin.get<{ Params: { id: string } }>("/progress/:id", async (request) => {
+      const runId = parseId(request.params.id);
+      return { runId, entries: module.progress.list(runId) };
     });
     checkin.get<{ Querystring: { limit?: string; siteId?: string } }>("/results", async (request) => module.db.listResults({ limit: clampInteger(request.query.limit, 200, 1, 1000), ...(request.query.siteId ? { siteId: parseId(request.query.siteId) } : {}) }));
     checkin.put("/settings", async (request, reply) => {

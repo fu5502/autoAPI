@@ -1553,3 +1553,100 @@
 :root[data-theme="dark"] .checkin-module .channel-expand-button:hover {
   background: #17383b;
 }
+
+.checkin-module .run-progress-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.checkin-module .run-progress-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  z-index: 40;
+  width: min(360px, 78vw);
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(23, 43, 52, 0.18);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity .14s ease, transform .14s ease, visibility .14s ease;
+  pointer-events: none;
+}
+
+.checkin-module .run-progress-wrap:hover .run-progress-popover,
+.checkin-module .run-progress-wrap:focus-within .run-progress-popover {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.checkin-module .run-progress-popover-head {
+  display: block;
+  color: var(--brand-strong, #216e5b);
+  font-size: 11px;
+  font-weight: 700;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.checkin-module .run-progress-popover-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  max-height: 214px;
+}
+
+.checkin-module .run-progress-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.checkin-module .run-progress-line time {
+  flex: 0 0 auto;
+  color: var(--subtle);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.checkin-module .run-progress-line.success { color: var(--green, #216e5b); }
+.checkin-module .run-progress-line.warn { color: var(--amber, #a16207); }
+.checkin-module .run-progress-line.error { color: var(--red, #b4482a); }
+
+.checkin-module .run-progress-empty {
+  display: block;
+  color: var(--subtle);
+  font-size: 11px;
+  padding: 6px 0;
+}
+
+:root[data-theme="dark"] .checkin-module .run-progress-popover {
+  background: #12202b;
+  border-color: var(--line);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-theme="dark"] .checkin-module .run-progress-popover-head {
+  color: #9ae2ca;
+  border-bottom-color: var(--line);
+}
+
+:root[data-theme="dark"] .checkin-module .run-progress-line {
+  color: #b9c8d4;
+}
+
+:root[data-theme="dark"] .checkin-module .run-progress-line.success { color: #75ceb0; }
+:root[data-theme="dark"] .checkin-module .run-progress-line.warn { color: #f2c56b; }
+:root[data-theme="dark"] .checkin-module .run-progress-line.error { color: #ec947b; }
