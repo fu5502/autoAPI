@@ -7,7 +7,8 @@
 当前线上入口：http://23.80.83.24:18080/
 线上项目目录：/opt/autoapi/app
 当前发布分支：main
-最近功能基线提交：`afebc12 feat: 将不支持签到站点切换为余额刷新`
+最近功能基线提交：`40ea83d fix: preserve check-in sessions on proxy error pages`
+最新发布提交：`3c24862 ci: sync compose definition before deploy`
 
 当前状态快照：
 
@@ -21,8 +22,8 @@
 ## 0. 开发与发布约定
 
 - 用户没有特别说明时，反馈的问题默认发生在线上环境，应优先核对线上容器、日志和运行数据。
-- 每次代码修改都必须保持本地仓库、GitHub `main` 和线上 `/opt/autoapi/app` 一致。
-- 完成顺序固定为：本地修改与验证、提交并推送 `main`、同步线上源码、原地重建容器、检查线上健康与日志。
+- 每次代码修改都必须保持本地仓库、GitHub `main` 和线上运行镜像一致；线上 Compose 配置由发布 workflow 同步。
+- 完成顺序固定为：本地修改与验证、提交并推送 `main`、等待 GitHub Actions 完成验证/构建/部署、检查线上健康与日志。
 - 普通发布只更新应用源码和 `autoapi` 容器，不删除 PostgreSQL、Redis、签到 SQLite、浏览器 profile 或任何 Docker volume。
 - 如果由于权限、网络或服务器状态无法完成线上同步，最终报告必须明确说明线上尚未更新，不能只报告本地完成。
 
