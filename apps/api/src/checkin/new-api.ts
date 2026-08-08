@@ -846,8 +846,13 @@ export class NewApiService {
             if (dashboardUrl) await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
           }
         }
+        const sub2ApiSite = site.adapter === 'sub2api' || isSub2ApiSite(site.baseUrl)
         const challenge = await detectChallenge(page)
-        if (challenge) return this.makeResult(site, runId, startedAt, 'manual_required', challenge)
+        // Sub2API exposes its authenticated balance API even when the public
+        // SPA shell is behind a browser-verification page (for example Aihub).
+        // Try the imported bearer token before treating that shell as a
+        // manual-only challenge.
+        if (challenge && !sub2ApiSite) return this.makeResult(site, runId, startedAt, 'manual_required', challenge)
 
         if (isChyTrafficSite(site.baseUrl)) {
           const traffic = await readChyTrafficPage(page)
@@ -864,11 +869,11 @@ export class NewApiService {
           })
         }
 
-        if (site.adapter === 'sub2api' || isSub2ApiSite(site.baseUrl)) {
+        if (sub2ApiSite) {
           const auth = await this.detectSub2ApiAuthentication(page, requestTimeoutMs)
           const money = moneyForSub2ApiSite(site)
           if (!auth) {
-            return this.makeResult(site, runId, startedAt, 'manual_required', '登录状态已失效，请重新授权', { money })
+            return this.makeResult(site, runId, startedAt, 'manual_required', challenge ?? '登录状态已失效，请重新授权', { money })
           }
           const balance = numberOrNull(auth.user.balance)
           if (balance === null) {
