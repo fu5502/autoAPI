@@ -99,4 +99,31 @@ describe('check-in site balance updates', () => {
     expect(database.updateSite(site.id, { checkinMode: 'checkin' })).toMatchObject({ checkinMode: 'checkin' })
     expect(database.updateSite(site.id, { baseUrl: 'https://new-welfare.example', checkinMode: 'balance_only' })).toMatchObject({ checkinMode: 'balance_only' })
   })
+
+  it('resets stale disabled status when switching back to check-in mode', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('回切站点', 'https://switch.example')
+    const run = database.startRun('manual')
+    const now = new Date().toISOString()
+    database.applyResult(site.id, {
+      runId: run.id,
+      siteId: site.id,
+      status: 'disabled',
+      rewardRaw: null,
+      rewardAmount: null,
+      balanceBeforeRaw: null,
+      balanceBeforeAmount: null,
+      balanceAfterRaw: null,
+      balanceAfterAmount: null,
+      balanceDeltaAmount: null,
+      message: '站点未开放签到',
+      startedAt: now,
+      completedAt: now,
+    })
+    database.updateSite(site.id, { checkinMode: 'balance_only' })
+
+    expect(database.getSite(site.id)).toMatchObject({ checkinMode: 'balance_only', lastStatus: 'disabled' })
+    expect(database.updateSite(site.id, { checkinMode: 'checkin' })).toMatchObject({ checkinMode: 'checkin', lastStatus: 'never' })
+  })
 })

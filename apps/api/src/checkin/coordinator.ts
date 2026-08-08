@@ -44,7 +44,7 @@ export class CheckinCoordinator {
     const candidates = this.db.listSites().filter((site) => {
       if (siteIds && !siteIds.includes(site.id)) return false
       if (explicitlySelectedByUser || site.enabled) return true
-      return trigger === 'scheduled' || (trigger === 'retry' && Boolean(siteIds?.length))
+      return trigger === 'retry' && Boolean(siteIds?.length)
     })
     if (candidates.length === 0) throw new Error('没有可执行的站点')
 
@@ -365,7 +365,7 @@ function resultTitle(result: CheckinResult, operation: 'checkin' | 'balance_refr
   if (result.status === 'success') return '签到成功'
   if (result.status === 'already_checked') return '今日已签到'
   if (result.status === 'manual_required') return '需要人工处理'
-  if (result.status === 'disabled') return '站点未启用签到'
+  if (result.status === 'disabled') return '站点未开放签到'
   return '签到失败'
 }
 

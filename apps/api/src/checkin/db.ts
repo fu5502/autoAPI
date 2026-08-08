@@ -486,6 +486,7 @@ export class AppDatabase {
       : baseUrl === site.baseUrl
         ? site.faviconCustom
         : false
+    const resetCheckinState = checkinMode === 'checkin' && site.checkinMode !== 'checkin'
     this.db.prepare(`
       UPDATE sites
       SET name = ?, base_url = ?, note = ?, favicon_url = ?, favicon_custom = ?, enabled = ?,
@@ -502,6 +503,9 @@ export class AppDatabase {
       nowIso(),
       id,
     )
+    if (resetCheckinState) {
+      this.db.prepare("UPDATE sites SET last_status = 'never', last_error = NULL WHERE id = ?").run(id)
+    }
     if (faviconUrl !== site.faviconUrl) this.clearSiteIconAsset(id)
     return this.getSite(id)
   }
@@ -698,8 +702,12 @@ export class AppDatabase {
   }
 
   updateSiteCheckinMode(id: number, mode: CheckinMode): Site | null {
-    if (!this.getSite(id)) return null
+    const site = this.getSite(id)
+    if (!site) return null
     this.db.prepare('UPDATE sites SET checkin_mode = ?, updated_at = ? WHERE id = ?').run(mode, nowIso(), id)
+    if (mode === 'checkin' && site.checkinMode !== 'checkin') {
+      this.db.prepare("UPDATE sites SET last_status = 'never', last_error = NULL WHERE id = ?").run(id)
+    }
     return this.getSite(id)
   }
 

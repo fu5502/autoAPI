@@ -44,6 +44,19 @@ describe('CheckinCoordinator manual balance fallback', () => {
     expect(database.listRecentRuns(10)).toEqual([])
   })
 
+  it('skips disabled sites during scheduled runs', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    database.createSite('已关闭站点', 'https://disabled.example')
+    database.updateSite(1, { enabled: false })
+    const coordinator = new CheckinCoordinator(database, {} as NewApiService, new EventBus(), new TelegramNotifier(database))
+
+    await expect(coordinator.run('scheduled')).rejects.toThrow('没有可执行的站点')
+
+    expect(coordinator.getActiveRun()).toBeNull()
+    expect(database.listRecentRuns(10)).toEqual([])
+  })
+
   it('refreshes balance when a manual check-in endpoint is missing', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)

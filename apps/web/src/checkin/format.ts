@@ -87,7 +87,7 @@ export function authLabel(status: AuthStatus): string {
 export function checkinLabel(status: CheckinStatus): string {
   return {
     never: '尚未执行', running: '执行中', success: '签到成功', already_checked: '今日已签到', failed: '签到失败',
-    manual_required: '需人工处理', disabled: '签到未启用',
+    manual_required: '需人工处理', disabled: '站点未开放签到',
   }[status]
 }
 
