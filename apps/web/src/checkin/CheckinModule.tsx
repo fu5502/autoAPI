@@ -31,7 +31,7 @@ import {
 import type {
   AppEvent,
 } from './local-types'
-import type { AppSettings, AppState, AuthAssistantPairing, AuthAssistantPairingStatus, ChannelImportPreview, ChannelImportResult, CheckinMode, CheckinResult, Site, SiteDeletionLog } from './shared/types'
+import type { AppSettings, AppState, AuthAssistantPairing, AuthAssistantPairingStatus, ChannelImportPreview, ChannelImportResult, CheckinMode, CheckinResult, LocalExecutionInfo, LocalExecutionOperation, LocalExecutionStatus, Site, SiteDeletionLog } from './shared/types'
 import { api } from './api'
 import { api as gatewayApi } from '../api'
 import type { Channel } from '../types'
@@ -44,6 +44,7 @@ import {
   formatDate,
   formatDateTime,
   formatRewardTotalItems,
+  isLowBalance,
   rewardTimingLabel,
   rewardTimingTone,
   statusTone,
@@ -55,6 +56,7 @@ export type CheckinView = 'dashboard' | 'history' | 'settings'
 type Toast = { id: number; title: string; message: string; tone: 'default' | 'success' | 'danger' | 'warning' }
 type AuthorizationFlow = 'standalone' | 'channel-import'
 type AssistantLaunchPhase = 'starting' | 'opened' | 'checking' | 'waiting-login' | 'synced' | 'unavailable' | 'failed'
+type LocalExecutionSession = { site: Site; execution: LocalExecutionInfo }
 type ChannelImportStatus = {
   site: Site
   phase: 'preparing' | 'confirming' | 'success' | 'error'
@@ -110,6 +112,15 @@ function isAssistantLaunchPhase(value: unknown): value is AssistantLaunchPhase {
   return ['starting', 'opened', 'checking', 'waiting-login', 'synced', 'unavailable', 'failed'].includes(String(value))
 }
 
+function supportsLocalBrowserExecution(site: Site): boolean {
+  try {
+    const url = new URL(site.baseUrl)
+    return url.protocol === 'https:' && url.hostname.toLowerCase().replace(/\.$/, '') === 'cdk.hybgzs.com'
+  } catch {
+    return false
+  }
+}
+
 export function CheckinTabs({ view, onChange, className = '' }: { view: CheckinView; onChange: (view: CheckinView) => void; className?: string }) {
   return <nav className={`checkin-tabs ${className}`.trim()} aria-label="签到模块导航">
     {navItems.map((item) => {
@@ -129,6 +140,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
   const [channelImport, setChannelImport] = useState<{ site: Site; candidates: ChannelImportPreview[] } | null>(null)
   const [channelImportStatus, setChannelImportStatus] = useState<ChannelImportStatus | null>(null)
   const [pendingChannelImportSite, setPendingChannelImportSite] = useState<Site | null>(null)
+  const [localExecution, setLocalExecution] = useState<LocalExecutionSession | null>(null)
   const [channelBalanceLink, setChannelBalanceLink] = useState<{ site: Site; channels: Channel[]; reason: string } | null>(null)
   const [gatewayChannels, setGatewayChannels] = useState<Channel[]>([])
   const [importedSiteIds, setImportedSiteIds] = useState<number[]>([])
@@ -264,19 +276,51 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
     const activePair = authAssistantPair
     if (!activePair || status.status !== 'received') return
     const site = activePair.site
-    await refresh(true)
     const pendingSite = pendingChannelImportSite
+    setAuthAssistantPair(null)
+    setPendingChannelImportSite(null)
+    await refresh(true)
     if (pendingSite?.id === site.id) {
-      setAuthAssistantPair(null)
-      setPendingChannelImportSite(null)
       await continueChannelImport({ ...site, authStatus: 'valid' })
       return
     }
     notify('本地授权同步成功', `${site.name} 已记录本次授权，已同步 ${status.cookieCount} 个 Cookie、${status.localStorageCount} 个存储项`, 'success')
   }
 
+  const startLocalExecution = async (site: Site, operation: LocalExecutionOperation) => {
+    try {
+      const execution = await api.createLocalExecution(site.id, operation)
+      setLocalExecution({ site, execution })
+      notify(
+        operation === 'checkin' ? '本机签到任务已创建' : '本机余额刷新任务已创建',
+        `${site.name} 将由本机已验证浏览器执行`,
+      )
+    } catch (cause) {
+      notify(
+        operation === 'checkin' ? '无法开始本机签到' : '无法开始本机余额刷新',
+        cause instanceof Error ? cause.message : '未知错误',
+        'danger',
+      )
+    }
+  }
+
+  const completeLocalExecution = useCallback(async (status: LocalExecutionStatus) => {
+    await refresh(true)
+    const complete = status.status === 'success' || status.status === 'already_checked'
+    const title = complete
+      ? status.operation === 'checkin' ? '本机签到已完成' : '本机余额已刷新'
+      : status.status === 'manual_required'
+        ? '本机执行需要处理'
+        : '本机执行未完成'
+    notify(title, `${status.siteName}: ${status.message}`, complete ? 'success' : status.status === 'manual_required' ? 'warning' : 'danger')
+  }, [notify, refresh])
+
   const runCheckin = async (siteIds?: number[]) => {
     const selectedSite = siteIds?.length === 1 ? state?.sites.find((site) => site.id === siteIds[0]) : null
+    if (selectedSite && supportsLocalBrowserExecution(selectedSite)) {
+      await startLocalExecution(selectedSite, 'checkin')
+      return
+    }
     const balanceOnly = Boolean(selectedSite && isBalanceOnlySite(selectedSite))
     try {
       await api.runCheckin(siteIds)
@@ -423,7 +467,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
       <div className="checkin-main-area">
         {loading && !state ? <LoadingScreen /> : error && !state ? <ErrorScreen message={error} retry={() => void refresh()} /> : state ? (
           <>
-            {view === 'dashboard' && <Dashboard state={state} onAdd={() => setAddOpen(true)} onRun={runCheckin} onAuthorize={openAuthAssistant} onImport={startChannelImport} importedSiteIds={importedSiteIds} onSelect={setSelectedSite} onRefresh={() => refresh(true)} notify={notify} />}
+            {view === 'dashboard' && <Dashboard state={state} onAdd={() => setAddOpen(true)} onRun={runCheckin} onLocalExecution={startLocalExecution} onAuthorize={openAuthAssistant} onImport={startChannelImport} importedSiteIds={importedSiteIds} onSelect={setSelectedSite} onRefresh={() => refresh(true)} notify={notify} />}
             {view === 'history' && <HistoryView state={state} />}
             {view === 'settings' && <SettingsView settings={state.settings} onSaved={() => refresh(true)} notify={notify} />}
           </>
@@ -432,6 +476,7 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
 
       {addOpen && <AddSiteModal onClose={() => setAddOpen(false)} onAdded={async (sites) => { setAddOpen(false); await refresh(true); if (sites.length === 1) void openAuthAssistant(sites[0]!) }} notify={notify} />}
       {authAssistantPair && <AuthAssistantModal site={authAssistantPair.site} pairing={authAssistantPair.pairing} onClose={() => void closeAuthAssistant()} onStatus={completeAuthAssistant} />}
+      {localExecution && <LocalExecutionModal site={localExecution.site} execution={localExecution.execution} onClose={() => setLocalExecution(null)} onFinished={completeLocalExecution} />}
       {channelImport && <ChannelImportModal site={channelImport.site} candidates={channelImport.candidates} onClose={() => setChannelImport(null)} onDiscoverModels={(candidateId) => api.discoverChannelImportModels(channelImport.site.id, candidateId)} onConfirm={confirmChannelImport} />}
       {channelBalanceLink && <ChannelBalanceLinkModal site={channelBalanceLink.site} channels={channelBalanceLink.channels} reason={channelBalanceLink.reason} onClose={() => setChannelBalanceLink(null)} onConfirm={confirmChannelBalanceLink} onCreate={createManualChannel} />}
       {channelImportStatus && <ChannelImportStatusModal status={channelImportStatus} onClose={() => setChannelImportStatus(null)} onRetry={() => {
@@ -464,10 +509,11 @@ function PageHeader({ title, description, actions }: { title: string; descriptio
   )
 }
 
-function Dashboard({ state, onAdd, onRun, onAuthorize, onImport, importedSiteIds, onSelect, onRefresh, notify }: {
+function Dashboard({ state, onAdd, onRun, onLocalExecution, onAuthorize, onImport, importedSiteIds, onSelect, onRefresh, notify }: {
   state: AppState
   onAdd: () => void
   onRun: (ids?: number[]) => void
+  onLocalExecution: (site: Site, operation: LocalExecutionOperation) => Promise<void>
   onAuthorize: (site: Site) => void
   onImport: (site: Site) => Promise<void>
   importedSiteIds: number[]
@@ -487,7 +533,7 @@ function Dashboard({ state, onAdd, onRun, onAuthorize, onImport, importedSiteIds
         </>}
       />
       <SummaryBand state={state} />
-      <SitesView state={state} onRun={onRun} onAuthorize={onAuthorize} onImport={onImport} importedSiteIds={importedSiteIds} onSelect={onSelect} onRefresh={onRefresh} notify={notify} />
+      <SitesView state={state} onRun={onRun} onLocalExecution={onLocalExecution} onAuthorize={onAuthorize} onImport={onImport} importedSiteIds={importedSiteIds} onSelect={onSelect} onRefresh={onRefresh} notify={notify} />
       <RecentActivityWithDeletions results={state.recentResults} deletions={state.recentDeletions ?? []} sites={state.sites} />
     </div>
   )
@@ -575,9 +621,10 @@ function RecentActivity({ results, sites }: { results: CheckinResult[]; sites: S
   )
 }
 
-function SitesView({ state, onRun, onAuthorize, onImport, importedSiteIds, onSelect, onRefresh, notify }: {
+function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, importedSiteIds, onSelect, onRefresh, notify }: {
   state: AppState
   onRun: (ids?: number[]) => void
+  onLocalExecution: (site: Site, operation: LocalExecutionOperation) => Promise<void>
   onAuthorize: (site: Site) => void
   onImport: (site: Site) => Promise<void>
   importedSiteIds: number[]
@@ -636,6 +683,10 @@ function SitesView({ state, onRun, onAuthorize, onImport, importedSiteIds, onSel
 
   const refreshBalance = async (site: Site) => {
     if (refreshingBalanceSiteId !== null) return
+    if (supportsLocalBrowserExecution(site)) {
+      await onLocalExecution(site, 'balance_refresh')
+      return
+    }
     setRefreshingBalanceSiteId(site.id)
     try {
       const result = await api.syncChannelBalance(site.id)
@@ -663,7 +714,7 @@ function SitesView({ state, onRun, onAuthorize, onImport, importedSiteIds, onSel
           <td>{balanceOnly
             ? <div className="reward-cell balance-refresh-cell"><strong className={rewardTimingTone(site.lastBalanceUpdatedAt)}>{site.lastBalanceUpdatedAt ? '已刷新' : '--'}</strong><small className={balanceRefreshTimingClass(site.lastBalanceUpdatedAt)}>{balanceRefreshTimingLabel(site.lastBalanceUpdatedAt)}</small></div>
             : <div className="reward-cell static" data-interactive="false" onClick={(event) => event.stopPropagation()}><strong className={rewardTimingTone(site.lastRewardAt)}>{formatAmount(site.lastRewardAmount, site.currencySymbol)}</strong><small>{rewardTimingLabel(site.lastRewardAt)}</small></div>}</td>
-          <td><div className="site-balance-cell"><button type="button" className={`site-balance-button balance-value ${site.lastBalanceAmount === null ? 'empty' : ''}`} title={balanceOnly ? '刷新登录账号余额' : '仅刷新余额，不执行签到'} disabled={refreshingBalanceSiteId !== null} onClick={(event) => { event.stopPropagation(); void refreshBalance(site) }}>{refreshingBalanceSiteId === site.id ? <RefreshCw size={13} className="spin" /> : null}<span>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></button><small className="balance-refresh-time">{formatBalanceRefreshTime(site.lastBalanceUpdatedAt)}</small></div></td>
+          <td><div className="site-balance-cell"><button type="button" className={`site-balance-button balance-value ${site.lastBalanceAmount === null ? 'empty' : isLowBalance(site.lastBalanceAmount) ? 'low' : ''}`} title={balanceOnly ? '刷新登录账号余额' : '仅刷新余额，不执行签到'} disabled={refreshingBalanceSiteId !== null} onClick={(event) => { event.stopPropagation(); void refreshBalance(site) }}>{refreshingBalanceSiteId === site.id ? <RefreshCw size={13} className="spin" /> : null}<span>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></button><small className="balance-refresh-time">{formatBalanceRefreshTime(site.lastBalanceUpdatedAt)}</small></div></td>
           <td><StatusBadge tone={importedSiteIds.includes(site.id) ? 'success' : 'neutral'}>{importedSiteIds.includes(site.id) ? '是' : '否'}</StatusBadge></td>
           <td><div className="switch-control"><button className={`toggle ${site.enabled ? 'on' : ''}`} role="switch" aria-checked={site.enabled} aria-label={`${site.enabled ? '停用' : '启用'} ${site.name} ${balanceOnly ? '自动刷新余额' : '自动签到'}`} onClick={() => toggle(site)}><span /></button><small>{site.enabled ? (balanceOnly ? '自动刷新' : '自动签到') : '已关闭'}</small></div></td>
           <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton>{balanceOnly
@@ -711,7 +762,7 @@ function HistoryView({ state }: { state: AppState }) {
     <div className="table-wrap"><table className="data-table"><thead><tr><th>完成时间</th><th>站点</th><th>结果</th><th>签到奖励</th><th>签到前余额</th><th>签到后余额</th><th>余额变化</th><th>说明</th></tr></thead><tbody>{results.map((result) => {
       const site = siteById.get(result.siteId)
       const symbol = site?.currencySymbol ?? '$'
-      return <tr key={result.id}><td>{formatDateTime(result.completedAt)}</td><td><strong>{result.siteName}</strong></td><td><StatusBadge tone={statusTone(result.status)}>{checkinLabel(result.status)}</StatusBadge></td><td className="amount positive">{formatAmount(result.rewardAmount, symbol)}</td><td>{formatBalance(result.balanceBeforeAmount, symbol)}</td><td>{formatBalance(result.balanceAfterAmount, symbol)}</td><td>{formatAmount(result.balanceDeltaAmount, symbol)}</td><td className="message-cell" title={result.message}>{result.message}</td></tr>
+      return <tr key={result.id}><td>{formatDateTime(result.completedAt)}</td><td><strong>{result.siteName}</strong></td><td><StatusBadge tone={statusTone(result.status)}>{checkinLabel(result.status)}</StatusBadge></td><td className="amount positive">{formatAmount(result.rewardAmount, symbol)}</td><td className={isLowBalance(result.balanceBeforeAmount) ? 'danger-text' : undefined}>{formatBalance(result.balanceBeforeAmount, symbol)}</td><td className={isLowBalance(result.balanceAfterAmount) ? 'danger-text' : undefined}>{formatBalance(result.balanceAfterAmount, symbol)}</td><td>{formatAmount(result.balanceDeltaAmount, symbol)}</td><td className="message-cell" title={result.message}>{result.message}</td></tr>
     })}</tbody></table>{!results.length && <EmptyState title="暂无记录" description="当前筛选条件下没有签到记录。" />}</div>
   </div>
 }
@@ -987,7 +1038,7 @@ function ChannelBalanceLinkModal({ site, channels, reason, onClose, onConfirm, o
       <div className="channel-link-notice"><CircleAlert size={17} /><div><strong>未执行自动导入</strong><p>{reason}</p></div></div>
       <div className="channel-import-summary">
         <div><span>签到站点</span><strong>{site.name}</strong></div>
-        <div><span>站点余额</span><strong>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</strong></div>
+        <div><span>站点余额</span><strong className={isLowBalance(site.lastBalanceAmount) ? 'balance-value low' : 'balance-value'}>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</strong></div>
         <div><span>同步时机</span><strong>{site.lastBalanceAmount === null ? '下次签到或余额刷新后' : '确认后立即同步'}</strong></div>
       </div>
       {mode === 'link' && sortedChannels.length ? <>
@@ -1255,6 +1306,115 @@ function AuthAssistantModal({ site, pairing, onClose, onStatus }: { site: Site; 
   </Modal>
 }
 
+function isLocalExecutionTerminal(status: LocalExecutionStatus['status']) {
+  return ['success', 'already_checked', 'manual_required', 'failed', 'expired', 'cancelled'].includes(status)
+}
+
+function localExecutionStatusLabel(status: LocalExecutionStatus['status']) {
+  if (status === 'success') return '本机操作已完成'
+  if (status === 'already_checked') return '今日已签到'
+  if (status === 'claimed') return '本机授权助手正在执行'
+  if (status === 'reporting') return '正在保存本机执行结果'
+  if (status === 'manual_required') return '需要在本机浏览器完成验证'
+  if (status === 'expired') return '本机执行任务已过期'
+  if (status === 'cancelled') return '本机执行已取消'
+  if (status === 'failed') return '本机执行未完成'
+  return '等待本机授权助手连接'
+}
+
+function LocalExecutionModal({ site, execution, onClose, onFinished }: { site: Site; execution: LocalExecutionInfo; onClose: () => void; onFinished: (status: LocalExecutionStatus) => Promise<void> }) {
+  const onFinishedRef = useRef(onFinished)
+  const [cancelling, setCancelling] = useState(false)
+  const [status, setStatus] = useState<LocalExecutionStatus>({
+    executionId: execution.executionId,
+    siteId: site.id,
+    siteName: site.name,
+    siteUrl: execution.siteUrl,
+    domain: execution.domain,
+    operation: execution.operation,
+    status: 'waiting',
+    expiresAt: execution.expiresAt,
+    claimedAt: null,
+    completedAt: null,
+    message: '等待本机 autoAPI 授权助手连接…',
+    result: null,
+  })
+
+  useEffect(() => { onFinishedRef.current = onFinished }, [onFinished])
+
+  useEffect(() => {
+    window.postMessage({
+      type: 'autoapi-auth-assistant-local-execution-start',
+      requestId: execution.executionId,
+      code: execution.code,
+      siteUrl: execution.siteUrl,
+      operation: execution.operation,
+    }, window.location.origin)
+  }, [execution.code, execution.executionId, execution.operation, execution.siteUrl])
+
+  useEffect(() => {
+    let active = true
+    let finished = false
+    let timer: number | undefined
+    const finish = (next: LocalExecutionStatus) => {
+      if (finished) return
+      finished = true
+      if (timer !== undefined) window.clearInterval(timer)
+      void onFinishedRef.current(next)
+    }
+    const poll = async () => {
+      try {
+        const next = await api.getLocalExecution(site.id, execution.executionId)
+        if (!active) return
+        setStatus(next)
+        if (isLocalExecutionTerminal(next.status)) finish(next)
+      } catch (cause) {
+        if (!active) return
+        const failed: LocalExecutionStatus = {
+          ...status,
+          status: 'failed',
+          message: cause instanceof Error ? cause.message : '无法读取本机执行状态',
+        }
+        setStatus(failed)
+        finish(failed)
+      }
+    }
+    void poll()
+    timer = window.setInterval(() => void poll(), 1_500)
+    return () => {
+      active = false
+      if (timer !== undefined) window.clearInterval(timer)
+    }
+  }, [execution.executionId, site.id])
+
+  const terminal = isLocalExecutionTerminal(status.status)
+  const successful = status.status === 'success' || status.status === 'already_checked'
+  const dismiss = async () => {
+    if (!terminal) {
+      setCancelling(true)
+      try {
+        await api.cancelLocalExecution(site.id, execution.executionId)
+      } catch {
+        // The server may already have completed or expired the one-time task.
+      } finally {
+        setCancelling(false)
+      }
+    }
+    onClose()
+  }
+
+  return <Modal title={successful ? localExecutionStatusLabel(status.status) : terminal ? '本机执行未完成' : '本机浏览器执行'} description="仅由当前 Chrome/Edge 中已验证的站点会话完成此次操作" onClose={() => void dismiss()} closeDisabled={cancelling}>
+    <div className="assistant-auth-modal local-execution-modal">
+      <div className={`assistant-status assistant-status-panel ${successful ? 'received' : status.status}`}><span className="assistant-status-dot" /><div><strong>{localExecutionStatusLabel(status.status)}</strong><p>{status.message}</p></div></div>
+      <div className="assistant-auth-facts"><div><span>目标站点</span><strong>{site.name}</strong></div><div><span>执行操作</span><strong>{execution.operation === 'checkin' ? '立即签到' : '刷新余额'}</strong></div><div><span>任务有效期</span><strong>{formatDateTime(execution.expiresAt)}</strong></div></div>
+      {!terminal && <ol className="assistant-auth-steps"><li>已向本机 autoAPI 授权助手发送一次性任务。</li><li>助手会打开已登录的黑与白福利站标签页并完成本次操作。</li><li>保持此窗口打开，结果会自动同步到签到记录和关联渠道余额。</li></ol>}
+      {status.status === 'manual_required' && <p className="assistant-result">本机站点标签页已保留。完成页面验证后，重新发起本次操作即可。</p>}
+      {!terminal && <p className="assistant-security-note">若长时间停留在等待状态，请在扩展弹窗中确认已配置当前 autoAPI 地址，并重新加载授权助手扩展。</p>}
+    </div>
+    <div className="modal-actions"><button type="button" className={`button ${terminal ? 'primary' : 'secondary'}`} onClick={() => void dismiss()} disabled={cancelling}>{cancelling ? '正在取消' : terminal ? '关闭' : '取消本次操作'}</button></div>
+  </Modal>
+}
+
 function SiteDrawer({ site, results, authEvents, onClose, onRun, onAuthorize }: { site: Site; results: CheckinResult[]; authEvents: AppState['authSyncEvents']; onClose: () => void; onRun: () => void; onAuthorize: () => void }) {
   const balanceOnly = isBalanceOnlySite(site)
   return <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={`${site.name} 详情`}>
@@ -1262,7 +1422,7 @@ function SiteDrawer({ site, results, authEvents, onClose, onRun, onAuthorize }: 
     <aside className="drawer">
       <header><div><SiteAvatar site={site} large /><div><h2>{site.name}</h2><a href={site.baseUrl} target="_blank" rel="noreferrer">{site.baseUrl}<ExternalLink size={13} /></a></div></div><IconButton title="关闭" onClick={onClose}><X size={18} /></IconButton></header>
       <div className="drawer-actions"><button className="button primary" onClick={onRun}>{balanceOnly ? <RefreshCw size={16} /> : <Play size={16} />}{balanceOnly ? '刷新余额' : '立即签到'}</button><button className="button secondary" onClick={onAuthorize}><KeyRound size={16} />重新授权</button></div>
-      <dl className="site-facts"><div><dt>适配器</dt><dd>{siteAdapterLabel(site)}</dd></div><div><dt>登录账号</dt><dd>{site.username || '--'}</dd></div><div><dt>当前余额</dt><dd>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</dd></div><div><dt>{balanceOnly ? '最近刷新' : '最近签到'}</dt><dd>{formatDateTime(site.lastCheckedAt)}</dd></div></dl>
+      <dl className="site-facts"><div><dt>适配器</dt><dd>{siteAdapterLabel(site)}</dd></div><div><dt>登录账号</dt><dd>{site.username || '--'}</dd></div><div><dt>当前余额</dt><dd className={isLowBalance(site.lastBalanceAmount) ? 'danger-text' : undefined}>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</dd></div><div><dt>{balanceOnly ? '最近刷新' : '最近签到'}</dt><dd>{formatDateTime(site.lastCheckedAt)}</dd></div></dl>
       {site.note ? <div className="drawer-note"><h3>站点备注</h3><p>{site.note}</p></div> : null}
       <div className="drawer-section"><h3>最近授权同步</h3>{authEvents.length ? authEvents.slice(0, 5).map((event) => <div className="drawer-result" key={event.id}><StatusBadge tone={event.status === 'success' ? 'success' : event.status === 'failed' ? 'danger' : 'neutral'}>{event.status === 'success' ? '同步成功' : event.status === 'failed' ? '同步失败' : event.status === 'claimed' ? '已连接' : '处理中'}</StatusBadge><span>{event.message}{event.status === 'success' ? `（${event.cookieCount} Cookie / ${event.localStorageCount} 存储）` : ''}</span><time>{formatDateTime(event.completedAt ?? event.startedAt)}</time></div>) : <p className="empty-inline">暂无授权记录</p>}</div>
       <div className="drawer-section"><h3>最近记录</h3>{results.length ? results.slice(0,10).map((result) => <div className="drawer-result" key={result.id}><StatusBadge tone={statusTone(result.status)}>{checkinLabel(result.status)}</StatusBadge><span>{result.message}</span><time>{formatDateTime(result.completedAt)}</time></div>) : <p className="empty-inline">暂无记录</p>}</div>
@@ -1294,7 +1454,7 @@ function formatBalanceRefreshTime(value: string | null | undefined): string {
 function balanceRefreshStatusLabel(site: Site): string {
   if (site.lastStatus === 'running') return '刷新中'
   if (site.lastStatus === 'failed') return '刷新失败'
-  if (site.lastStatus === 'manual_required') return '需重新授权'
+  if (site.lastStatus === 'manual_required') return site.authStatus === 'valid' ? '需浏览器验证' : '需重新授权'
   if (site.lastBalanceUpdatedAt) return '余额已刷新'
   return '待刷新'
 }

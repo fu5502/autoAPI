@@ -44,8 +44,6 @@ export class BrowserManager {
     this.queue = previous.then(() => slot)
     await previous
     this.busy = true
-    let preservePage = false
-
     try {
       let context = await this.ensureContext()
       let page: Page
@@ -57,7 +55,6 @@ export class BrowserManager {
         context = await this.ensureContext()
         page = await this.createTaskPage(context)
       }
-      preservePage = isStartupBlankPage(page)
       this.activePage = page
       page.setDefaultTimeout(30_000)
       page.setDefaultNavigationTimeout(45_000)
@@ -67,10 +64,13 @@ export class BrowserManager {
     } finally {
       const page = this.activePage
       this.activePage = null
+      // Keep Chrome's sole startup target alive only when the task left it
+      // untouched. Once it navigated, it is a task page and must be closed.
+      const preserveStartupPage = Boolean(page && !page.isClosed() && isStartupBlankPage(page))
       if (options.closeBrowserWhenDone) {
         if (page && !page.isClosed()) await page.close().catch(() => undefined)
         await this.shutdown()
-      } else if (!preservePage && page && !page.isClosed()) {
+      } else if (!preserveStartupPage && page && !page.isClosed()) {
         await page.close().catch(() => undefined)
       }
       this.busy = false

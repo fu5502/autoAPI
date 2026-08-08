@@ -183,6 +183,44 @@ export interface AuthAssistantPairingStatus {
   message: string
 }
 
+export type LocalExecutionOperation = 'balance_refresh' | 'checkin'
+
+export type LocalExecutionTaskStatus =
+  | 'waiting'
+  | 'claimed'
+  | 'reporting'
+  | 'success'
+  | 'already_checked'
+  | 'manual_required'
+  | 'failed'
+  | 'expired'
+  | 'cancelled'
+
+/** A short-lived, fixed-site action to be claimed by the local browser helper. */
+export interface LocalExecutionInfo {
+  executionId: string
+  code: string
+  siteUrl: string
+  domain: 'cdk.hybgzs.com'
+  operation: LocalExecutionOperation
+  expiresAt: string
+}
+
+export interface LocalExecutionStatus {
+  executionId: string
+  siteId: number
+  siteName: string
+  siteUrl: string
+  domain: 'cdk.hybgzs.com'
+  operation: LocalExecutionOperation
+  status: LocalExecutionTaskStatus
+  expiresAt: string
+  claimedAt: string | null
+  completedAt: string | null
+  message: string
+  result: CheckinResult | null
+}
+
 export interface ChannelImportPreview {
   candidateId: string
   siteName: string

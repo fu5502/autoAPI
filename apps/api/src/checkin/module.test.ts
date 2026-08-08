@@ -2,8 +2,11 @@ import Fastify from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { OpsAgent } from '../agent/ops-agent.js'
 import { AppDatabase } from './db.js'
+import { EventBus } from './events.js'
+import { LocalExecutionService, type LocalExecutionPersistInput } from './local-execution.js'
 import { registerCheckinRoutes, type CheckinModule } from './module.js'
 import { SiteIconService } from './site-icon.js'
+import type { CheckinResult } from './types.js'
 
 const databases: AppDatabase[] = []
 
@@ -79,6 +82,139 @@ describe('check-in site icon routes', () => {
     })
     expect(bulk.statusCode).toBe(201)
     expect(bulk.json<{ created: Array<{ checkinMode: string }> }>().created.every((site) => site.checkinMode === 'checkin')).toBe(true)
+
+    await app.close()
+  })
+
+  it('exposes one-time fixed-domain local execution endpoints for the extension', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('黑与白福利站', 'https://cdk.hybgzs.com')
+    const persist = vi.fn(async ({ siteId, operation, report }: LocalExecutionPersistInput): Promise<CheckinResult> => ({
+      id: 9,
+      runId: 7,
+      siteId,
+      siteName: database.getSite(siteId)?.name ?? '黑与白福利站',
+      status: report.status,
+      rewardRaw: report.rewardRaw,
+      rewardAmount: report.rewardRaw === null ? null : report.rewardRaw / 500_000,
+      balanceBeforeRaw: null,
+      balanceBeforeAmount: null,
+      balanceAfterRaw: report.balanceRaw,
+      balanceAfterAmount: report.balanceRaw === null ? null : report.balanceRaw / 500_000,
+      balanceDeltaAmount: null,
+      message: `${operation}: ${report.message}`,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    }))
+    const localExecution = new LocalExecutionService(database, new EventBus(), persist)
+    const checkinModule = {
+      db: database,
+      events: { emit: vi.fn() },
+      siteIcons: new SiteIconService(database, fetch),
+      localExecution,
+      coordinator: { getActiveRun: vi.fn(() => null) },
+    } as unknown as CheckinModule
+    const app = Fastify()
+    await registerCheckinRoutes(app, checkinModule, async () => undefined, { agent: {} as OpsAgent })
+
+    const created = await app.inject({
+      method: 'POST',
+      url: `/admin/checkin/sites/${site.id}/auth-assistant/local-execution`,
+      payload: { operation: 'checkin' },
+    })
+    expect(created.statusCode).toBe(201)
+    const task = created.json<{ executionId: string; code: string; siteUrl: string; domain: string; operation: string }>()
+    expect(task).toMatchObject({ siteUrl: site.baseUrl, domain: 'cdk.hybgzs.com', operation: 'checkin' })
+
+    const claim = await app.inject({
+      method: 'POST',
+      url: '/auth-assistant/local-execution/claim',
+      headers: { origin: 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      payload: { code: task.code, hostname: 'cdk.hybgzs.com' },
+    })
+    expect(claim.statusCode).toBe(200)
+    expect(claim.headers['access-control-allow-origin']).toBe('chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    const claimed = claim.json<{ executionId: string; resultToken: string; operation: string }>()
+    expect(claimed).toMatchObject({ executionId: task.executionId, operation: 'checkin' })
+
+    const tampered = await app.inject({
+      method: 'POST',
+      url: '/auth-assistant/local-execution/report',
+      headers: { 'x-autoapi-assistant-token': claimed.resultToken },
+      payload: {
+        executionId: task.executionId,
+        operation: 'balance_refresh',
+        status: 'success',
+        message: '签到成功',
+        balanceRaw: 1_500_000,
+        rewardRaw: 500_000,
+      },
+    })
+    expect(tampered.statusCode).toBe(400)
+    expect(persist).not.toHaveBeenCalled()
+
+    const reported = await app.inject({
+      method: 'POST',
+      url: '/auth-assistant/local-execution/report',
+      headers: { 'x-autoapi-assistant-token': claimed.resultToken },
+      payload: {
+        executionId: task.executionId,
+        status: 'success',
+        message: '签到成功',
+        balanceRaw: 1_500_000,
+        rewardRaw: 500_000,
+      },
+    })
+    expect(reported.statusCode).toBe(200)
+    expect(persist).toHaveBeenCalledWith({
+      siteId: site.id,
+      operation: 'checkin',
+      report: expect.objectContaining({ executionId: task.executionId, balanceRaw: 1_500_000, rewardRaw: 500_000 }),
+    })
+
+    const status = await app.inject({
+      method: 'GET',
+      url: `/admin/checkin/sites/${site.id}/auth-assistant/local-execution/${task.executionId}`,
+    })
+    expect(status.statusCode).toBe(200)
+    expect(status.json()).toMatchObject({ status: 'success', operation: 'checkin', result: { balanceAfterAmount: 3 } })
+    expect(status.json()).not.toHaveProperty('code')
+
+    const replay = await app.inject({
+      method: 'POST',
+      url: '/auth-assistant/local-execution/report',
+      headers: { 'x-autoapi-assistant-token': claimed.resultToken },
+      payload: {
+        executionId: task.executionId,
+        status: 'success',
+        message: '重复上报',
+        balanceRaw: 1_500_000,
+        rewardRaw: 500_000,
+      },
+    })
+    expect(replay.statusCode).toBe(409)
+
+    const unsupported = database.createSite('其他站点', 'https://hybgzs.com')
+    const unsupportedTask = await app.inject({
+      method: 'POST',
+      url: `/admin/checkin/sites/${unsupported.id}/auth-assistant/local-execution`,
+      payload: { operation: 'balance_refresh' },
+    })
+    expect(unsupportedTask.statusCode).toBe(422)
+
+    const cancellable = await app.inject({
+      method: 'POST',
+      url: `/admin/checkin/sites/${site.id}/auth-assistant/local-execution`,
+      payload: { operation: 'balance_refresh' },
+    })
+    const cancellableTask = cancellable.json<{ executionId: string }>()
+    const cancelled = await app.inject({
+      method: 'DELETE',
+      url: `/admin/checkin/sites/${site.id}/auth-assistant/local-execution/${cancellableTask.executionId}`,
+    })
+    expect(cancelled.statusCode).toBe(200)
+    expect(cancelled.json()).toMatchObject({ executionId: cancellableTask.executionId, status: 'cancelled' })
 
     await app.close()
   })

@@ -25,7 +25,7 @@ syncButton.addEventListener('click', async () => {
     const origin = normalizeOrigin(originInput.value)
     const code = codeInput.value.trim().toUpperCase()
     if (!/^https?:\/\//i.test(origin) || !code) throw new Error('请填写 autoAPI 地址和授权码')
-    await chrome.storage.local.set({ origin, code })
+    await chrome.storage.local.set({ origin, code, 'autoapi-trusted-origin': origin })
     statusNode.textContent = '正在确认授权目标…'
     const target = await chrome.runtime.sendMessage({ type: 'preview-code', origin, code })
     if (!target?.ok) throw new Error(target?.message || '无法读取授权目标')

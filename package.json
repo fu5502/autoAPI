@@ -9,7 +9,7 @@
     "dev:api": "pnpm --filter @autoapi/api dev",
     "dev:web": "pnpm --filter @autoapi/web dev",
     "lint": "pnpm -r lint",
-    "test": "pnpm --filter @autoapi/api test",
+    "test": "pnpm --filter @autoapi/api test && node --test apps/auth-assistant/auth-state.test.mjs apps/auth-assistant/auto-sync-retry.test.mjs apps/auth-assistant/local-execution.test.mjs",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {

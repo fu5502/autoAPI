@@ -2,8 +2,10 @@ import type { CheckinResult, CheckinRun, RunTrigger } from './types.js'
 import { AppDatabase } from './db.js'
 import { CheckinBalanceSync, type CheckinBalanceSyncOptions } from './channel-balance.js'
 import { EventBus } from './events.js'
+import type { LocalExecutionOperation, LocalExecutionReport } from './local-execution.js'
 import { NewApiService } from './new-api.js'
 import { TelegramNotifier } from './telegram.js'
+import { quotaToAmount, roundAmount } from './utils.js'
 
 export class CheckinCoordinator {
   private activeRun: CheckinRun | null = null
@@ -162,6 +164,93 @@ export class CheckinCoordinator {
     return this.db.getRun(run.id)!
   }
 
+  /** Records a result performed by the narrowly scoped local browser assistant. */
+  async recordLocalExecution(
+    siteId: number,
+    operation: LocalExecutionOperation,
+    report: Pick<LocalExecutionReport, 'status' | 'message' | 'balanceRaw' | 'rewardRaw'>,
+  ): Promise<CheckinResult> {
+    if (this.activeRun) throw new Error('已有签到任务正在运行')
+    const site = this.db.getSite(siteId)
+    if (!site) throw new Error('站点不存在')
+
+    const run = this.db.startRun('manual')
+    this.activeRun = run
+    this.events.emit({
+      type: 'run_started',
+      title: operation === 'checkin' ? '本地签到已开始' : '本地余额刷新已开始',
+      message: `${site.name}: 正在接收本地授权助手执行结果`,
+      data: { runId: run.id, siteId, operation, localExecution: true },
+    })
+
+    let success = 0
+    let failed = 0
+    let storedResult: CheckinResult | null = null
+    try {
+      const completedAt = new Date().toISOString()
+      const balanceAfterAmount = quotaToAmount(report.balanceRaw, site.quotaPerUnit, site.displayScale)
+      const rewardAmount = quotaToAmount(report.rewardRaw, site.quotaPerUnit, site.displayScale)
+      const balanceDeltaAmount = site.lastBalanceAmount !== null && balanceAfterAmount !== null
+        ? roundAmount(balanceAfterAmount - site.lastBalanceAmount)
+        : null
+      const result: Omit<CheckinResult, 'id' | 'siteName'> = {
+        runId: run.id,
+        siteId,
+        status: report.status,
+        rewardRaw: report.rewardRaw,
+        rewardAmount,
+        balanceBeforeRaw: site.lastBalanceRaw,
+        balanceBeforeAmount: site.lastBalanceAmount,
+        balanceAfterRaw: report.balanceRaw,
+        balanceAfterAmount,
+        balanceDeltaAmount,
+        message: report.message,
+        startedAt: run.startedAt,
+        completedAt,
+        loginVerified: localExecutionLoginVerified(report.status, report.message),
+      }
+      this.db.applyResult(siteId, result)
+      storedResult = this.db.listResults({ runId: run.id, limit: 1 })[0] ?? null
+
+      await this.balanceSync?.syncSite(siteId).catch((error) => {
+        this.events.emit({
+          type: 'state_changed',
+          title: '渠道余额同步失败',
+          message: `${site.name}: ${error instanceof Error ? error.message : '未知错误'}`,
+        })
+      })
+
+      if (report.status === 'success' || report.status === 'already_checked') success = 1
+      else failed = 1
+      this.events.emit({
+        type: 'site_result',
+        title: resultTitle({ ...result, id: storedResult?.id ?? 0, siteName: site.name }, operation),
+        message: `${site.name}: ${report.message}`,
+        data: { result: storedResult ?? { ...result, id: 0, siteName: site.name }, siteId, runId: run.id, operation, localExecution: true },
+      })
+    } finally {
+      const completed = this.db.completeRun(run.id, { success, failed, skipped: 0 })!
+      this.activeRun = null
+      this.events.emit({
+        type: 'run_completed',
+        title: completed.status === 'completed' ? '本地执行已完成' : '本地执行已结束',
+        message: `成功 ${success}，失败或需处理 ${failed}`,
+        data: { run: completed, operation, localExecution: true },
+      })
+      await this.telegram.notifyRun(completed, this.db.listResults({ runId: run.id, limit: 500 }))
+        .catch((error) => {
+          this.events.emit({
+            type: 'state_changed',
+            title: 'Telegram 通知失败',
+            message: error instanceof Error ? error.message : '未知错误',
+          })
+        })
+    }
+
+    if (!storedResult) throw new Error('本地执行结果未保存')
+    return storedResult
+  }
+
   stop() {
     for (const timer of this.retryTimers) clearTimeout(timer)
     this.retryTimers.clear()
@@ -224,4 +313,9 @@ function shouldRefreshBalanceAfterCheckin(result: CheckinResult): boolean {
   if (result.status !== 'failed') return false
   return /^(?:not found|method not allowed|未找到|不存在)$/i.test(result.message.trim())
     || /(?:签到|check[-_ ]?in).*(?:404|不存在|未启用|不支持|未开放|不可用)/i.test(result.message)
+}
+
+function localExecutionLoginVerified(status: LocalExecutionReport['status'], message: string): boolean {
+  if (status === 'success' || status === 'already_checked') return true
+  return !/(?:登录|未登录|login|unauthorized|401|会话.*失效|token.*(?:失效|invalid|expired))/i.test(message)
 }

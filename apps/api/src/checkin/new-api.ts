@@ -124,6 +124,7 @@ interface ModernAccessTokenObserver {
 
 interface AuthenticationProbeState {
   definitiveFailure: boolean
+  browserVerificationRequired: boolean
 }
 
 interface NewApiBalanceRead {
@@ -304,7 +305,7 @@ export class NewApiService {
   private readonly authAssistant: AuthAssistantService | null
 
   private beginAuthenticationProbe(): AuthenticationProbeState {
-    const probe = { definitiveFailure: false }
+    const probe = { definitiveFailure: false, browserVerificationRequired: false }
     this.authenticationProbe = probe
     return probe
   }
@@ -312,6 +313,7 @@ export class NewApiService {
   private noteAuthenticationResponse(response: RemoteResponse): void {
     const probe = this.authenticationProbe ?? this.beginAuthenticationProbe()
     if (isDefinitiveAuthenticationResponse(response)) probe.definitiveFailure = true
+    if (isBrowserVerificationResponse(response)) probe.browserVerificationRequired = true
   }
 
   private loginRemainsValid(site: Site): boolean {
@@ -335,6 +337,28 @@ export class NewApiService {
       loginVerified ? 'failed' : 'manual_required',
       loginVerified ? '站点请求暂时不可用，已保留当前登录状态' : '登录状态已失效，请重新授权',
       { ...values, loginVerified },
+    )
+  }
+
+  private browserVerificationRequiredResult(
+    site: Site,
+    runId: number,
+    startedAt: string,
+    values: {
+      money?: ReturnType<typeof deriveMoneySettings>
+      beforeRaw?: number | null
+    } = {},
+  ): CheckinResult {
+    if (!this.authenticationProbe?.browserVerificationRequired || !this.loginRemainsValid(site)) {
+      return this.authenticationRequiredResult(site, runId, startedAt, values)
+    }
+    return this.makeResult(
+      site,
+      runId,
+      startedAt,
+      'manual_required',
+      '线上服务器浏览器被站点验证拦截，请在本机已授权浏览器完成验证后重新刷新余额',
+      { ...values, loginVerified: true },
     )
   }
 
@@ -765,7 +789,10 @@ export class NewApiService {
     const requestTimeoutMs = this.db.getSettings().requestTimeoutSeconds * 1000
     this.db.markSiteRunning(site.id)
     try {
-      return await this.browser.run({ interactive: isHybgzsWelfareSite(site.baseUrl) || site.adapter === 'hybgzs-welfare' }, async (context, page) => {
+      return await this.browser.run({
+        interactive: isHybgzsWelfareSite(site.baseUrl) || site.adapter === 'hybgzs-welfare',
+        closeBrowserWhenDone: true,
+      }, async (context, page) => {
         this.beginAuthenticationProbe()
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.openImportedSitePage(context, page, site)
@@ -834,6 +861,18 @@ export class NewApiService {
         const month = localDateKey(new Date()).slice(0, 7)
         const checkinStatus = await pageRequest<CheckinStatusData>(page, `/api/user/checkin?month=${month}`, 'GET', authHeaders, requestTimeoutMs)
         if (!checkinStatus.success) {
+          if (isUnsupportedNewApiCheckinEndpoint(checkinStatus)) {
+            this.db.updateSiteCheckinMode(site.id, 'balance_only')
+            const balanceMessage = beforeRaw === null
+              ? '该站点不支持自动签到，未读取到最新余额'
+              : '该站点不支持自动签到，余额已刷新'
+            return this.makeResult(site, runId, startedAt, 'disabled', balanceMessage, {
+              beforeRaw,
+              afterRaw: beforeRaw,
+              money,
+              loginVerified: true,
+            })
+          }
           const message = checkinStatus.message || '无法读取签到状态'
           const definitiveFailure = isDefinitiveAuthenticationFailure(checkinStatus) || isLoginRelatedMessage(message)
           if (isManualMessage(message) || definitiveFailure) {
@@ -906,7 +945,7 @@ export class NewApiService {
     const requestTimeoutMs = this.db.getSettings().requestTimeoutSeconds * 1000
     this.db.markSiteRunning(site.id)
     try {
-      return await this.browser.run({ interactive: false }, async (context, page) => {
+      return await this.browser.run({ interactive: false, closeBrowserWhenDone: true }, async (context, page) => {
         this.beginAuthenticationProbe()
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.applyImportedCookies(context, site)
@@ -925,7 +964,7 @@ export class NewApiService {
           await this.openImportedStorage(page, site)
           const auth = await this.detectHybgzsWelfareAuthentication(page, requestTimeoutMs)
           if (!auth) {
-            return this.authenticationRequiredResult(site, runId, startedAt, { money: hybgzsWelfareMoney })
+            return this.browserVerificationRequiredResult(site, runId, startedAt, { money: hybgzsWelfareMoney })
           }
           const balance = await this.readHybgzsWelfareBalance(page, requestTimeoutMs)
           if (balance === null) {
@@ -1359,7 +1398,7 @@ export class NewApiService {
     await page.goto(new URL('/gas-station/checkin', site.baseUrl).toString(), { waitUntil: 'domcontentloaded' })
     const auth = await this.detectHybgzsWelfareAuthentication(page, timeoutMs)
     if (!auth) {
-      return this.authenticationRequiredResult(site, runId, startedAt, { money: hybgzsWelfareMoney })
+      return this.browserVerificationRequiredResult(site, runId, startedAt, { money: hybgzsWelfareMoney })
     }
 
     const beforeRaw = await this.readHybgzsWelfareBalance(page, timeoutMs)
@@ -1760,7 +1799,17 @@ export class NewApiService {
     if (preferBrowserSession) {
       cookieBalanceAttempted = true
       cookieBalance = await readAuthenticatedBalance({ adapter: 'new-api-modern', user: {} })
-      if (cookieBalance && cookieBalance.balance > 0) return cookieBalance
+      if (cookieBalance && isTrustedAnyRouterBalance(site, cookieBalance)) return cookieBalance
+
+      // The console hydrates its cookie-backed session asynchronously. A cold
+      // production browser can briefly receive the public user's quota (zero)
+      // before the same page has restored the signed-in session.
+      if (cookieBalance) {
+        await page.waitForTimeout(800).catch(() => undefined)
+        const settledCookieBalance = await readAuthenticatedBalance({ adapter: 'new-api-modern', user: {} })
+        if (settledCookieBalance) cookieBalance = settledCookieBalance
+        if (settledCookieBalance && isTrustedAnyRouterBalance(site, settledCookieBalance)) return settledCookieBalance
+      }
     }
 
     try {
@@ -1768,7 +1817,7 @@ export class NewApiService {
       if (storedAccessToken) {
         const storedAuth: RemoteAuth = { adapter: 'new-api-modern', accessToken: storedAccessToken, user: {} }
         const storedBalance = await readAuthenticatedBalance(storedAuth)
-        if (storedBalance && (!preferBrowserSession || storedBalance.balance > 0)) {
+        if (storedBalance && (!preferBrowserSession || isTrustedAnyRouterBalance(site, storedBalance))) {
           this.rememberModernAccessToken(site.id, { token: storedAccessToken, expiresAt: null })
           return storedBalance
         }
@@ -1782,7 +1831,7 @@ export class NewApiService {
           accessToken: captured.token,
           user: {},
         })
-        if (capturedBalance && (!preferBrowserSession || capturedBalance.balance > 0)) return capturedBalance
+        if (capturedBalance && (!preferBrowserSession || isTrustedAnyRouterBalance(site, capturedBalance))) return capturedBalance
       }
     } finally {
       observer?.dispose()
@@ -1794,15 +1843,19 @@ export class NewApiService {
       cookieBalanceAttempted = true
       cookieBalance = await readAuthenticatedBalance({ adapter: 'new-api-modern', user: {} })
     }
-    if (cookieBalance) return cookieBalance
+    if (cookieBalance && (!preferBrowserSession || isTrustedAnyRouterBalance(site, cookieBalance))) return cookieBalance
 
     // Legacy New API installations can still identify the user without the
     // modern refresh endpoint. Explicitly disable modern auth detection here.
     const legacyAuth = await this.detectAuthentication(page, site.legacyUserId, timeoutMs, false)
     if (!legacyAuth) return null
     const legacyBalance = newApiUserBalance(legacyAuth.user)
-    if (legacyBalance !== null) return { auth: legacyAuth, balance: legacyBalance }
-    return readAuthenticatedBalance(legacyAuth)
+    if (legacyBalance !== null) {
+      const legacyRead = { auth: legacyAuth, balance: legacyBalance }
+      return !preferBrowserSession || isTrustedAnyRouterBalance(site, legacyRead) ? legacyRead : null
+    }
+    const legacyRead = await readAuthenticatedBalance(legacyAuth)
+    return !preferBrowserSession || !legacyRead || isTrustedAnyRouterBalance(site, legacyRead) ? legacyRead : null
   }
 
   private persistNewApiBalance(
@@ -1815,7 +1868,7 @@ export class NewApiService {
       authStatus: 'valid',
       baseUrl: site.baseUrl,
       username: balanceRead.auth.user.display_name || balanceRead.auth.user.username || null,
-      legacyUserId: balanceRead.auth.legacyUserId ?? null,
+      legacyUserId: balanceRead.auth.legacyUserId ?? numberOrNull(balanceRead.auth.user.id) ?? site.legacyUserId,
       currencySymbol: money.currencySymbol,
       quotaPerUnit: money.quotaPerUnit,
       displayScale: money.displayScale,
@@ -2718,7 +2771,7 @@ function getDashboardUrl(baseUrl: string): string | null {
     // Any Router keeps the authenticated New API console under /console;
     // /dashboard is a legacy route and can leave the browser on a public shell
     // where the session-backed /api/user/self response resolves to quota 0.
-    if (hasExactHostname(baseUrl, 'anyrouter.top')) {
+    if (isAnyRouterSite(baseUrl)) {
       url.pathname = '/console'
       url.search = ''
       url.hash = ''
@@ -2817,7 +2870,29 @@ async function clickHybgzsWelfareVerification(page: Page): Promise<boolean> {
 }
 
 function isAnyRouterSite(baseUrl: string): boolean {
-  return hasExactHostname(baseUrl, 'anyrouter.top')
+  return hasExactHostname(baseUrl, 'anyrouter.top') || hasExactHostname(baseUrl, 'www.anyrouter.top')
+}
+
+function isTrustedAnyRouterBalance(site: Site, balanceRead: NewApiBalanceRead): boolean {
+  if (balanceRead.balance !== 0) return true
+  const userId = numberOrNull(balanceRead.auth.user.id)
+  if (userId !== null && userId <= 0) return false
+  const candidateNames = [balanceRead.auth.user.username, balanceRead.auth.user.display_name]
+  if (userId === null && candidateNames.some(isAnonymousAnyRouterIdentity)) return false
+  if (site.legacyUserId !== null) return userId === site.legacyUserId
+  if (userId !== null && userId > 0) return true
+  if (!site.username) return false
+  const expected = site.username.trim().toLowerCase()
+  if (isAnonymousAnyRouterIdentity(expected)) return false
+  return candidateNames.some((value) => typeof value === 'string' && !isAnonymousAnyRouterIdentity(value) && value.trim().toLowerCase() === expected)
+}
+
+function isAnonymousAnyRouterIdentity(value: unknown): boolean {
+  return typeof value === 'string' && /^(?:guest|anonymous|public)$/i.test(value.trim())
+}
+
+function isUnsupportedNewApiCheckinEndpoint(response: Pick<RemoteResponse, 'httpStatus' | 'contentType'>): boolean {
+  return response.httpStatus === 404 && !response.contentType.toLowerCase().includes('json')
 }
 
 async function readChyTrafficPage(page: Page): Promise<ChyTrafficPageState> {
@@ -2934,6 +3009,12 @@ function isDefinitiveAuthenticationResponse(response: Pick<RemoteResponse, 'http
   if (response.httpStatus === 401) return true
   if (response.httpStatus !== 403) return false
   return response.contentType.toLowerCase().includes('json') && isLoginRelatedMessage(response.message ?? 'Forbidden')
+}
+
+function isBrowserVerificationResponse(response: Pick<RemoteResponse, 'httpStatus' | 'contentType' | 'message'>): boolean {
+  return response.httpStatus === 403
+    && !response.contentType.toLowerCase().includes('json')
+    && /浏览器验证|browser verification/i.test(response.message ?? '')
 }
 
 function isDefinitiveAuthenticationFailure(response: Pick<RemoteResponse, 'httpStatus' | 'contentType' | 'message'>): boolean {

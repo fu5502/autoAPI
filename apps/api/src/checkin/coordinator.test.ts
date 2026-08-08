@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CheckinCoordinator } from './coordinator.js'
+import { CheckinBalanceSync } from './channel-balance.js'
 import { AppDatabase } from './db.js'
 import { EventBus } from './events.js'
 import { NewApiService } from './new-api.js'
@@ -105,5 +106,55 @@ describe('CheckinCoordinator manual balance fallback', () => {
     expect(checkinSite).not.toHaveBeenCalled()
     expect(refreshBalanceSite).toHaveBeenCalledOnce()
     expect(database.getSite(site.id)).toMatchObject({ lastBalanceAmount: 42, lastStatus: 'disabled' })
+  })
+})
+
+describe('CheckinCoordinator local assistant results', () => {
+  it('persists server-derived amounts and synchronizes the linked channel balance', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('黑与白福利站', 'https://cdk.hybgzs.com')
+    database.updateSiteAuth(site.id, {
+      adapter: 'hybgzs-welfare',
+      authStatus: 'valid',
+      quotaPerUnit: 500_000,
+      displayScale: 1,
+      lastBalanceRaw: 1_000_000,
+      lastBalanceAmount: 2,
+    })
+    const balanceSync = { syncSite: vi.fn(async () => ({ updatedChannelIds: [], skippedBecauseBalanceIsUnknown: false })) } as unknown as CheckinBalanceSync
+    const coordinator = new CheckinCoordinator(
+      database,
+      {} as NewApiService,
+      new EventBus(),
+      new TelegramNotifier(database),
+      balanceSync,
+    )
+
+    const result = await coordinator.recordLocalExecution(site.id, 'checkin', {
+      status: 'success',
+      message: '本地签到成功',
+      balanceRaw: 1_750_000,
+      rewardRaw: 500_000,
+    })
+
+    expect(result).toMatchObject({
+      status: 'success',
+      balanceBeforeRaw: 1_000_000,
+      balanceBeforeAmount: 2,
+      balanceAfterRaw: 1_750_000,
+      balanceAfterAmount: 3.5,
+      balanceDeltaAmount: 1.5,
+      rewardRaw: 500_000,
+      rewardAmount: 1,
+    })
+    expect(database.getSite(site.id)).toMatchObject({
+      authStatus: 'valid',
+      lastBalanceRaw: 1_750_000,
+      lastBalanceAmount: 3.5,
+      lastRewardAmount: 1,
+    })
+    expect(balanceSync.syncSite).toHaveBeenCalledWith(site.id)
+    expect(database.getRun(result.runId)).toMatchObject({ status: 'completed', successCount: 1, failedCount: 0 })
   })
 })

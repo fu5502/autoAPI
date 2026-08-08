@@ -13,6 +13,10 @@ export function formatBalance(value: number | null | undefined, symbol = '$'): s
   return formatUnitValue(amount, symbol)
 }
 
+export function isLowBalance(value: number | null | undefined): boolean {
+  return value !== null && value !== undefined && Number.isFinite(value) && value <= 1
+}
+
 export function formatRewardTotals(totals: Record<string, number>): string {
   return formatRewardTotalItems(totals).join(' · ') || '--'
 }

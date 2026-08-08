@@ -1,8 +1,24 @@
 import { hasLikelyAuthState } from './auth-state.mjs'
+import { createAutoSyncRetryScheduler } from './auto-sync-retry.mjs'
+import {
+  HYBGZS_LOCAL_EXECUTION_HOST,
+  normalizeLocalExecutionOutcome,
+  TRUSTED_AUTOAPI_ORIGIN_KEY,
+  validateLocalExecutionClaim,
+  validateLocalExecutionStart,
+  validateTrustedLocalExecutionOrigin,
+} from './local-execution.mjs'
 
 const AUTO_AUTH_TASKS_KEY = 'autoapi-auto-auth-tasks'
 const queuedSyncs = new Map()
-const autoSyncRetries = new Map()
+const localExecutionJobs = new Map()
+const autoSyncRetryScheduler = createAutoSyncRetryScheduler({
+  alarms: chrome.alarms,
+  run: async (pairId) => {
+    queuedSyncs.delete(pairId)
+    await tryAutoSync(pairId)
+  },
+})
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'sync') {
@@ -11,6 +27,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'start-auto-auth') {
     void startAutoAuth(message, sender).then(sendResponse).catch((error) => sendResponse({ ok: false, phase: 'failed', message: error?.message || '本地授权助手无法启动' }))
+    return true
+  }
+  if (message?.type === 'start-local-execution') {
+    void startLocalExecution(message, sender).then(sendResponse).catch((error) => sendResponse({ ok: false, message: error?.message || 'Local execution failed' }))
     return true
   }
   if (message?.type === 'sync-auto-auth') {
@@ -39,6 +59,255 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   void cancelClosedLoginTab(tabId)
 })
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  void autoSyncRetryScheduler.handleAlarm(alarm)
+})
+
+async function startLocalExecution(message, sender) {
+  const request = validateLocalExecutionStart(message)
+  if (sender.frameId !== 0 || !sender.tab?.url) throw new Error('Local execution must come from a top-level configured tab')
+  const stored = await chrome.storage.local.get(TRUSTED_AUTOAPI_ORIGIN_KEY)
+  const autoApiOrigin = validateTrustedLocalExecutionOrigin({
+    messageOrigin: message.origin,
+    senderTabUrl: sender.tab.url,
+    trustedOrigin: stored[TRUSTED_AUTOAPI_ORIGIN_KEY],
+  })
+  const jobKey = `${autoApiOrigin}\u0000${request.code}\u0000${request.operation}`
+  const existing = localExecutionJobs.get(jobKey)
+  if (existing) return existing
+
+  const job = runLocalExecution(autoApiOrigin, request)
+  localExecutionJobs.set(jobKey, job)
+  try {
+    return await job
+  } finally {
+    if (localExecutionJobs.get(jobKey) === job) localExecutionJobs.delete(jobKey)
+  }
+}
+
+async function runLocalExecution(autoApiOrigin, request) {
+  let claim = null
+  let reportAttempted = false
+  try {
+    claim = await claimLocalExecution(autoApiOrigin, request)
+    const tabId = await openHybgzsExecutionTab(claim.operation)
+    const outcome = await executeHybgzsLocalExecution(tabId, claim.operation)
+    reportAttempted = true
+    await reportLocalExecution(autoApiOrigin, claim, outcome)
+    return { ok: outcome.status === 'success' || outcome.status === 'already_checked', ...outcome }
+  } catch (error) {
+    const outcome = normalizeLocalExecutionOutcome({
+      status: 'failed',
+      message: error?.message || 'Local execution failed',
+    })
+    if (claim && !reportAttempted) await reportLocalExecution(autoApiOrigin, claim, outcome).catch(() => undefined)
+    return { ok: false, ...outcome }
+  }
+}
+
+async function claimLocalExecution(autoApiOrigin, request) {
+  const response = await fetch(`${autoApiOrigin}/auth-assistant/local-execution/claim`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code: request.code, hostname: HYBGZS_LOCAL_EXECUTION_HOST }),
+  })
+  const payload = await readResponse(response)
+  if (!response.ok) throw new Error(payload.error?.message || 'Local execution code is invalid')
+  return validateLocalExecutionClaim(payload, request.operation)
+}
+
+async function reportLocalExecution(autoApiOrigin, claim, outcome) {
+  const response = await fetch(`${autoApiOrigin}/auth-assistant/local-execution/report`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-autoapi-assistant-token': claim.resultToken,
+    },
+    body: JSON.stringify({
+      executionId: claim.executionId,
+      status: outcome.status,
+      message: outcome.message,
+      balanceRaw: outcome.balanceRaw,
+      rewardRaw: outcome.rewardRaw,
+    }),
+  })
+  const payload = await readResponse(response)
+  if (!response.ok) throw new Error(payload.error?.message || `Local execution report failed (HTTP ${response.status})`)
+}
+
+async function openHybgzsExecutionTab(operation) {
+  const checkinUrl = `https://${HYBGZS_LOCAL_EXECUTION_HOST}/gas-station/checkin`
+  const tabs = await chrome.tabs.query({})
+  let tab = tabs.find((candidate) => hasExactHybgzsHostname(candidate.url)) || null
+
+  if (!tab?.id) {
+    tab = await chrome.tabs.create({ url: operation === 'checkin' ? checkinUrl : `https://${HYBGZS_LOCAL_EXECUTION_HOST}/`, active: true })
+  } else if (operation === 'checkin' && !hasHybgzsCheckinPath(tab.url)) {
+    tab = await chrome.tabs.update(tab.id, { url: checkinUrl, active: true })
+  } else {
+    tab = await chrome.tabs.update(tab.id, { active: true })
+  }
+
+  if (!tab?.id) throw new Error('Unable to open the local Hybgzs tab')
+  await waitForHybgzsTab(tab.id)
+  return tab.id
+}
+
+async function waitForHybgzsTab(tabId) {
+  const current = await chrome.tabs.get(tabId).catch(() => null)
+  if (current?.status === 'complete' && hasExactHybgzsHostname(current.url)) return
+
+  await new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      chrome.tabs.onUpdated.removeListener(listener)
+      clearTimeout(timeout)
+      if (error) reject(error)
+      else resolve()
+    }
+    const listener = (updatedTabId, changeInfo, tab) => {
+      if (updatedTabId !== tabId) return
+      if (changeInfo.status === 'complete' && hasExactHybgzsHostname(tab.url)) finish()
+    }
+    const timeout = setTimeout(() => finish(new Error('Timed out while opening cdk.hybgzs.com')), 20_000)
+    chrome.tabs.onUpdated.addListener(listener)
+    void chrome.tabs.get(tabId).then((latest) => {
+      if (latest.status === 'complete' && hasExactHybgzsHostname(latest.url)) finish()
+    }).catch(() => finish(new Error('The local Hybgzs tab was closed')))
+  })
+}
+
+function hasExactHybgzsHostname(value) {
+  try {
+    const url = new URL(String(value || ''))
+    return url.protocol === 'https:'
+      && url.hostname.toLowerCase().replace(/\.$/, '') === HYBGZS_LOCAL_EXECUTION_HOST
+  } catch {
+    return false
+  }
+}
+
+function hasHybgzsCheckinPath(value) {
+  try {
+    const url = new URL(String(value || ''))
+    return hasExactHybgzsHostname(url.toString()) && url.pathname === '/gas-station/checkin'
+  } catch {
+    return false
+  }
+}
+
+async function executeHybgzsLocalExecution(tabId, operation) {
+  const functionArgs = operation === 'balance_refresh' ? ['balance_refresh'] : ['checkin']
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: executeFixedHybgzsLocalExecution,
+    args: functionArgs,
+  })
+  return normalizeLocalExecutionOutcome(results?.[0]?.result)
+}
+
+// Runs in the site's MAIN world. Its host, endpoints, UI text, and result
+// shapes are intentionally fixed here rather than received from the server.
+async function executeFixedHybgzsLocalExecution(operation) {
+  const success = (message, balanceRaw = null, rewardRaw = null) => ({ status: 'success', message, balanceRaw, rewardRaw })
+  const failed = (message, balanceRaw = null, rewardRaw = null) => ({ status: 'failed', message, balanceRaw, rewardRaw })
+  const finiteNumber = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null
+  const unwrap = (payload) => {
+    if (!payload || typeof payload !== 'object' || payload.success === false) return null
+    return payload.data && typeof payload.data === 'object' ? payload.data : payload
+  }
+  const request = async (path) => {
+    try {
+      const response = await fetch(path, { credentials: 'include', headers: { accept: 'application/json' } })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) return null
+      return unwrap(payload)
+    } catch {
+      return null
+    }
+  }
+  const hasVerifiedUser = (data) => {
+    const id = data?.user?.id
+    if (typeof id === 'number') return Number.isFinite(id) && id > 0
+    return typeof id === 'string' && id.trim().length > 0 && id.trim() !== '0'
+  }
+  const readBalance = (data) => finiteNumber(data?.total)
+    ?? finiteNumber(data?.wallet?.balance)
+    ?? finiteNumber(data?.mainSite?.balance)
+  const readReward = (data) => finiteNumber(data?.todayCheckinInfo?.rewardQuota)
+    ?? finiteNumber(data?.todayExpectedReward)
+  const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+  const capVisible = () => {
+    const text = (document.body?.innerText || '').replace(/\s+/g, ' ')
+    return text.includes('\u95ea\u70c1\u53d1\u5149\u7684\u4eba\u7c7b\u8bf7\u9a8c\u8bc1')
+      || text.includes('\u5b8c\u6210\u9a8c\u8bc1\u540e\u81ea\u52a8\u7b7e\u5230')
+      || text.includes('\u70b9\u51fb\u9a8c\u8bc1')
+      || text.includes('CAP')
+  }
+  const findCheckinButton = () => {
+    const targetText = '\u7acb\u5373\u7b7e\u5230'
+    return [...document.querySelectorAll('button, [role="button"]')].find((element) => {
+      const text = (element.textContent || '').replace(/\s+/g, '')
+      const visible = element.getClientRects().length > 0
+      return visible && !element.disabled && text === targetText
+    }) || null
+  }
+
+  const user = await request('/api/user/info')
+  if (!hasVerifiedUser(user)) return failed('Login state is not verified')
+
+  const beforeRaw = readBalance(await request('/api/wallet/balance'))
+  if (operation === 'balance_refresh') {
+    if (beforeRaw === null) return failed('Wallet balance is unavailable')
+    return success('Balance refreshed', beforeRaw)
+  }
+  if (operation !== 'checkin') return failed('Local execution operation is invalid')
+
+  const config = await request('/api/checkin/config')
+  if (!config) return failed('Check-in configuration is unavailable', beforeRaw)
+  if (config.hasCheckedInToday) {
+    return { status: 'already_checked', message: 'Already checked in today', balanceRaw: beforeRaw, rewardRaw: readReward(config) }
+  }
+
+  const status = await request('/api/checkin/status')
+  if (!status) return failed('Check-in status is unavailable', beforeRaw)
+  if (status.enabled === false) return failed('Check-in is disabled', beforeRaw)
+
+  const button = findCheckinButton()
+  if (!button) return failed('The fixed check-in button was not found', beforeRaw)
+  button.click()
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await wait(750)
+    const afterConfig = await request('/api/checkin/config')
+    if (afterConfig?.hasCheckedInToday) {
+      const afterRaw = readBalance(await request('/api/wallet/balance'))
+      return success('Check-in completed', afterRaw, readReward(afterConfig))
+    }
+    if (capVisible()) {
+      return {
+        status: 'manual_required',
+        message: 'CAP is open in the local check-in tab. Complete it there, then retry.',
+        balanceRaw: beforeRaw,
+        rewardRaw: null,
+      }
+    }
+  }
+
+  if (status.capRequired === true) {
+    return {
+      status: 'manual_required',
+      message: 'CAP may be required in the local check-in tab. Complete it there, then retry.',
+      balanceRaw: beforeRaw,
+      rewardRaw: null,
+    }
+  }
+  return failed('Check-in result was not confirmed', beforeRaw)
+}
 
 async function startAutoAuth({ origin, code, siteUrl, adapter }, sender) {
   const autoApiOrigin = normalizeOrigin(origin)
@@ -117,10 +386,7 @@ async function queueAutoSync(tabId) {
 
   queuedSyncs.set(task.pairId, true)
   await updateTaskStatus(task, 'checking', '正在检查本地浏览器的登录状态…')
-  setTimeout(() => {
-    queuedSyncs.delete(task.pairId)
-    void tryAutoSync(task.pairId)
-  }, 900)
+  scheduleAutoSyncRetry(task.pairId, 900)
 }
 
 async function tryAutoSync(pairId) {
@@ -162,10 +428,12 @@ async function tryAutoSync(pairId) {
   try {
     const result = await uploadClaimedSnapshot({ autoApiOrigin: task.autoApiOrigin, claim: task, tabId: task.tabId, current, cookies, storageItems })
     await removeTask(task.pairId)
+    await closeCompletedLoginTab(task.tabId)
     await notifySource(task, 'synced', `登录状态已自动同步：${result.cookieCount} 个 Cookie、${result.localStorageCount} 个存储项。`)
   } catch (error) {
     const message = error?.message || '自动同步暂未完成'
-    if (/授权任务|授权码|Token|已结束|过期/.test(message)) {
+    if (isTerminalAutoSyncFailure(error)) {
+      await reportFailure(task.autoApiOrigin, task, message)
       await removeTask(task.pairId)
       await notifySource(task, 'failed', message)
       return
@@ -173,6 +441,11 @@ async function tryAutoSync(pairId) {
     await updateTaskStatus(task, 'waiting-login', `自动同步暂未完成：${message}。保持登录页打开后刷新即可重试。`)
     scheduleAutoSyncRetry(pairId)
   }
+}
+
+async function closeCompletedLoginTab(tabId) {
+  if (!Number.isInteger(tabId)) return
+  await chrome.tabs.remove(tabId).catch(() => undefined)
 }
 
 async function cancelClosedLoginTab(tabId) {
@@ -204,7 +477,8 @@ async function syncActiveAutoAuth({ tabId, url }) {
     return { handled: true, ...result }
   } catch (error) {
     const message = error?.message || '同步失败'
-    if (/授权任务|授权码|Token|已结束|过期/.test(message)) {
+    if (isTerminalAutoSyncFailure(error)) {
+      await reportFailure(task.autoApiOrigin, task, message)
       await removeTask(task.pairId)
       await notifySource(task, 'failed', message)
     }
@@ -276,7 +550,12 @@ async function uploadClaimedSnapshot({ autoApiOrigin, claim, tabId, current, coo
     body: JSON.stringify({ pairId: claim.pairId, iv: bytesToBase64Url(iv), ciphertext: bytesToBase64Url(encrypted) }),
   })
   const uploaded = await readResponse(uploadResponse)
-  if (!uploadResponse.ok) throw new Error(uploaded.error?.message || '上传授权状态失败')
+  if (!uploadResponse.ok) {
+    const error = new Error(uploaded.error?.message || `上传授权状态失败（HTTP ${uploadResponse.status}）`)
+    error.status = uploadResponse.status
+    throw error
+  }
+  await chrome.storage.local.set({ [TRUSTED_AUTOAPI_ORIGIN_KEY]: autoApiOrigin })
   return { ok: true, cookieCount: uploaded.status.cookieCount, localStorageCount: uploaded.status.localStorageCount }
 }
 
@@ -386,20 +665,17 @@ async function removeTask(pairId) {
   const tasks = await getTasks()
   delete tasks[pairId]
   await chrome.storage.session.set({ [AUTO_AUTH_TASKS_KEY]: tasks })
-  const retry = autoSyncRetries.get(pairId)
-  if (retry) clearTimeout(retry)
-  autoSyncRetries.delete(pairId)
+  await autoSyncRetryScheduler.clear(pairId)
 }
 
 function scheduleAutoSyncRetry(pairId, delayMs = 3_000) {
-  if (autoSyncRetries.has(pairId)) return
-  const retry = setTimeout(() => {
-    autoSyncRetries.delete(pairId)
-    void getTask(pairId).then((task) => {
-      if (task) return queueAutoSync(task.tabId)
-    }).catch(() => undefined)
-  }, delayMs)
-  autoSyncRetries.set(pairId, retry)
+  autoSyncRetryScheduler.schedule(pairId, delayMs)
+}
+
+function isTerminalAutoSyncFailure(error) {
+  const message = error?.message || ''
+  const status = Number(error?.status)
+  return /授权任务|授权码|Token|已结束|过期/.test(message) || [400, 401, 403, 404, 413].includes(status)
 }
 
 async function updateTaskStatus(task, phase, message) {

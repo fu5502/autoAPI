@@ -141,6 +141,7 @@
 .checkin-module .balance-refresh-time{ color: var(--subtle); font-size: 9px; line-height: 1.2; white-space: nowrap; }
 .checkin-module .balance-value{ color: var(--brand-strong); font-size: 13px; font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .checkin-module .balance-value.empty{ color: var(--subtle); font-size: 11px; font-weight: 500; }
+.checkin-module .balance-value.low{ color: var(--red); }
 .checkin-module .site-balance-button{ display: inline-flex; align-items: center; gap: 5px; padding: 3px 5px; border: 1px solid transparent; border-radius: 5px; background: transparent; cursor: pointer; }
 .checkin-module .site-balance-button:hover:not(:disabled){ border-color: var(--border); background: var(--surface-soft); }
 .checkin-module .site-balance-button:disabled{ cursor: wait; opacity: .7; }

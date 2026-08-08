@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "autoAPI Auth Assistant",
   "description": "Sync the current site's authenticated browser state to autoAPI.",
-  "version": "0.2.3",
-  "permissions": ["cookies", "activeTab", "storage", "scripting", "tabs"],
+  "version": "0.2.5",
+  "permissions": ["alarms", "cookies", "activeTab", "storage", "scripting", "tabs"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "action": {
     "default_title": "Sync to autoAPI",

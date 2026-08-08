@@ -7,6 +7,7 @@ import { BrowserManager } from "./browser-manager.js";
 import { CheckinBalanceSync } from "./channel-balance.js";
 import { CheckinCoordinator } from "./coordinator.js";
 import { AuthAssistantService } from "./auth-assistant.js";
+import { LocalExecutionError, LocalExecutionService } from "./local-execution.js";
 import { AppDatabase } from "./db.js";
 import { EventBus } from "./events.js";
 import { NewApiService } from "./new-api.js";
@@ -89,10 +90,28 @@ const assistantFailureSchema = z.object({
   pairId: z.string().uuid(),
   message: z.string().trim().min(1).max(500),
 });
+const localExecutionCreateSchema = z.object({
+  operation: z.enum(["balance_refresh", "checkin"]),
+}).strict();
+const localExecutionClaimSchema = z.object({
+  code: z.string().trim().min(6).max(16),
+  hostname: z.string().trim().min(1).max(253).refine((value) => value.toLowerCase() === "cdk.hybgzs.com", {
+    message: "本地执行仅允许在 cdk.hybgzs.com 运行",
+  }),
+}).strict();
+const localExecutionRawValueSchema = z.number().finite().min(-1_000_000_000_000_000).max(1_000_000_000_000_000).nullable();
+const localExecutionReportSchema = z.object({
+  executionId: z.string().uuid(),
+  status: z.enum(["success", "already_checked", "manual_required", "failed"]),
+  message: z.string().trim().min(1).max(500),
+  balanceRaw: localExecutionRawValueSchema.optional(),
+  rewardRaw: localExecutionRawValueSchema.optional(),
+}).strict();
 
 export interface CheckinModule {
   interactiveAuthorizationEnabled: boolean;
   authAssistant: AuthAssistantService;
+  localExecution: LocalExecutionService;
   db: AppDatabase;
   browser: BrowserManager;
   events: EventBus;
@@ -122,17 +141,22 @@ export function createCheckinModule(
   const telegram = new TelegramNotifier(db);
   const balanceSync = new CheckinBalanceSync(db, store);
   const coordinator = new CheckinCoordinator(db, newApi, events, telegram, balanceSync);
+  const localExecution = new LocalExecutionService(db, events, ({ siteId, operation, report }) => (
+    coordinator.recordLocalExecution(siteId, operation, report)
+  ));
   const scheduler = new DailyScheduler(db, coordinator, events);
   scheduler.start();
   return {
     interactiveAuthorizationEnabled,
     authAssistant,
+    localExecution,
     db, browser, events, newApi, coordinator, scheduler, siteIcons, telegram, balanceSync,
     async close() {
       scheduler.stop();
       coordinator.stop();
       await browser.shutdown().catch(() => undefined);
       authAssistant.close();
+      localExecution.close();
       db.close();
     },
   };
@@ -166,6 +190,20 @@ export async function registerCheckinRoutes(
       .send();
   });
   app.options("/auth-assistant/fail", async (request, reply) => {
+    return reply
+      .headers(assistantCorsHeaders(request.headers.origin))
+      .header("access-control-allow-methods", "POST, OPTIONS")
+      .header("access-control-allow-headers", "content-type, x-autoapi-assistant-token")
+      .send();
+  });
+  app.options("/auth-assistant/local-execution/claim", async (request, reply) => {
+    return reply
+      .headers(assistantCorsHeaders(request.headers.origin))
+      .header("access-control-allow-methods", "POST, OPTIONS")
+      .header("access-control-allow-headers", "content-type")
+      .send();
+  });
+  app.options("/auth-assistant/local-execution/report", async (request, reply) => {
     return reply
       .headers(assistantCorsHeaders(request.headers.origin))
       .header("access-control-allow-methods", "POST, OPTIONS")
@@ -262,6 +300,63 @@ export async function registerCheckinRoutes(
       return reply.code(/Token|授权任务/.test(message) ? 401 : 400).headers(originHeaders).send({ error: { message, type: "assistant_failure_error" } });
     }
   });
+  app.post("/auth-assistant/local-execution/claim", {
+    config: {
+      rateLimit: {
+        max: 30,
+        timeWindow: 10 * 60_000,
+      },
+    },
+  }, async (request, reply) => {
+    const originHeaders = {
+      "cache-control": "no-store",
+      ...assistantCorsHeaders(request.headers.origin),
+    };
+    try {
+      const body = localExecutionClaimSchema.parse(request.body);
+      return reply.headers(originHeaders).send(module.localExecution.claim(body.code, body.hostname));
+    } catch (error) {
+      const failure = localExecutionFailure(error, "无法连接本地执行助手");
+      return reply.code(failure.statusCode).headers(originHeaders).send({ error: failure.error });
+    }
+  });
+  app.post("/auth-assistant/local-execution/report", {
+    config: {
+      rateLimit: {
+        max: 30,
+        timeWindow: 10 * 60_000,
+      },
+    },
+  }, async (request, reply) => {
+    const originHeaders = {
+      "cache-control": "no-store",
+      ...assistantCorsHeaders(request.headers.origin),
+    };
+    try {
+      const body = localExecutionReportSchema.parse(request.body);
+      const resultToken = typeof request.headers["x-autoapi-assistant-token"] === "string"
+        ? request.headers["x-autoapi-assistant-token"].trim()
+        : "";
+      if (!resultToken) {
+        return reply.code(401).headers(originHeaders).send({ error: { message: "缺少本地执行结果 Token", type: "local_execution_auth_error" } });
+      }
+      const status = await module.localExecution.report({
+        executionId: body.executionId,
+        resultToken,
+        report: {
+          executionId: body.executionId,
+          status: body.status,
+          message: body.message,
+          balanceRaw: body.balanceRaw ?? null,
+          rewardRaw: body.rewardRaw ?? null,
+        },
+      });
+      return reply.headers(originHeaders).send({ status });
+    } catch (error) {
+      const failure = localExecutionFailure(error, "本地执行结果上报失败");
+      return reply.code(failure.statusCode).headers(originHeaders).send({ error: failure.error });
+    }
+  });
 
   await app.register(async (checkin) => {
     checkin.addHook("onRequest", requireAdmin);
@@ -324,6 +419,7 @@ export async function registerCheckinRoutes(
       if (input.enabled !== undefined) update.enabled = input.enabled;
       const site = module.db.updateSite(id, update);
       if (!site) throw new Error("站点不存在");
+      if (input.baseUrl !== undefined) module.localExecution?.cancelForSite(id, "目标站点地址已变更，本地执行任务已取消");
       if (input.faviconUrl !== undefined && site.faviconUrl) await module.siteIcons.getIconAsset(id, true);
       return site;
     });
@@ -372,6 +468,13 @@ export async function registerCheckinRoutes(
         const message = error instanceof Error ? error.message : "Unknown assistant cleanup error";
         cleanupWarnings.push(`assistant cleanup: ${message}`);
         request.log.warn({ siteId, error: message }, "Authorization assistant cleanup failed during site deletion");
+      }
+      try {
+        module.localExecution?.cancelForSite(siteId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown local execution cleanup error";
+        cleanupWarnings.push(`local execution cleanup: ${message}`);
+        request.log.warn({ siteId, error: message }, "Local execution cleanup failed during site deletion");
       }
       try {
         module.siteIcons.forgetSite(siteId);
@@ -542,6 +645,33 @@ export async function registerCheckinRoutes(
       if (!status) return reply.code(404).send({ error: { message: "授权任务不存在", type: "not_found" } });
       return status;
     });
+    checkin.post<{ Params: { id: string } }>("/sites/:id/auth-assistant/local-execution", async (request, reply) => {
+      const siteId = parseId(request.params.id);
+      const site = module.db.getSite(siteId);
+      if (!site) return reply.code(404).send({ error: { message: "站点不存在", type: "not_found" } });
+      if (module.coordinator.getActiveRun()) {
+        return reply.code(409).send({ error: { message: "签到任务正在运行，请完成后再启动本地执行", type: "conflict" } });
+      }
+      try {
+        const input = localExecutionCreateSchema.parse(request.body);
+        return reply.code(201).send(module.localExecution.create(site, input.operation));
+      } catch (error) {
+        const failure = localExecutionFailure(error, "无法创建本地执行任务");
+        return reply.code(failure.statusCode).send({ error: failure.error });
+      }
+    });
+    checkin.get<{ Params: { id: string; executionId: string } }>("/sites/:id/auth-assistant/local-execution/:executionId", async (request, reply) => {
+      const siteId = parseId(request.params.id);
+      const status = module.localExecution.getStatus(request.params.executionId, siteId);
+      if (!status) return reply.code(404).send({ error: { message: "本地执行任务不存在或已过期", type: "not_found" } });
+      return status;
+    });
+    checkin.delete<{ Params: { id: string; executionId: string } }>("/sites/:id/auth-assistant/local-execution/:executionId", async (request, reply) => {
+      const siteId = parseId(request.params.id);
+      const status = module.localExecution.cancel(request.params.executionId, siteId);
+      if (!status) return reply.code(404).send({ error: { message: "本地执行任务不存在", type: "not_found" } });
+      return status;
+    });
     checkin.get<{ Params: { id: string } }>("/auth-sessions/:id", async (request, reply) => {
       const state = module.newApi.getAuthorization(request.params.id);
       if (!state) return reply.code(404).send({ error: "授权任务不存在" });
@@ -590,6 +720,26 @@ export async function registerCheckinRoutes(
       return reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="checkin-history-${Date.now()}.csv"`).send(csv);
     });
 }, { prefix: "/admin/checkin" });
+}
+
+function localExecutionFailure(error: unknown, fallback: string): { statusCode: number; error: { message: string; type: string } } {
+  if (error instanceof LocalExecutionError) {
+    return {
+      statusCode: error.statusCode,
+      error: { message: error.message, type: error.type },
+    };
+  }
+  if (error instanceof z.ZodError) {
+    return {
+      statusCode: 400,
+      error: { message: error.issues[0]?.message ?? "本地执行请求无效", type: "local_execution_request_invalid" },
+    };
+  }
+  const message = error instanceof Error ? error.message : fallback;
+  if (/已有签到任务正在运行/.test(message)) {
+    return { statusCode: 409, error: { message, type: "conflict" } };
+  }
+  return { statusCode: 502, error: { message, type: "local_execution_report_failed" } };
 }
 
 function assistantCorsHeaders(origin: string | undefined): Record<string, string> {

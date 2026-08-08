@@ -1,4 +1,24 @@
 const PAGE_STATUS_EVENT = 'autoapi-auth-assistant-status'
+const LOCAL_EXECUTION_START_EVENT = 'autoapi-auth-assistant-local-execution-start'
+
+window.addEventListener('message', (event) => {
+  if (event.source !== window || !event.data || typeof event.data !== 'object') return
+  const data = event.data
+  if (data.type !== LOCAL_EXECUTION_START_EVENT) return
+  if (typeof data.requestId !== 'string' || typeof data.code !== 'string' || typeof data.siteUrl !== 'string') return
+  if (!['balance_refresh', 'checkin'].includes(data.operation)) return
+
+  // This forwards only the fixed local-execution contract. The target host,
+  // API paths, and browser behavior are all fixed in the service worker.
+  void chrome.runtime.sendMessage({
+    type: 'start-local-execution',
+    origin: event.origin,
+    requestId: data.requestId,
+    code: data.code,
+    siteUrl: data.siteUrl,
+    operation: data.operation,
+  }).catch(() => undefined)
+})
 
 window.addEventListener('message', (event) => {
   if (event.source !== window || !event.data || typeof event.data !== 'object') return

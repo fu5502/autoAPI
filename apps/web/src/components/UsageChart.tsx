@@ -1,4 +1,4 @@
-import { Area, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { Usage } from "../types";
 
 export default function UsageChart({ usage }: { usage: Usage }) {
@@ -16,10 +16,9 @@ export default function UsageChart({ usage }: { usage: Usage }) {
           <YAxis tickLine={false} axisLine={false} tick={{ fill: "var(--chart-tick)", fontSize: 11 }} allowDecimals={false} />
           <Tooltip
             contentStyle={{ color: "var(--ink)", background: "var(--chart-tooltip)", border: "1px solid var(--line)", borderRadius: 6, boxShadow: "var(--shadow)", fontSize: 12 }}
-            formatter={(value, name) => [value, name === "requests" ? "请求次数" : "失败次数"]}
           />
-          <Area type="monotone" dataKey="requests" stroke="var(--green)" fill="var(--green)" fillOpacity={0.12} strokeWidth={2.2} dot={false} activeDot={{ r: 4, fill: "var(--green)" }} />
-          <Line type="monotone" dataKey="errors" stroke="var(--red)" strokeWidth={1.8} dot={false} activeDot={{ r: 3, fill: "var(--red)" }} />
+          <Line type="monotone" dataKey="requests" name="请求次数" stroke="var(--green)" strokeWidth={2.2} dot={false} activeDot={{ r: 4, fill: "var(--green)" }} />
+          <Line type="monotone" dataKey="errors" name="失败次数" stroke="var(--red)" strokeWidth={1.8} dot={false} activeDot={{ r: 3, fill: "var(--red)" }} />
         </LineChart>
       </ResponsiveContainer>
     </div>

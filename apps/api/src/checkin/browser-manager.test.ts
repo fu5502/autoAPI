@@ -92,6 +92,29 @@ describe('BrowserManager connection recovery', () => {
     expect(browser.close).toHaveBeenCalledTimes(1)
     expect(taskPage.close).toHaveBeenCalledTimes(1)
   })
+
+  it('closes the startup page after the task navigates it', async () => {
+    const manager = new BrowserManager()
+    let currentUrl = 'about:blank'
+    const taskPage = {
+      url: () => currentUrl,
+      isClosed: () => false,
+      setDefaultTimeout: vi.fn(),
+      setDefaultNavigationTimeout: vi.fn(),
+      close: vi.fn(async () => undefined),
+    } as unknown as Page
+    const context = {
+      pages: () => [taskPage],
+      newPage: vi.fn(async () => taskPage),
+    } as unknown as BrowserContext
+    vi.spyOn(manager as unknown as { ensureContext: () => Promise<BrowserContext> }, 'ensureContext').mockResolvedValue(context)
+
+    await manager.run({ interactive: false }, async () => {
+      currentUrl = 'https://example.com/'
+    })
+
+    expect(taskPage.close).toHaveBeenCalledOnce()
+  })
 })
 
 describe('Chrome profile lock recovery', () => {

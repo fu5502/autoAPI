@@ -9,6 +9,9 @@ import type {
   ChannelImportModelResult,
   ChannelImportResult,
   CheckinMode,
+  LocalExecutionInfo,
+  LocalExecutionOperation,
+  LocalExecutionStatus,
   Site,
 } from './shared/types'
 
@@ -56,6 +59,9 @@ export const api = {
   createAuthAssistantPair: (id: number) => request<AuthAssistantPairing>(`/admin/checkin/sites/${id}/auth-assistant/pair`, { method: 'POST', body: '{}' }),
   getAuthAssistantPair: (siteId: number, pairId: string) => request<AuthAssistantPairingStatus>(`/admin/checkin/sites/${siteId}/auth-assistant/pair/${pairId}`),
   cancelAuthAssistantPair: (siteId: number, pairId: string) => request<AuthAssistantPairingStatus>(`/admin/checkin/sites/${siteId}/auth-assistant/pair/${pairId}`, { method: 'DELETE' }),
+  createLocalExecution: (siteId: number, operation: LocalExecutionOperation) => request<LocalExecutionInfo>(`/admin/checkin/sites/${siteId}/auth-assistant/local-execution`, { method: 'POST', body: JSON.stringify({ operation }) }),
+  getLocalExecution: (siteId: number, executionId: string) => request<LocalExecutionStatus>(`/admin/checkin/sites/${siteId}/auth-assistant/local-execution/${executionId}`),
+  cancelLocalExecution: (siteId: number, executionId: string) => request<LocalExecutionStatus>(`/admin/checkin/sites/${siteId}/auth-assistant/local-execution/${executionId}`, { method: 'DELETE' }),
   prepareChannelImport: (id: number) => request<ChannelImportPrepareResult>(`/admin/checkin/sites/${id}/channel-import/prepare`, { method: 'POST', body: '{}' }),
   discoverChannelImportModels: (id: number, candidateId: string) => request<ChannelImportModelResult>(`/admin/checkin/sites/${id}/channel-import/models`, { method: 'POST', body: JSON.stringify({ candidateId }) }),
   confirmChannelImport: (id: number, input: { candidateId: string; name: string; models: string[]; priority: number; weight: number; tags: string[] }) => request<ChannelImportResult>(`/admin/checkin/sites/${id}/channel-import/confirm`, { method: 'POST', body: JSON.stringify(input) }),

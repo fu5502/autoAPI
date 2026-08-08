@@ -834,6 +834,153 @@ describe('NewApiService known balance-only sites', () => {
     expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
   })
 
+  it('does not overwrite an Any Router balance with an anonymous zero response after a historical guest identity was saved', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('AnyRouter', 'https://anyrouter.top')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    database.updateSiteAuth(site.id, {
+      adapter: 'new-api-modern',
+      authStatus: 'valid',
+      username: 'guest',
+      quotaPerUnit: 500_000,
+      lastBalanceRaw: 2_000_000,
+      lastBalanceAmount: 4,
+    })
+    const page = {
+      goto: async () => undefined,
+      waitForTimeout: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          const source = String(callback)
+          if (source.includes('document.title')) return { title: 'AnyRouter console', text: '' }
+          if (source.includes('const ids')) return []
+          return null
+        }
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 0, username: 'guest', quota: 0 },
+          }
+        }
+        return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      message: '自动签到已关闭，未读取到最新余额',
+      balanceAfterRaw: 2_000_000,
+      loginVerified: true,
+    })
+    expect(database.getSite(site.id)).toMatchObject({
+      authStatus: 'valid',
+      lastBalanceRaw: 2_000_000,
+      lastBalanceAmount: 4,
+    })
+  })
+
+  it('accepts a zero Any Router balance for an identified user', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('AnyRouter', 'https://anyrouter.top')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string }) => {
+        if (!input?.pathname) return String(callback).includes('document.title') ? { title: 'AnyRouter console', text: '' } : null
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 9, username: 'anyrouter-user', quota: 0 },
+          }
+        }
+        return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 0, balanceAfterAmount: 0, loginVerified: true })
+    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'valid', username: 'anyrouter-user', legacyUserId: 9, lastBalanceRaw: 0 })
+  })
+
+  it('retries Any Router after the console finishes restoring its browser session', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('AnyRouter', 'https://anyrouter.top')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const waits: number[] = []
+    let selfRequests = 0
+    const page = {
+      goto: async () => undefined,
+      waitForTimeout: async (milliseconds: number) => { waits.push(milliseconds) },
+      evaluate: async (callback: unknown, input?: { pathname?: string }) => {
+        if (!input?.pathname) return String(callback).includes('document.title') ? { title: 'AnyRouter console', text: '' } : null
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self') {
+          selfRequests += 1
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: selfRequests === 1
+              ? { id: 0, username: 'guest', quota: 0 }
+              : { id: 9, username: 'anyrouter-user', quota: 2_000_000 },
+          }
+        }
+        return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 2_000_000, balanceAfterAmount: 4, loginVerified: true })
+    expect(waits).toEqual([800])
+    expect(selfRequests).toBe(2)
+  })
+
   it('prefers Any Router browser-cookie balance when the bearer response is zero', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
@@ -978,28 +1125,75 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
     expect(database.getSite(site.id)?.authStatus).toBe('valid')
   })
 
-  it('keeps 42 API valid when check-in endpoints return an HTML 404', async () => {
+  it('moves 42 API to balance-only mode when its authenticated check-in endpoint returns an HTML 404', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('42 API', 'https://api.42w.shop')
     database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid' })
-    const { page, requestedPaths } = createStorageBackedPage(
-      { id: 42, username: 'forty-two', quota: 1_234_000 },
-      () => ({ httpStatus: 404, contentType: 'text/html; charset=UTF-8', success: false, message: '站点返回了非 JSON 响应' }),
-    )
+    const requested: Array<{ pathname: string; userId: string | undefined }> = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          const source = String(callback)
+          if (source.includes('uid')) return '42'
+          if (source.includes('localStorage.length')) return []
+          if (source.includes('document.title')) return { title: '42 API', text: '' }
+          return null
+        }
+        requested.push({ pathname: input.pathname, userId: input.headers?.['New-API-User'] })
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { checkin_enabled: true, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self' && input.headers?.['New-API-User'] === '42') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 42, username: 'forty-two', quota: 1_234_000 },
+          }
+        }
+        if (input.pathname.startsWith('/api/user/checkin?month=')) {
+          return { httpStatus: 404, contentType: 'text/html; charset=UTF-8', success: false, message: '站点返回了非 JSON 响应' }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
     const browser = {
       run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
     } as unknown as BrowserManager
     const service = new NewApiService(database, browser, new EventBus())
     const result = await service.checkinSite(database.getSite(site.id)!, database.startRun('manual').id)
 
-    expect(result).toMatchObject({ status: 'failed', loginVerified: true })
-    expect(requestedPaths).toEqual(['/api/status', '/api/user/self', '/api/user/self', '/api/user/self', expect.stringMatching(/^\/api\/user\/checkin\?month=/)])
+    expect(result).toMatchObject({
+      status: 'disabled',
+      message: '该站点不支持自动签到，余额已刷新',
+      balanceAfterRaw: 1_234_000,
+      balanceAfterAmount: 2.468,
+      loginVerified: true,
+    })
+    expect(requested).toEqual([
+      { pathname: '/api/status', userId: undefined },
+      { pathname: '/api/user/self', userId: '42' },
+      { pathname: '/api/user/self', userId: '42' },
+      { pathname: expect.stringMatching(/^\/api\/user\/checkin\?month=/), userId: '42' },
+    ])
+    expect(database.getSite(site.id)).toMatchObject({
+      checkinMode: 'balance_only',
+      authStatus: 'valid',
+      lastBalanceRaw: 1_234_000,
+      lastBalanceAmount: 2.468,
+    })
     preserveSiteResult(database, site.id, result)
     expect(database.getSite(site.id)?.authStatus).toBe('valid')
   })
 
-  it('keeps 黑与白福利站 NEXT valid when the user endpoint returns an HTML 403', async () => {
+  it('reports browser verification as manual work while keeping 黑与白福利站 NEXT logged in', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('黑与白福利站 NEXT', 'https://cdk.hybgzs.com')
@@ -1014,7 +1208,11 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
     const service = new NewApiService(database, browser, new EventBus())
     const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
 
-    expect(result).toMatchObject({ status: 'failed', loginVerified: true })
+    expect(result).toMatchObject({
+      status: 'manual_required',
+      message: '线上服务器浏览器被站点验证拦截，请在本机已授权浏览器完成验证后重新刷新余额',
+      loginVerified: true,
+    })
     expect(requestedPaths).toEqual(['/api/user/info'])
     preserveSiteResult(database, site.id, result)
     expect(database.getSite(site.id)?.authStatus).toBe('valid')

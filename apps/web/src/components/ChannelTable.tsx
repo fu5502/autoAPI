@@ -3,6 +3,7 @@ import { Check, ChevronDown, ChevronRight, Copy, GripVertical, Pause, Pencil, Pl
 import type { Channel } from "../types";
 import { getAdminToken } from "../api";
 import { StatusDot } from "./StatusDot";
+import { isLowBalance } from "../checkin/format";
 
 export function ChannelTable({
   channels,
@@ -315,7 +316,7 @@ function ChannelSiteIcon({ channel }: { channel: Channel }) {
 
 function formatBalance(channel: Channel, onSyncBalance: (siteId: number) => void, syncingBalanceId: number | null, balanceRefreshPending: boolean) {
   const value = channel.balance === null ? null : `${channel.balanceCurrency === "USD" ? "$" : `${channel.balanceCurrency ?? ""} `}${formatBalanceValue(channel.balance)}`;
-  const balanceClass = channel.balance === null ? "unknown" : channel.balanceStatus;
+  const balanceClass = channel.balance === null ? "unknown" : isLowBalance(channel.balance) ? "low" : channel.balanceStatus;
   const refreshedAt = channel.checkinSite?.lastBalanceUpdatedAt ?? channel.balanceUpdatedAt ?? null;
   const refreshLabel = formatBalanceRefreshTime(refreshedAt);
   const balanceContent = <>
