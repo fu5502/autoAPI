@@ -742,7 +742,10 @@ export class AppDatabase {
         last_balance_updated_at = CASE WHEN ? IS NOT NULL OR ? IS NOT NULL THEN ? ELSE last_balance_updated_at END,
         last_checked_at = ?, last_status = ?,
         last_reward_amount = COALESCE(?, last_reward_amount),
-        last_reward_at = CASE WHEN ? IS NOT NULL THEN ? ELSE last_reward_at END,
+        last_reward_at = CASE
+          WHEN ? IS NOT NULL THEN ?
+          WHEN ? IN ('success', 'already_checked') THEN ?
+          ELSE last_reward_at END,
         last_balance_delta_amount = COALESCE(?, last_balance_delta_amount),
         last_error = ?, auth_status = ?, updated_at = ?
       WHERE id = ?
@@ -756,6 +759,8 @@ export class AppDatabase {
       result.status,
       result.rewardAmount,
       result.rewardAmount,
+      result.completedAt,
+      result.status,
       result.completedAt,
       result.balanceDeltaAmount,
       ['failed', 'manual_required'].includes(result.status) ? result.message : null,

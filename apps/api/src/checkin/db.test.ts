@@ -126,4 +126,29 @@ describe('check-in site balance updates', () => {
     expect(database.getSite(site.id)).toMatchObject({ checkinMode: 'balance_only', lastStatus: 'disabled' })
     expect(database.updateSite(site.id, { checkinMode: 'checkin' })).toMatchObject({ checkinMode: 'checkin', lastStatus: 'never' })
   })
+
+  it('records the check-in time when already checked even without a reward', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('已签到站点', 'https://checked.example')
+    const run = database.startRun('manual')
+    const completedAt = new Date().toISOString()
+    database.applyResult(site.id, {
+      runId: run.id,
+      siteId: site.id,
+      status: 'already_checked',
+      rewardRaw: null,
+      rewardAmount: null,
+      balanceBeforeRaw: null,
+      balanceBeforeAmount: null,
+      balanceAfterRaw: null,
+      balanceAfterAmount: null,
+      balanceDeltaAmount: null,
+      message: '今日已签到',
+      startedAt: completedAt,
+      completedAt,
+    })
+
+    expect(database.getSite(site.id)).toMatchObject({ lastStatus: 'already_checked', lastRewardAt: completedAt })
+  })
 })
