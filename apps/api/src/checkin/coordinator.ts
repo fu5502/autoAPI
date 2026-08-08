@@ -52,7 +52,7 @@ export class CheckinCoordinator {
         level: 'warn',
         message: '收到终止请求，正在等待当前站点结束',
       })
-      await this.newApi.cancelActiveTask().catch(() => undefined)
+      await this.cancelBrowserTask()
       return this.db.getRun(active.id)
     }
 
@@ -80,7 +80,7 @@ export class CheckinCoordinator {
         message: '收到该站点终止请求，正在停止当前操作',
       })
       if (this.currentSiteId === siteId) {
-        await this.newApi.cancelActiveTask().catch(() => undefined)
+        await this.cancelBrowserTask()
       }
       return this.db.getRun(active.id)
     }
@@ -113,6 +113,13 @@ export class CheckinCoordinator {
     },
   ) {
     this.progress?.add({ runId, ...input })
+  }
+
+  private async cancelBrowserTask() {
+    await Promise.race([
+      this.newApi.cancelActiveTask().catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
+    ])
   }
 
   async run(

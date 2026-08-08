@@ -138,6 +138,21 @@ describe('BrowserManager connection recovery', () => {
 
     expect(taskPage.close).toHaveBeenCalled()
   })
+
+  it('force closes the active page and shuts down the browser on cancel', async () => {
+    const manager = new BrowserManager()
+    const page = {
+      isClosed: () => false,
+      close: vi.fn(async () => undefined),
+    } as unknown as Page
+    Object.assign(manager as unknown as Record<string, unknown>, { activePage: page })
+    const forceShutdown = vi.spyOn(manager, 'forceShutdown').mockResolvedValue(undefined)
+
+    await manager.cancelActive()
+
+    expect(page.close).toHaveBeenCalledWith({ runBeforeUnload: false })
+    expect(forceShutdown).toHaveBeenCalledOnce()
+  })
 })
 
 describe('Chrome profile lock recovery', () => {

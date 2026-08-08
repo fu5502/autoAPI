@@ -117,7 +117,32 @@ export class BrowserManager {
   }
 
   async cancelActive() {
-    await this.activePage?.close().catch(() => undefined)
+    const page = this.activePage
+    if (page && !page.isClosed()) {
+      await Promise.race([
+        page.close({ runBeforeUnload: false }).catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 1_500)),
+      ])
+    }
+    await this.forceShutdown().catch(() => undefined)
+  }
+
+  async forceShutdown() {
+    const browser = this.activeBrowser
+    const chromeProcess = this.chromeProcess
+    const chromeProcessId = this.chromeProcessId ?? chromeProcess?.pid ?? null
+    this.activeBrowser = null
+    this.activeContext = null
+    this.contextPromise = null
+    this.chromeProcess = null
+    this.chromeProcessId = null
+    if (chromeProcessId) {
+      await terminateProcessTree(chromeProcessId, chromeProcess)
+    } else if (chromeProcess && !chromeProcess.killed) {
+      chromeProcess.kill()
+    }
+    await browser?.close().catch(() => undefined)
+    await fs.rm(debugPortFile, { force: true }).catch(() => undefined)
   }
 
   async shutdown() {
