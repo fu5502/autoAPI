@@ -1,0 +1,109 @@
+name: Build and deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: autoapi-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run API tests
+        run: pnpm test
+
+      - name: Run typechecks
+        run: pnpm typecheck
+
+  build-and-deploy:
+    name: Build image and deploy
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: ${{ secrets.AUTOAPI_DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ secrets.AUTOAPI_DEPLOY_PORT }}
+      DEPLOY_USER: ${{ secrets.AUTOAPI_DEPLOY_USER }}
+      DEPLOY_PATH: ${{ secrets.AUTOAPI_DEPLOY_PATH }}
+      IMAGE_TAG: autoapi:${{ github.sha }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Configure deployment SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AUTOAPI_DEPLOY_SSH_KEY }}
+
+      - name: Trust deployment host
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_PORT"
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> "$HOME/.ssh/known_hosts"
+
+      - name: Transfer image to server
+        run: |
+          set -euo pipefail
+          docker save "$IMAGE_TAG" | gzip -1 | ssh -o BatchMode=yes -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" 'gunzip | docker load'
+
+      - name: Restart application with transferred image
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_PATH"
+          remote_path=$(printf '%q' "$DEPLOY_PATH")
+          remote_image=$(printf '%q' "$IMAGE_TAG")
+          ssh -o BatchMode=yes -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "set -eu
+            cd $remote_path
+            test -f .env
+            docker image inspect $remote_image >/dev/null
+            AUTOAPI_IMAGE=$remote_image docker compose up -d --no-build --force-recreate autoapi
+            for attempt in \$(seq 1 45); do
+              if docker compose exec -T autoapi wget -qO- http://127.0.0.1:8080/healthz >/dev/null; then
+                docker compose ps
+                exit 0
+              fi
+              sleep 2
+            done
+            docker compose ps
+            docker compose logs --tail=100 autoapi
+            exit 1"

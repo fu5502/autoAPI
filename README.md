@@ -349,3 +349,9 @@ pnpm.cmd build
 ## 开发约定
 
 开始新任务前请先阅读 docs/project-context.md，并运行 git status --short --branch。修改数据结构时必须使用幂等迁移，不能重建或清空现有数据。涉及密钥、Cookie、Local Storage 和日志时必须保持加密、域名校验和脱敏。提交前运行类型检查、测试和构建，并确认未提交 .env、运行数据或敏感文件。
+
+## GitHub Actions 发布
+
+推送 `main` 后由 `.github/workflows/build-and-deploy.yml` 在 GitHub runner 上执行测试、类型检查和生产 Docker 构建。构建成功后通过 SSH 传输镜像到服务器，再使用 `docker compose up -d --no-build` 仅重建 `autoapi` 容器；PostgreSQL、Redis、签到数据卷和浏览器配置不会被删除。
+
+仓库 Actions 需要配置以下 Secrets：`AUTOAPI_DEPLOY_HOST`、`AUTOAPI_DEPLOY_PORT`、`AUTOAPI_DEPLOY_USER`、`AUTOAPI_DEPLOY_PATH` 和 `AUTOAPI_DEPLOY_SSH_KEY`。普通线上发布不再在服务器执行 `docker compose up --build`。
