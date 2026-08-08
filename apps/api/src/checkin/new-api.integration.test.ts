@@ -699,7 +699,7 @@ describe('NewApiService 黑与白福利站签到', () => {
 })
 
 describe('NewApiService known balance-only sites', () => {
-  it('reads Aihub.top through its Sub2API auth profile', async () => {
+  it('reads Aihub.top through its Sub2API auth profile behind a browser challenge', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('Aihub', 'https://aihub.top')
@@ -710,7 +710,7 @@ describe('NewApiService known balance-only sites', () => {
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           if (String(callback).includes('auth_token')) return 'aihub-access-token'
-          return { title: 'Aihub', text: '' }
+          return { title: 'Just a moment...', text: 'Performing browser verification' }
         }
         requestedPaths.push(input.pathname)
         if (input.pathname === '/api/v1/auth/me') {
