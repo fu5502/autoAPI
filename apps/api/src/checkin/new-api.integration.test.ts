@@ -781,7 +781,7 @@ describe('NewApiService known balance-only sites', () => {
     })
   })
 
-  it('refreshes AnyRouter from /dashboard without opening the check-in homepage', async () => {
+  it('refreshes AnyRouter from /console without opening the check-in homepage', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('AnyRouter', 'https://anyrouter.top')
@@ -830,7 +830,7 @@ describe('NewApiService known balance-only sites', () => {
       balanceAfterAmount: 4,
       loginVerified: true,
     })
-    expect(navigatedTo).toEqual(['https://anyrouter.top/dashboard'])
+    expect(navigatedTo).toEqual(['https://anyrouter.top/console'])
     expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
   })
 
@@ -972,7 +972,7 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
     const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
 
     expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 2_000_000, loginVerified: true })
-    expect(navigatedTo).toEqual(['https://anyrouter.top/dashboard'])
+    expect(navigatedTo).toEqual(['https://anyrouter.top/console'])
     expect(requestedPaths).toEqual(['/api/status', '/api/user/self', '/api/user/self'])
     preserveSiteResult(database, site.id, result)
     expect(database.getSite(site.id)?.authStatus).toBe('valid')

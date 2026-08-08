@@ -2715,6 +2715,15 @@ function hasExactHostname(baseUrl: string, hostname: string): boolean {
 function getDashboardUrl(baseUrl: string): string | null {
   try {
     const url = new URL(baseUrl)
+    // Any Router keeps the authenticated New API console under /console;
+    // /dashboard is a legacy route and can leave the browser on a public shell
+    // where the session-backed /api/user/self response resolves to quota 0.
+    if (hasExactHostname(baseUrl, 'anyrouter.top')) {
+      url.pathname = '/console'
+      url.search = ''
+      url.hash = ''
+      return url.toString().replace(/\/$/, '')
+    }
     if (/^\/dashboard\/?$/i.test(url.pathname)) return null
     url.pathname = '/dashboard'
     url.search = ''
