@@ -593,6 +593,10 @@ export class NewApiService {
     for (const session of sessions) await this.cancelAuthorization(session.id)
   }
 
+  async cancelActiveTask() {
+    await this.browser.cancelActive()
+  }
+
   private async authorizeInBrowser(site: Site, state: AuthSessionState) {
     try {
       await this.browser.run({ interactive: true, closeBrowserWhenDone: true }, async (context, page) => {

@@ -72,6 +72,7 @@ export const api = {
   syncChannelBalance: (id: number) => request<{ updatedChannelIds: string[]; skippedBecauseBalanceIsUnknown: boolean; refreshed: boolean; result: { status: string; message: string; balance: number | null; currency: string | null } | null }>(`/admin/checkin/sites/${id}/channel-balance/sync`, { method: 'POST', body: '{}' }),
   runCheckin: (siteIds?: number[]) => request<CheckinRun | null>('/admin/checkin/checkin/run', { method: 'POST', body: JSON.stringify(siteIds ? { siteIds } : {}) }),
   getRun: (runId: number) => request<{ run: CheckinRun; results: CheckinResult[] }>(`/admin/checkin/runs/${runId}`),
+  cancelRun: (runId: number) => request<CheckinRun>(`/admin/checkin/runs/${runId}/cancel`, { method: 'POST', body: '{}' }),
   getRunProgress: (runId: number) => request<{ runId: number; entries: RunProgressEntry[] }>(`/admin/checkin/progress/${runId}`),
   saveSettings: (settings: AppSettings) => request<AppSettings>('/admin/checkin/settings', { method: 'PUT', body: JSON.stringify(settings) }),
   testTelegram: (input: { botToken: string; chatId: string }) => request<{ sent: boolean }>('/admin/checkin/settings/telegram/test', { method: 'POST', body: JSON.stringify(input) }),

@@ -1591,12 +1591,23 @@
 }
 
 .checkin-module .run-progress-popover-head {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   color: var(--brand-strong, #216e5b);
   font-size: 11px;
   font-weight: 700;
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
+}
+
+.checkin-module .run-progress-popover-head .icon-button {
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+  color: var(--red, #b4482a);
+  border-color: var(--red-border, #e6b9aa);
 }
 
 .checkin-module .run-progress-popover-lines {

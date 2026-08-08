@@ -57,6 +57,49 @@ describe('CheckinCoordinator manual balance fallback', () => {
     expect(database.listRecentRuns(10)).toEqual([])
   })
 
+  it('cancels an active refresh run and stops after the current site', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const firstSite = database.createSite('A', 'https://a.example')
+    database.createSite('B', 'https://b.example')
+    let release!: () => void
+    let activeRunId = 0
+    const refreshBalanceSite = vi.fn(async () => {
+      await new Promise<void>((resolve) => { release = resolve })
+      return result(firstSite.id, activeRunId, 'disabled', '余额已刷新', 42)
+    })
+    const cancelActiveTask = vi.fn(async () => undefined)
+    const newApi = { refreshBalanceSite, cancelActiveTask } as unknown as NewApiService
+    const coordinator = new CheckinCoordinator(database, newApi, new EventBus(), new TelegramNotifier(database))
+    const task = coordinator.refreshBalance([firstSite.id, 2])
+
+    await vi.waitFor(() => expect(coordinator.getActiveRun()).not.toBeNull())
+    const runId = coordinator.getActiveRun()!.id
+    activeRunId = runId
+    await coordinator.cancelActiveRun(runId)
+
+    expect(cancelActiveTask).toHaveBeenCalledOnce()
+    release()
+    const run = await task
+
+    expect(run.status).toBe('partial')
+    expect(refreshBalanceSite).toHaveBeenCalledTimes(1)
+    expect(coordinator.getActiveRun()).toBeNull()
+  })
+
+  it('recovers stale running runs and site states on startup', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('残留任务站', 'https://stale.example')
+    const run = database.startRun('manual')
+    database.markSiteRunning(site.id)
+    const coordinator = new CheckinCoordinator(database, {} as NewApiService, new EventBus(), new TelegramNotifier(database))
+
+    expect(coordinator.recoverStaleRuns()).toBe(1)
+    expect(database.getRun(run.id)).toMatchObject({ status: 'failed' })
+    expect(database.getSite(site.id)).toMatchObject({ lastStatus: 'never' })
+  })
+
   it('refreshes balance when a manual check-in endpoint is missing', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)

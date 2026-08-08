@@ -10,6 +10,7 @@ import { quotaToAmount, roundAmount } from './utils.js'
 
 export class CheckinCoordinator {
   private activeRun: CheckinRun | null = null
+  private cancelled = false
   private readonly retryTimers = new Set<NodeJS.Timeout>()
 
   constructor(
@@ -23,6 +24,48 @@ export class CheckinCoordinator {
 
   getActiveRun() {
     return this.activeRun
+  }
+
+  recoverStaleRuns(): number {
+    const staleRuns = this.db.listRecentRuns(200).filter((run) => run.status === 'running')
+    for (const run of staleRuns) {
+      this.db.cancelRun(run.id, {
+        success: run.successCount,
+        failed: run.failedCount,
+        skipped: run.skippedCount,
+      })
+    }
+    for (const site of this.db.listSites().filter((candidate) => candidate.lastStatus === 'running')) {
+      this.db.recoverSiteRunning(site.id)
+    }
+    return staleRuns.length
+  }
+
+  async cancelActiveRun(runId?: number): Promise<CheckinRun | null> {
+    const active = this.activeRun
+    if (active) {
+      if (runId !== undefined && active.id !== runId) return this.db.getRun(runId)
+      this.cancelled = true
+      this.logProgress(active.id, {
+        level: 'warn',
+        message: '收到终止请求，正在等待当前站点结束',
+      })
+      await this.newApi.cancelActiveTask().catch(() => undefined)
+      return this.db.getRun(active.id)
+    }
+
+    const stale = this.db.listRecentRuns(200)
+      .find((run) => run.status === 'running' && (runId === undefined || run.id === runId))
+    if (!stale) return null
+    this.db.cancelRun(stale.id, {
+      success: stale.successCount,
+      failed: stale.failedCount,
+      skipped: stale.skippedCount,
+    })
+    for (const site of this.db.listSites().filter((candidate) => candidate.lastStatus === 'running')) {
+      this.db.recoverSiteRunning(site.id)
+    }
+    return this.db.getRun(stale.id)
   }
 
   private logProgress(
@@ -50,6 +93,7 @@ export class CheckinCoordinator {
 
     const run = this.db.startRun(trigger)
     this.activeRun = run
+    this.cancelled = false
     const failedSiteIds: number[] = []
     let success = 0
     let failed = 0
@@ -58,7 +102,15 @@ export class CheckinCoordinator {
     try {
       this.events.emit({ type: 'run_started', title: '签到任务已开始', message: `正在处理 ${candidates.length} 个站点`, data: { runId: run.id } })
       this.logProgress(run.id, { message: `开始处理 ${candidates.length} 个站点` })
-      for (const site of candidates) {
+      for (const [siteIndex, site] of candidates.entries()) {
+        if (this.cancelled) {
+          skipped += candidates.length - siteIndex
+          this.logProgress(run.id, {
+            level: 'warn',
+            message: '任务已取消，跳过后续站点',
+          })
+          break
+        }
         const balanceOnly = site.checkinMode === 'balance_only' || (trigger !== 'manual' && !site.enabled)
         let operation: 'checkin' | 'balance_refresh' = balanceOnly ? 'balance_refresh' : 'checkin'
         this.logProgress(run.id, {
@@ -117,17 +169,20 @@ export class CheckinCoordinator {
         })
       }
     } finally {
+      const cancelled = this.cancelled
       this.activeRun = null
-      const completed = this.db.completeRun(run.id, { success, failed, skipped })!
+      this.cancelled = false
+      const counts = { success, failed, skipped }
+      const completed = (cancelled ? this.db.cancelRun(run.id, counts) : this.db.completeRun(run.id, counts))!
       this.events.emit({
         type: 'run_completed',
-        title: completed.status === 'completed' ? '签到任务完成' : '签到任务已结束',
-        message: `成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}`,
+        title: cancelled ? '签到任务已取消' : completed.status === 'completed' ? '签到任务完成' : '签到任务已结束',
+        message: cancelled ? `任务已取消：成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}` : `成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}`,
         data: { run: completed },
       })
       this.logProgress(run.id, {
-        level: failed > 0 ? 'warn' : 'success',
-        message: `任务结束：成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}`,
+        level: cancelled || failed > 0 ? 'warn' : 'success',
+        message: cancelled ? `任务已取消：成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}` : `任务结束：成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}`,
       })
       await this.telegram.notifyRun(completed, this.db.listResults({ runId: run.id, limit: 500 }))
         .catch((error) => {
@@ -137,7 +192,7 @@ export class CheckinCoordinator {
             message: error instanceof Error ? error.message : '未知错误',
           })
         })
-      this.scheduleRetries(failedSiteIds, retryAttempt)
+      if (!cancelled) this.scheduleRetries(failedSiteIds, retryAttempt)
     }
     return this.db.getRun(run.id)!
   }
@@ -149,6 +204,7 @@ export class CheckinCoordinator {
 
     const run = this.db.startRun('manual')
     this.activeRun = run
+    this.cancelled = false
     this.events.emit({
       type: 'run_started',
       title: '余额刷新已开始',
@@ -161,7 +217,15 @@ export class CheckinCoordinator {
     let failed = 0
     let skipped = 0
     try {
-      for (const site of candidates) {
+      for (const [siteIndex, site] of candidates.entries()) {
+        if (this.cancelled) {
+          skipped += candidates.length - siteIndex
+          this.logProgress(run.id, {
+            level: 'warn',
+            message: '任务已取消，跳过后续站点',
+          })
+          break
+        }
         this.logProgress(run.id, {
           siteId: site.id,
           siteName: site.name,
@@ -205,17 +269,20 @@ export class CheckinCoordinator {
         })
       }
     } finally {
-      const completed = this.db.completeRun(run.id, { success, failed, skipped })!
+      const cancelled = this.cancelled
       this.activeRun = null
+      this.cancelled = false
+      const counts = { success, failed, skipped }
+      const completed = (cancelled ? this.db.cancelRun(run.id, counts) : this.db.completeRun(run.id, counts))!
       this.events.emit({
         type: 'run_completed',
-        title: '余额刷新已完成',
-        message: `成功 ${success}，失败或需授权 ${failed}，跳过 ${skipped}`,
+        title: cancelled ? '余额刷新已取消' : '余额刷新已完成',
+        message: cancelled ? `任务已取消：成功 ${success}，失败或需授权 ${failed}，跳过 ${skipped}` : `成功 ${success}，失败或需授权 ${failed}，跳过 ${skipped}`,
         data: { run: completed, operation: 'balance_refresh' },
       })
       this.logProgress(run.id, {
-        level: failed > 0 ? 'warn' : 'success',
-        message: `余额刷新结束：成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}`,
+        level: cancelled || failed > 0 ? 'warn' : 'success',
+        message: cancelled ? `余额刷新已取消：成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}` : `余额刷新结束：成功 ${success}，失败或需处理 ${failed}，跳过 ${skipped}`,
       })
     }
     return this.db.getRun(run.id)!
@@ -233,6 +300,7 @@ export class CheckinCoordinator {
 
     const run = this.db.startRun('manual')
     this.activeRun = run
+    this.cancelled = false
     this.events.emit({
       type: 'run_started',
       title: operation === 'checkin' ? '本地签到已开始' : '本地余额刷新已开始',

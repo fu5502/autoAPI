@@ -801,6 +801,19 @@ export class AppDatabase {
     return this.getRun(id)
   }
 
+  cancelRun(id: number, counts: { success: number; failed: number; skipped: number }): CheckinRun | null {
+    const status: CheckinRun['status'] = counts.success > 0 ? 'partial' : 'failed'
+    this.db.prepare(`
+      UPDATE checkin_runs SET status = ?, completed_at = ?, success_count = ?, failed_count = ?, skipped_count = ? WHERE id = ? AND status = 'running'
+    `).run(status, nowIso(), counts.success, counts.failed, counts.skipped, id)
+    return this.getRun(id)
+  }
+
+  recoverSiteRunning(id: number): void {
+    const timestamp = nowIso()
+    this.db.prepare("UPDATE sites SET last_status = 'never', last_error = NULL, last_checked_at = ?, updated_at = ? WHERE id = ?").run(timestamp, timestamp, id)
+  }
+
   getLastRunStartedAt(trigger: RunTrigger): string | null {
     const row = this.db
       .prepare('SELECT started_at FROM checkin_runs WHERE trigger = ? ORDER BY started_at DESC LIMIT 1')

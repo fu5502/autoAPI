@@ -146,6 +146,7 @@ export function createCheckinModule(
   const telegram = new TelegramNotifier(db);
   const balanceSync = new CheckinBalanceSync(db, store);
   const coordinator = new CheckinCoordinator(db, newApi, events, telegram, balanceSync, progress);
+  coordinator.recoverStaleRuns();
   const localExecution = new LocalExecutionService(db, events, ({ siteId, operation, report }) => (
     coordinator.recordLocalExecution(siteId, operation, report)
   ));
@@ -703,6 +704,12 @@ export async function registerCheckinRoutes(
       return reply.code(202).send(module.coordinator.getActiveRun());
     });
     checkin.get<{ Querystring: { limit?: string } }>("/runs", async (request) => module.db.listRecentRuns(clampInteger(request.query.limit, 50, 1, 200)));
+    checkin.post<{ Params: { id: string } }>("/runs/:id/cancel", async (request, reply) => {
+      const runId = parseId(request.params.id);
+      const run = await module.coordinator.cancelActiveRun(runId);
+      if (!run) return reply.code(404).send({ error: { message: "任务不存在或已结束", type: "not_found" } });
+      return run;
+    });
     checkin.get<{ Params: { id: string } }>("/runs/:id", async (request, reply) => {
       const run = module.db.getRun(parseId(request.params.id));
       if (!run) return reply.code(404).send({ error: "任务不存在" });
