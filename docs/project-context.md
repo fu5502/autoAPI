@@ -462,14 +462,16 @@ git push -u origin 当前分支
 
 不要在工作树混有用户数据、临时截图、.env 或未确认改动时执行 git add -A。发布后检查 docker compose ps、容器日志、/healthz，并验证渠道、模型路由、用量、测试记录、签到站点、签到历史和登录历史数量没有减少。
 
-当前提交 `afebc12` 的验证结果：
+当前提交 `40ea83d` 的验证结果：
 
 - `pnpm.cmd typecheck`：通过。
-- `pnpm.cmd test`：26 个测试文件、144 个测试全部通过。
+- `pnpm.cmd test`：27 个测试文件、153 个测试全部通过。
 - `pnpm.cmd build`：通过。
 - `git diff --check`：通过。
 
-文档更新本身不要求重启线上容器；但按照项目约定，若用户要求“同步线上”，仍需完成 GitHub 推送、服务器源码同步、应用容器重建和线上健康核验，并在最终回复中说明每一步状态。
+推送 `main` 后由 `.github/workflows/build-and-deploy.yml` 在 GitHub runner 上执行测试、类型检查和 Docker 构建；构建成功后通过 SSH 将镜像传到线上，再使用 `AUTOAPI_IMAGE=... docker compose up -d --no-build --force-recreate autoapi` 更新应用。线上 Actions 需要配置 `AUTOAPI_DEPLOY_HOST`、`AUTOAPI_DEPLOY_PORT`、`AUTOAPI_DEPLOY_USER`、`AUTOAPI_DEPLOY_PATH` 和 `AUTOAPI_DEPLOY_SSH_KEY` 五个 Secrets。普通发布不再在服务器执行 `docker compose up --build`，也不删除 PostgreSQL、Redis、签到 SQLite 或浏览器 profile 所在 volume。
+
+文档更新本身不要求重启线上容器；但按照项目约定，若用户要求“同步线上”，应等待 GitHub Actions 的验证、构建和部署 job 全部成功，再检查线上容器、日志和 `/healthz`，并在最终回复中说明每一步状态。
 
 ## 14. 关键故障排查
 

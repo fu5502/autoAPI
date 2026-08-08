@@ -25,6 +25,7 @@ services:
       retries: 20
 
   autoapi:
+    image: ${AUTOAPI_IMAGE:-autoapi-autoapi:latest}
     build: .
     ports:
       - "${AUTOAPI_BIND_ADDRESS:-0.0.0.0}:${AUTOAPI_PORT:-8080}:8080"
