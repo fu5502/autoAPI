@@ -48,6 +48,8 @@ import {
   isLowBalance,
   rewardTimingLabel,
   rewardTimingTone,
+  siteCheckinLabel,
+  siteCheckinTone,
   statusTone,
 } from './format'
 import { isBalanceOnlySite, partitionSites, siteAdapterLabel, type SiteManagementGroup } from './view-model'
@@ -825,7 +827,7 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
           <td><div className="site-auth-cell"><StatusBadge tone={statusTone(site.authStatus)}>{authLabel(site.authStatus)}</StatusBadge>{site.authSyncStatus === 'success' && site.authSyncedAt ? <small className="auth-sync-meta">已同步 {formatDateTime(site.authSyncedAt)}</small> : site.authSyncStatus === 'failed' ? <small className="auth-sync-meta danger-text" title={site.authSyncMessage ?? undefined}>同步失败</small> : null}</div></td>
           <td>{balanceOnly
             ? <div className="balance-status-cell"><StatusBadge tone={balanceRefreshStatusTone(site)}>{balanceRefreshStatusLabel(site)}</StatusBadge><small className={balanceRefreshTimingClass(site.lastBalanceUpdatedAt)}>{balanceRefreshTimingLabel(site.lastBalanceUpdatedAt)}</small></div>
-            : <StatusBadge tone={statusTone(site.lastStatus)}>{checkinLabel(site.lastStatus)}</StatusBadge>}</td>
+            : <StatusBadge tone={siteCheckinTone(site)}>{siteCheckinLabel(site)}</StatusBadge>}</td>
           {!balanceOnly ? <td><div className="reward-cell static" data-interactive="false" onClick={(event) => event.stopPropagation()}><strong className={rewardTimingTone(site.lastRewardAt)}>{formatAmount(site.lastRewardAmount, site.currencySymbol)}</strong><small>{site.lastRewardAt ? rewardTimingLabel(site.lastRewardAt) : '--'}</small></div></td> : null}
           <td><div className="site-balance-cell"><button type="button" className={`site-balance-button balance-value ${site.lastBalanceAmount === null ? 'empty' : isLowBalance(site.lastBalanceAmount) ? 'low' : ''}`} title={balanceOnly ? '刷新登录账号余额' : '仅刷新余额，不执行签到'} disabled={refreshingBalanceSiteId !== null} onClick={(event) => { event.stopPropagation(); void refreshBalance(site) }}>{refreshingBalanceSiteId === site.id ? <RefreshCw size={13} className="spin" /> : null}<span>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></button><small className="balance-refresh-time">{formatBalanceRefreshTime(site.lastBalanceUpdatedAt)}</small></div></td>
           <td><StatusBadge tone={importedSiteIds.includes(site.id) ? 'success' : 'neutral'}>{importedSiteIds.includes(site.id) ? '是' : '否'}</StatusBadge></td>

@@ -711,7 +711,11 @@ export class AppDatabase {
     return this.getSite(id)
   }
 
-  applyResult(siteId: number, result: Omit<CheckinResult, 'id' | 'siteName'>) {
+  applyResult(
+    siteId: number,
+    result: Omit<CheckinResult, 'id' | 'siteName'>,
+    options: { preserveLastStatus?: boolean } = {},
+  ) {
     const site = this.getSite(siteId)
     if (!site) throw new Error('站点不存在')
     this.db.prepare(`
@@ -740,7 +744,7 @@ export class AppDatabase {
         last_balance_raw = COALESCE(?, last_balance_raw),
         last_balance_amount = COALESCE(?, last_balance_amount),
         last_balance_updated_at = CASE WHEN ? IS NOT NULL OR ? IS NOT NULL THEN ? ELSE last_balance_updated_at END,
-        last_checked_at = ?, last_status = ?,
+        last_checked_at = ?, last_status = CASE WHEN ? THEN last_status ELSE ? END,
         last_reward_amount = COALESCE(?, last_reward_amount),
         last_reward_at = CASE
           WHEN ? IS NOT NULL THEN ?
@@ -756,6 +760,7 @@ export class AppDatabase {
       result.balanceAfterAmount,
       result.balanceAfterRaw !== null || result.balanceAfterAmount !== null ? result.completedAt : null,
       result.completedAt,
+      Number(options.preserveLastStatus ?? false),
       result.status,
       result.rewardAmount,
       result.rewardAmount,

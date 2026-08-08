@@ -151,4 +151,45 @@ describe('check-in site balance updates', () => {
 
     expect(database.getSite(site.id)).toMatchObject({ lastStatus: 'already_checked', lastRewardAt: completedAt })
   })
+
+  it('keeps the last check-in status when a balance refresh returns disabled', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('签到保留站', 'https://preserve.example')
+    const firstRun = database.startRun('manual')
+    const secondRun = database.startRun('manual')
+    const completedAt = new Date().toISOString()
+    database.applyResult(site.id, {
+      runId: firstRun.id,
+      siteId: site.id,
+      status: 'success',
+      rewardRaw: 5,
+      rewardAmount: 5,
+      balanceBeforeRaw: null,
+      balanceBeforeAmount: null,
+      balanceAfterRaw: null,
+      balanceAfterAmount: null,
+      balanceDeltaAmount: null,
+      message: '签到成功',
+      startedAt: completedAt,
+      completedAt,
+    })
+    database.applyResult(site.id, {
+      runId: secondRun.id,
+      siteId: site.id,
+      status: 'disabled',
+      rewardRaw: null,
+      rewardAmount: null,
+      balanceBeforeRaw: null,
+      balanceBeforeAmount: null,
+      balanceAfterRaw: 10,
+      balanceAfterAmount: 10,
+      balanceDeltaAmount: null,
+      message: '自动签到已关闭，余额已刷新',
+      startedAt: completedAt,
+      completedAt,
+    }, { preserveLastStatus: true })
+
+    expect(database.getSite(site.id)).toMatchObject({ lastStatus: 'success', lastRewardAmount: 5 })
+  })
 })

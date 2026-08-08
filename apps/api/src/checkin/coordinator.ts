@@ -89,7 +89,11 @@ export class CheckinCoordinator {
           level: result.status === 'failed' || result.status === 'manual_required' ? 'warn' : result.status === 'success' || result.status === 'already_checked' ? 'success' : 'info',
           message: `${site.name}：${result.message}`,
         })
-        this.db.applyResult(site.id, storedResult)
+        this.db.applyResult(site.id, storedResult, {
+          preserveLastStatus: operation === 'balance_refresh'
+            && result.status === 'disabled'
+            && !['never', 'disabled'].includes(site.lastStatus),
+        })
         await this.balanceSync?.syncSite(site.id).catch((error) => {
           this.events.emit({
             type: 'state_changed',
@@ -178,7 +182,9 @@ export class CheckinCoordinator {
           level: balanceRefreshSucceeded(result) ? 'success' : result.status === 'manual_required' ? 'warn' : result.status === 'failed' ? 'error' : 'info',
           message: `${site.name}：${result.message}`,
         })
-        this.db.applyResult(site.id, storedResult)
+        this.db.applyResult(site.id, storedResult, {
+          preserveLastStatus: result.status === 'disabled' && !['never', 'disabled'].includes(site.lastStatus),
+        })
         await this.balanceSync?.syncSite(site.id, options).catch((error) => {
           this.events.emit({
             type: 'state_changed',

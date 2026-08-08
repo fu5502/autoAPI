@@ -86,9 +86,33 @@ export function authLabel(status: AuthStatus): string {
 
 export function checkinLabel(status: CheckinStatus): string {
   return {
-    never: '未签到', running: '执行中', success: '签到成功', already_checked: '已签到', failed: '签到失败',
-    manual_required: '需人工处理', disabled: '该站不支持签到功能',
+    never: '未签到', running: '执行中', success: '已签到', already_checked: '已签到', failed: '签到失败',
+    manual_required: '需手动签到', disabled: '未签到',
   }[status]
+}
+
+export function siteCheckinLabel(site: Site): string {
+  if (site.lastStatus === 'running') return '执行中'
+  if (site.lastStatus === 'failed') return '签到失败'
+  if (site.lastStatus === 'manual_required') return '需手动签到'
+  if (
+    site.lastStatus === 'success'
+    || site.lastStatus === 'already_checked'
+    || (site.lastStatus === 'disabled' && site.lastRewardAt)
+  ) return '已签到'
+  return '未签到'
+}
+
+export function siteCheckinTone(site: Site): ReturnType<typeof statusTone> {
+  if (site.lastStatus === 'running') return 'running'
+  if (site.lastStatus === 'failed') return 'danger'
+  if (site.lastStatus === 'manual_required') return 'warning'
+  if (
+    site.lastStatus === 'success'
+    || site.lastStatus === 'already_checked'
+    || (site.lastStatus === 'disabled' && site.lastRewardAt)
+  ) return 'success'
+  return 'neutral'
 }
 
 export function statusTone(status: AuthStatus | CheckinStatus): 'success' | 'warning' | 'danger' | 'neutral' | 'running' {
