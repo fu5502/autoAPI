@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { BrowserManager } from './browser-manager.js'
 import { AppDatabase } from './db.js'
 import { EventBus } from './events.js'
-import { NewApiService } from './new-api.js'
+import { NewApiService, parseRemoteResponseBody } from './new-api.js'
 
 const databases: AppDatabase[] = []
 
@@ -805,7 +805,7 @@ describe('NewApiService known balance-only sites', () => {
           }
         }
         if (input.pathname === '/api/user/self') {
-          expect(input.headers?.Authorization).toBe('Bearer anyrouter-access-token')
+          expect(input.headers?.Authorization).toBeUndefined()
           return {
             httpStatus: 200,
             contentType: 'application/json',
@@ -833,6 +833,125 @@ describe('NewApiService known balance-only sites', () => {
     expect(navigatedTo).toEqual(['https://anyrouter.top/dashboard'])
     expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
   })
+
+  it('prefers Any Router browser-cookie balance when the bearer response is zero', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('AnyRouter', 'https://anyrouter.top')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const requests: Array<{ pathname: string; authorization: string | undefined }> = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          if (String(callback).includes('localStorage')) return 'anyrouter-access-token'
+          return { title: 'AnyRouter dashboard', text: '' }
+        }
+        requests.push({ pathname: input.pathname, authorization: input.headers?.Authorization })
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self' && input.headers?.Authorization) {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 9, username: 'anyrouter-user', quota: 0 },
+          }
+        }
+        if (input.pathname === '/api/user/self') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 9, username: 'anyrouter-user', quota: 2_000_000 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 2_000_000, balanceAfterAmount: 4, loginVerified: true })
+    expect(requests).toEqual([
+      { pathname: '/api/status', authorization: undefined },
+      { pathname: '/api/user/self', authorization: undefined },
+    ])
+  })
+
+  it('reads a legacy New API user id stored as uid', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('42 API', 'https://api.42w.shop')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const requested: Array<{ pathname: string; userId: string | undefined }> = []
+    const page = {
+      goto: async () => undefined,
+      evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) {
+          const source = String(callback)
+          if (source.includes('uid')) return '42'
+          if (source.includes('document.title')) return { title: '42 API', text: '' }
+          return []
+        }
+        requested.push({ pathname: input.pathname, userId: input.headers?.['New-API-User'] })
+        if (input.pathname === '/api/status') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { checkin_enabled: false, quota_per_unit: 500_000 },
+          }
+        }
+        if (input.pathname === '/api/user/self' && input.headers?.['New-API-User'] === '42') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 42, username: 'forty-two', quota: 1_234_000 },
+          }
+        }
+        return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+      },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 1_234_000, balanceAfterAmount: 2.468, loginVerified: true })
+    expect(requested).toEqual([
+      { pathname: '/api/status', userId: undefined },
+      { pathname: '/api/user/self', userId: undefined },
+      { pathname: '/api/user/self', userId: '42' },
+    ])
+  })
+})
+
+describe('New API response parsing', () => {
+  it('parses a JSON response body even when the content type is not JSON', () => {
+    expect(parseRemoteResponseBody({
+      httpStatus: 200,
+      contentType: 'text/plain; charset=utf-8',
+      body: '{"success":true,"data":{"quota":42}}',
+    })).toMatchObject({
+      httpStatus: 200,
+      success: true,
+      data: { quota: 42 },
+    })
+  })
 })
 
 describe('NewApiService keeps valid sessions on proxy error pages', () => {
@@ -854,7 +973,7 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
 
     expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 2_000_000, loginVerified: true })
     expect(navigatedTo).toEqual(['https://anyrouter.top/dashboard'])
-    expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
+    expect(requestedPaths).toEqual(['/api/status', '/api/user/self', '/api/user/self'])
     preserveSiteResult(database, site.id, result)
     expect(database.getSite(site.id)?.authStatus).toBe('valid')
   })
@@ -875,7 +994,7 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
     const result = await service.checkinSite(database.getSite(site.id)!, database.startRun('manual').id)
 
     expect(result).toMatchObject({ status: 'failed', loginVerified: true })
-    expect(requestedPaths).toEqual(['/api/status', '/api/user/self', '/api/user/self', expect.stringMatching(/^\/api\/user\/checkin\?month=/)])
+    expect(requestedPaths).toEqual(['/api/status', '/api/user/self', '/api/user/self', '/api/user/self', expect.stringMatching(/^\/api\/user\/checkin\?month=/)])
     preserveSiteResult(database, site.id, result)
     expect(database.getSite(site.id)?.authStatus).toBe('valid')
   })

@@ -1,5 +1,8 @@
+import { hasLikelyAuthState } from './auth-state.mjs'
+
 const AUTO_AUTH_TASKS_KEY = 'autoapi-auto-auth-tasks'
 const queuedSyncs = new Map()
+const autoSyncRetries = new Map()
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'sync') {
@@ -84,6 +87,7 @@ async function openAutoAuthTask({ autoApiOrigin, claim, loginUrl, sourceTabId })
     await saveTask(task)
     await chrome.storage.local.set({ origin: autoApiOrigin })
     await chrome.tabs.update(tab.id, { url: loginUrl, active: true })
+    scheduleAutoSyncRetry(task.pairId, 2_500)
     await notifySource(task, task.statusPhase, task.statusMessage)
     return { ok: true, phase: task.statusPhase, message: task.statusMessage, opened: true, targetDomain: claim.domain }
   } catch (error) {
@@ -129,7 +133,10 @@ async function tryAutoSync(pairId) {
   }
 
   const tab = await chrome.tabs.get(task.tabId).catch(() => null)
-  if (!tab?.url || !matchesTaskUrl(tab.url, task)) return
+  if (!tab?.url || !matchesTaskUrl(tab.url, task)) {
+    scheduleAutoSyncRetry(pairId)
+    return
+  }
   const current = parseHttpUrl(tab.url)
   const cookies = await readCurrentCookies(current)
   let storageItems = {}
@@ -138,6 +145,7 @@ async function tryAutoSync(pairId) {
   } catch (error) {
     if (!cookies.length) {
       await updateTaskStatus(task, 'waiting-login', '等待站点登录完成。登录后页面会自动再次检查。')
+      scheduleAutoSyncRetry(pairId)
       return
     }
   }
@@ -147,6 +155,7 @@ async function tryAutoSync(pairId) {
   // a hidden or stale password input is still present in the DOM.
   if (!hasLikelyAuthState(cookies, storageItems)) {
     await updateTaskStatus(task, 'waiting-login', '等待站点登录完成。登录后页面会自动同步。')
+    scheduleAutoSyncRetry(pairId)
     return
   }
 
@@ -162,6 +171,7 @@ async function tryAutoSync(pairId) {
       return
     }
     await updateTaskStatus(task, 'waiting-login', `自动同步暂未完成：${message}。保持登录页打开后刷新即可重试。`)
+    scheduleAutoSyncRetry(pairId)
   }
 }
 
@@ -350,12 +360,6 @@ async function readCurrentStorage(tabId) {
   }
 }
 
-function hasLikelyAuthState(cookies, storageItems) {
-  const isAuthName = (value) => /session|auth|token|access|jwt|login|user|sid/i.test(value) && !/csrf|xsrf|nonce|state/i.test(value)
-  if (cookies.some((cookie) => isAuthName(String(cookie.name || '')))) return true
-  return Object.keys(storageItems).some(isAuthName)
-}
-
 async function getTasks() {
   const result = await chrome.storage.session.get(AUTO_AUTH_TASKS_KEY)
   const tasks = result[AUTO_AUTH_TASKS_KEY]
@@ -382,6 +386,20 @@ async function removeTask(pairId) {
   const tasks = await getTasks()
   delete tasks[pairId]
   await chrome.storage.session.set({ [AUTO_AUTH_TASKS_KEY]: tasks })
+  const retry = autoSyncRetries.get(pairId)
+  if (retry) clearTimeout(retry)
+  autoSyncRetries.delete(pairId)
+}
+
+function scheduleAutoSyncRetry(pairId, delayMs = 3_000) {
+  if (autoSyncRetries.has(pairId)) return
+  const retry = setTimeout(() => {
+    autoSyncRetries.delete(pairId)
+    void getTask(pairId).then((task) => {
+      if (task) return queueAutoSync(task.tabId)
+    }).catch(() => undefined)
+  }, delayMs)
+  autoSyncRetries.set(pairId, retry)
 }
 
 async function updateTaskStatus(task, phase, message) {

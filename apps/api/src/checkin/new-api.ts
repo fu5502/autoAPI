@@ -22,6 +22,67 @@ interface RemoteResponse<T = unknown> {
   code?: string
 }
 
+interface RawRemoteResponse {
+  httpStatus: number
+  contentType: string
+  body?: string
+  error?: string
+}
+
+export function parseRemoteResponseBody<T = unknown>(raw: RawRemoteResponse): RemoteResponse<T> {
+  if (raw.error) {
+    return {
+      httpStatus: raw.httpStatus,
+      contentType: raw.contentType,
+      success: false,
+      message: raw.error,
+    }
+  }
+
+  let payload: unknown
+  try {
+    payload = JSON.parse(raw.body ?? '')
+  } catch {
+    return {
+      httpStatus: raw.httpStatus,
+      contentType: raw.contentType,
+      success: false,
+      message: raw.httpStatus === 403
+        ? '站点要求浏览器验证，请人工处理'
+        : '站点返回了非 JSON 响应',
+    }
+  }
+
+  const record = payload && typeof payload === 'object'
+    ? payload as Record<string, unknown>
+    : null
+  const declaresSuccess = typeof record?.success === 'boolean'
+  const declaresOk = typeof record?.ok === 'boolean'
+  const declaresCode = typeof record?.code === 'number' || typeof record?.code === 'string'
+  const errorMessage = typeof record?.error === 'string'
+    ? record.error
+    : record?.error && typeof record.error === 'object' && typeof (record.error as Record<string, unknown>).message === 'string'
+      ? (record.error as Record<string, unknown>).message as string
+      : undefined
+
+  const result: RemoteResponse<T> = {
+    httpStatus: raw.httpStatus,
+    contentType: raw.contentType,
+    success: declaresSuccess
+      ? record?.success === true
+      : declaresOk
+        ? record?.ok === true
+        : declaresCode
+          ? record?.code === 0 || record?.code === 200 || record?.code === '0' || record?.code === '200'
+          : raw.httpStatus >= 200 && raw.httpStatus < 300,
+    data: (declaresSuccess || declaresOk || declaresCode ? record?.data ?? payload : payload) as T,
+  }
+  const message = typeof record?.message === 'string' ? record.message : errorMessage
+  if (message !== undefined) result.message = message
+  if (typeof record?.code === 'string') result.code = record.code
+  return result
+}
+
 interface RemoteStatus {
   system_name?: string
   server_address?: string
@@ -1515,7 +1576,9 @@ export class NewApiService {
     }
 
     const money = deriveMoneySettings(statusResponse.data)
-    const afterUser = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', buildAuthHeaders(auth), timeoutMs)
+    const afterUser = isAnyRouterSite(site.baseUrl)
+      ? await this.readAnyRouterUser(page, auth, timeoutMs)
+      : await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', buildAuthHeaders(auth), timeoutMs)
     this.noteAuthenticationResponse(afterUser)
     if (!afterUser.success) {
       const message = afterUser.message || '页面打开后无法读取当前余额'
@@ -1528,7 +1591,8 @@ export class NewApiService {
     }
 
     const beforeRaw = site.lastBalanceRaw
-    const afterRaw = numberOrNull(afterUser.data?.quota)
+    const normalizedAfterUser = normalizeNewApiUser(afterUser.data)
+    const afterRaw = normalizedAfterUser ? newApiUserBalance(normalizedAfterUser) : numberOrNull(afterUser.data?.quota)
     const rewardRaw = beforeRaw !== null && afterRaw !== null && afterRaw > beforeRaw
       ? afterRaw - beforeRaw
       : null
@@ -1540,6 +1604,24 @@ export class NewApiService {
       rewardRaw === null ? '页面已打开，今日自动签到已触发' : '页面自动签到成功',
       { rewardRaw, beforeRaw, afterRaw, money },
     )
+  }
+
+  private async readAnyRouterUser(
+    page: Page,
+    auth: RemoteAuth,
+    timeoutMs: number,
+  ): Promise<RemoteResponse<RemoteUser>> {
+    const cookieResponse = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', {}, timeoutMs)
+    if (cookieResponse.success) {
+      const cookieUser = normalizeNewApiUser(cookieResponse.data)
+      if (cookieUser && (newApiUserBalance(cookieUser) ?? 0) > 0) return cookieResponse
+    }
+    const tokenResponse = await pageRequest<RemoteUser>(page, '/api/user/self', 'GET', buildAuthHeaders(auth), timeoutMs)
+    if (tokenResponse.success) {
+      const tokenUser = normalizeNewApiUser(tokenResponse.data)
+      if (tokenUser && (newApiUserBalance(tokenUser) ?? 0) > 0) return tokenResponse
+    }
+    return cookieResponse.success ? cookieResponse : tokenResponse
   }
 
   private async getRemoteStatus(page: Page, timeoutMs = 30_000): Promise<RemoteResponse<RemoteStatus>> {
@@ -1668,12 +1750,25 @@ export class NewApiService {
       return balance === null ? null : { auth: { ...auth, user }, balance }
     }
 
+    // Any Router's New API frontend reads the same endpoint with its browser
+    // session. A bearer token copied from localStorage can be accepted while
+    // still resolving to the public/default user (quota 0), so prefer the
+    // cookie-backed response and only fall back to token auth when necessary.
+    const preferBrowserSession = isAnyRouterSite(site.baseUrl)
+    let cookieBalance: NewApiBalanceRead | null = null
+    let cookieBalanceAttempted = false
+    if (preferBrowserSession) {
+      cookieBalanceAttempted = true
+      cookieBalance = await readAuthenticatedBalance({ adapter: 'new-api-modern', user: {} })
+      if (cookieBalance && cookieBalance.balance > 0) return cookieBalance
+    }
+
     try {
       const storedAccessToken = await readNewApiAccessToken(page)
       if (storedAccessToken) {
         const storedAuth: RemoteAuth = { adapter: 'new-api-modern', accessToken: storedAccessToken, user: {} }
         const storedBalance = await readAuthenticatedBalance(storedAuth)
-        if (storedBalance) {
+        if (storedBalance && (!preferBrowserSession || storedBalance.balance > 0)) {
           this.rememberModernAccessToken(site.id, { token: storedAccessToken, expiresAt: null })
           return storedBalance
         }
@@ -1687,7 +1782,7 @@ export class NewApiService {
           accessToken: captured.token,
           user: {},
         })
-        if (capturedBalance) return capturedBalance
+        if (capturedBalance && (!preferBrowserSession || capturedBalance.balance > 0)) return capturedBalance
       }
     } finally {
       observer?.dispose()
@@ -1695,13 +1790,18 @@ export class NewApiService {
 
     // A few older deployments accept the refresh cookie directly for this
     // read. It is safe to try because this is a GET and never rotates it.
-    const cookieBalance = await readAuthenticatedBalance({ adapter: 'new-api-modern', user: {} })
+    if (!cookieBalanceAttempted) {
+      cookieBalanceAttempted = true
+      cookieBalance = await readAuthenticatedBalance({ adapter: 'new-api-modern', user: {} })
+    }
     if (cookieBalance) return cookieBalance
 
     // Legacy New API installations can still identify the user without the
     // modern refresh endpoint. Explicitly disable modern auth detection here.
     const legacyAuth = await this.detectAuthentication(page, site.legacyUserId, timeoutMs, false)
     if (!legacyAuth) return null
+    const legacyBalance = newApiUserBalance(legacyAuth.user)
+    if (legacyBalance !== null) return { auth: legacyAuth, balance: legacyBalance }
     return readAuthenticatedBalance(legacyAuth)
   }
 
@@ -1763,6 +1863,8 @@ export class NewApiService {
     const candidateIds = new Set<number>()
     if (knownLegacyUserId) candidateIds.add(knownLegacyUserId)
     for (const observedUserId of observedLegacyUserIds) candidateIds.add(observedUserId)
+    const storedLegacyUserId = await readNewApiLegacyUserId(page)
+    if (storedLegacyUserId !== null) candidateIds.add(storedLegacyUserId)
     const discovered = await page.evaluate(() => {
       const ids: number[] = []
       for (let index = 0; index < localStorage.length; index += 1) {
@@ -2084,7 +2186,7 @@ async function pageRequestOnce<T>(
   timeoutMs = 30_000,
   body?: string,
 ): Promise<RemoteResponse<T>> {
-  return page.evaluate(async ({ pathname, method, headers, timeoutMs, body }) => {
+  const raw = await page.evaluate(async ({ pathname, method, headers, timeoutMs, body }) => {
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
     try {
@@ -2097,48 +2199,26 @@ async function pageRequestOnce<T>(
        if (body !== undefined) init.body = body
        const response = await fetch(pathname, init)
       const contentType = response.headers.get('content-type') || ''
-      if (!contentType.includes('application/json')) {
-        return {
-          httpStatus: response.status,
-          contentType,
-          success: false,
-          message: response.status === 403 ? '站点要求浏览器验证，请人工处理' : '站点返回了非 JSON 响应',
-        }
-      }
-      const payload = await response.json()
-      const declaresSuccess = typeof payload?.success === 'boolean'
-      const declaresOk = typeof payload?.ok === 'boolean'
-      const declaresCode = typeof payload?.code === 'number' || typeof payload?.code === 'string'
-      const errorMessage = typeof payload?.error === 'string'
-        ? payload.error
-        : typeof payload?.error?.message === 'string'
-          ? payload.error.message
-          : undefined
       return {
         httpStatus: response.status,
         contentType,
-        success: declaresSuccess
-          ? payload.success === true
-          : declaresOk
-            ? payload.ok === true
-            : declaresCode
-              ? payload.code === 0 || payload.code === 200 || payload.code === '0' || payload.code === '200'
-              : response.ok,
-        data: declaresSuccess || declaresOk || declaresCode ? payload?.data ?? payload : payload,
-        message: typeof payload?.message === 'string' ? payload.message : errorMessage,
-        code: typeof payload?.code === 'string' ? payload.code : undefined,
+        body: await response.text(),
       }
     } catch (error) {
       return {
         httpStatus: 0,
         contentType: '',
-        success: false,
-        message: error instanceof Error ? error.message : '网络请求失败',
+        error: error instanceof Error ? error.message : '网络请求失败',
       }
     } finally {
       window.clearTimeout(timeout)
     }
-  }, { pathname, method, headers, timeoutMs, body }) as Promise<RemoteResponse<T>>
+  }, { pathname, method, headers, timeoutMs, body }) as RawRemoteResponse | RemoteResponse<T>
+  // Lightweight browser fakes used by integration tests may return the
+  // normalized response directly; keep that seam compatible while real pages
+  // return the raw body above.
+  if (raw && typeof raw === 'object' && 'success' in raw) return raw as RemoteResponse<T>
+  return parseRemoteResponseBody<T>(raw)
 }
 
 function isNavigationContextError(error: unknown): boolean {
@@ -2163,37 +2243,11 @@ async function contextRequest<T>(
       failOnStatusCode: false,
     })
     const contentType = response.headers()['content-type'] || ''
-    if (!contentType.includes('application/json')) {
-      return {
-        httpStatus: response.status(),
-        contentType,
-        success: false,
-        message: response.status() === 403 ? '站点要求浏览器验证，请人工处理' : '站点返回了非 JSON 响应',
-      }
-    }
-    const payload = await response.json()
-    const declaresSuccess = typeof payload?.success === 'boolean'
-    const declaresOk = typeof payload?.ok === 'boolean'
-    const declaresCode = typeof payload?.code === 'number' || typeof payload?.code === 'string'
-    const errorMessage = typeof payload?.error === 'string'
-      ? payload.error
-      : typeof payload?.error?.message === 'string'
-        ? payload.error.message
-        : undefined
-    return {
+    return parseRemoteResponseBody<T>({
       httpStatus: response.status(),
       contentType,
-      success: declaresSuccess
-        ? payload.success === true
-        : declaresOk
-          ? payload.ok === true
-          : declaresCode
-            ? payload.code === 0 || payload.code === 200 || payload.code === '0' || payload.code === '200'
-            : response.ok(),
-      data: declaresSuccess || declaresOk || declaresCode ? payload?.data ?? payload : payload,
-      message: typeof payload?.message === 'string' ? payload.message : errorMessage,
-      code: typeof payload?.code === 'string' ? payload.code : undefined,
-    }
+      body: await response.text(),
+    })
   } catch (error) {
     return {
       httpStatus: 0,
@@ -2449,6 +2503,33 @@ async function readNewApiAccessToken(page: Page): Promise<string | null> {
     return null
   }).catch(() => null)
   return typeof token === 'string' && token ? token : null
+}
+
+async function readNewApiLegacyUserId(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const keys = ['uid', 'user_id', 'userId', 'new-api-user']
+    for (const storage of [localStorage, sessionStorage]) {
+      for (const key of keys) {
+        const value = storage.getItem(key)?.trim()
+        if (!value || !/^\d+$/.test(value)) continue
+        const id = Number(value)
+        if (Number.isSafeInteger(id) && id > 0) return id
+      }
+      const rawUser = storage.getItem('user')
+      if (!rawUser || rawUser.length > 100_000) continue
+      try {
+        const parsed = JSON.parse(rawUser)
+        const candidates = [parsed, parsed?.user, parsed?.state?.user, parsed?.data, parsed?.data?.user]
+        for (const candidate of candidates) {
+          const id = Number(candidate?.id ?? candidate?.uid ?? candidate?.user_id)
+          if (Number.isSafeInteger(id) && id > 0) return id
+        }
+      } catch {
+        // Ignore unrelated or partially-written storage values.
+      }
+    }
+    return null
+  }).catch(() => null)
 }
 
 async function readStoredNewApiUser(page: Page): Promise<unknown> {
