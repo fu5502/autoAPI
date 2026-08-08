@@ -11,7 +11,7 @@ import { AppDatabase } from "./db.js";
 import { EventBus } from "./events.js";
 import { NewApiService } from "./new-api.js";
 import { DailyScheduler } from "./scheduler.js";
-import { SiteIconService } from "./site-icon.js";
+import { isAllowedIconUrl, siteIconUrlMaxLength, SiteIconService } from "./site-icon.js";
 import { initialSiteName } from "./site-name.js";
 import { TelegramNotifier } from "./telegram.js";
 import { normalizeBaseUrl, clampInteger } from "./utils.js";
@@ -19,16 +19,9 @@ import { resolveTelegramToken, settingsForClient } from "./settings-security.js"
 import type { SecretBox } from "../security/secret-box.js";
 import type { AppSettings } from "./types.js";
 
-const faviconUrlSchema = z.union([z.string().trim().max(2000), z.null()]).superRefine((value, context) => {
+const faviconUrlSchema = z.union([z.string().trim().max(siteIconUrlMaxLength), z.null()]).superRefine((value, context) => {
   if (value === null || value === "") return;
-  try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
-      context.addIssue({ code: "custom", message: "图标地址必须是无账号信息的 HTTP 或 HTTPS 地址" });
-    }
-  } catch {
-    context.addIssue({ code: "custom", message: "图标地址格式不正确" });
-  }
+  if (!isAllowedIconUrl(value)) context.addIssue({ code: "custom", message: "图标地址必须是安全的 HTTP(S) 地址或 Base64 图片" });
 }).transform((value) => value || null);
 
 const siteSchema = z.object({
@@ -36,6 +29,7 @@ const siteSchema = z.object({
   baseUrl: z.string().trim().min(1).max(500),
   note: z.string().trim().max(500).optional(),
   faviconUrl: faviconUrlSchema.optional(),
+  checkinMode: z.enum(["checkin", "balance_only"]).default("checkin"),
 });
 
 const siteUpdateSchema = z.object({
@@ -295,12 +289,16 @@ export async function registerCheckinRoutes(
     checkin.post("/sites", async (request, reply) => {
       const input = siteSchema.parse(request.body);
       const baseUrl = normalizeBaseUrl(input.baseUrl);
-      const site = module.db.createSite(initialSiteName(baseUrl, input.name), baseUrl, input.note, input.faviconUrl);
+      const site = module.db.createSite(initialSiteName(baseUrl, input.name), baseUrl, input.note, input.faviconUrl, input.checkinMode);
       module.events.emit({ type: "state_changed", title: "站点已添加", message: `${site.name} 等待授权`, data: { siteId: site.id } });
       return reply.code(201).send(site);
     });
     checkin.post("/sites/bulk", async (request, reply) => {
-      const urls = z.array(z.string()).min(1).max(100).parse((request.body as { urls?: unknown })?.urls);
+      const bulkInput = z.object({
+        urls: z.array(z.string()).min(1).max(100),
+        checkinMode: z.enum(["checkin", "balance_only"]).default("checkin"),
+      }).parse(request.body);
+      const urls = bulkInput.urls;
       const existing = new Set(module.db.listSites().map((site) => site.baseUrl));
       const created = [];
       const skipped: Array<{ input: string; reason: string }> = [];
@@ -308,7 +306,7 @@ export async function registerCheckinRoutes(
         try {
           const baseUrl = normalizeBaseUrl(input);
           if (existing.has(baseUrl)) { skipped.push({ input, reason: "站点已存在" }); continue; }
-          const site = module.db.createSite(initialSiteName(baseUrl), baseUrl);
+          const site = module.db.createSite(initialSiteName(baseUrl), baseUrl, '', null, bulkInput.checkinMode);
           existing.add(baseUrl);
           created.push(site);
         } catch (error) { skipped.push({ input, reason: error instanceof Error ? error.message : "地址无效" }); }
@@ -336,7 +334,7 @@ export async function registerCheckinRoutes(
       if (!url) return reply.code(404).send();
       const asset = await module.siteIcons.getIconAsset(id);
       if (!asset) return reply.redirect(url);
-      reply.header("cache-control", "private, max-age=31536000, immutable").type(asset.contentType);
+      reply.header("cache-control", "private, max-age=31536000, immutable").header("x-content-type-options", "nosniff").type(asset.contentType);
       return reply.send(Buffer.from(asset.body));
     });
     checkin.post<{ Params: { id: string } }>("/sites/:id/favicon/refresh", async (request) => {

@@ -14,6 +14,10 @@ interface IconCandidate {
 
 const htmlLimitBytes = 2 * 1024 * 1024
 const iconLimitBytes = 2 * 1024 * 1024
+const dataIconLimitBytes = 512 * 1024
+const remoteIconUrlMaxLength = 2_000
+const dataIconUrlPattern = /^data:(image\/(?:png|jpeg|gif|webp|avif|x-icon|vnd\.microsoft\.icon))(?:;charset=[^;,]+)?;base64,([a-z0-9+/]*={0,2})$/i
+export const siteIconUrlMaxLength = Math.ceil(dataIconLimitBytes / 3) * 4 + 128
 const persistentIconMaxAgeMs = 30 * 24 * 60 * 60 * 1000
 const verifiedSiteIcons = new Map([
   ['anyrouter.top', '/logo.png'],
@@ -285,6 +289,32 @@ export interface IconAsset {
   contentType: string
 }
 
+/** Decode the supported raster image form without sending user data to a remote URL. */
+export function parseImageDataUrl(value: string): IconAsset | null {
+  const match = dataIconUrlPattern.exec(value.trim())
+  if (!match) return null
+  const contentType = match[1]
+  const encoded = match[2]
+  if (!contentType || !encoded || encoded.length % 4 === 1) return null
+  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
+  const estimatedSize = Math.floor(encoded.length * 3 / 4) - padding
+  if (estimatedSize <= 0 || estimatedSize > dataIconLimitBytes) return null
+  const body = Buffer.from(encoded, 'base64')
+  if (body.byteLength !== estimatedSize || !isSafeIconAsset(contentType, body.byteLength)) return null
+  return { body, contentType: contentType.toLowerCase() }
+}
+
+export function isAllowedIconUrl(value: string): boolean {
+  if (parseImageDataUrl(value)) return true
+  if (value.length > remoteIconUrlMaxLength) return false
+  try {
+    const url = new URL(value)
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
 export async function resolveSiteIcon(baseUrl: string, fetcher: Fetcher = fetch): Promise<string> {
   const base = new URL(baseUrl)
   const pageUrl = getIconPageUrl(baseUrl)
@@ -379,6 +409,7 @@ function shouldInspectRenderedPage(baseUrl: string, resolvedUrl: string): boolea
 
 function safeIconUrl(candidate: string | null, baseUrl: string): string | null {
   if (!candidate) return null
+  if (parseImageDataUrl(candidate)) return candidate.trim()
   try {
     const url = new URL(candidate, baseUrl)
     return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
@@ -390,6 +421,8 @@ function safeIconUrl(candidate: string | null, baseUrl: string): string | null {
 }
 
 async function fetchIconAsset(iconUrl: string, baseUrl: string, fetcher: Fetcher): Promise<IconAsset | null> {
+  const dataAsset = parseImageDataUrl(iconUrl)
+  if (dataAsset) return dataAsset
   try {
     const response = await fetcher(iconUrl, {
       redirect: 'follow',

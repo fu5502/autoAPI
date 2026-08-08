@@ -8,6 +8,7 @@ import type {
   ChannelImportPrepareResult,
   ChannelImportModelResult,
   ChannelImportResult,
+  CheckinMode,
   Site,
 } from './shared/types'
 
@@ -47,8 +48,8 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   getState: () => request<AppState>('/admin/checkin/state'),
-  addSite: (input: { name?: string; baseUrl: string; note?: string; faviconUrl?: string | null }) => request<Site>('/admin/checkin/sites', { method: 'POST', body: JSON.stringify(input) }),
-  addSitesBulk: (urls: string[]) => request<{ created: Site[]; skipped: Array<{ input: string; reason: string }> }>('/admin/checkin/sites/bulk', { method: 'POST', body: JSON.stringify({ urls }) }),
+  addSite: (input: { name?: string; baseUrl: string; note?: string; faviconUrl?: string | null; checkinMode?: CheckinMode }) => request<Site>('/admin/checkin/sites', { method: 'POST', body: JSON.stringify(input) }),
+  addSitesBulk: (urls: string[], checkinMode: CheckinMode = 'checkin') => request<{ created: Site[]; skipped: Array<{ input: string; reason: string }> }>('/admin/checkin/sites/bulk', { method: 'POST', body: JSON.stringify({ urls, checkinMode }) }),
   updateSite: (id: number, input: Partial<Pick<Site, 'name' | 'baseUrl' | 'note' | 'faviconUrl' | 'enabled'>>) => request<Site>(`/admin/checkin/sites/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   refreshSiteFavicon: (id: number) => request<Site>(`/admin/checkin/sites/${id}/favicon/refresh`, { method: 'POST', body: '{}' }),
   deleteSite: (id: number) => request<{ ok: true; warnings?: string[] }>(`/admin/checkin/sites/${id}`, { method: 'DELETE' }),
