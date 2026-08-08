@@ -86,6 +86,43 @@ describe('check-in site icon routes', () => {
     await app.close()
   })
 
+  it('switches an existing site between check-in and balance-only mode', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const checkinModule = {
+      db: database,
+      events: { emit: vi.fn() },
+      siteIcons: new SiteIconService(database, fetch),
+    } as unknown as CheckinModule
+    const app = Fastify()
+    await registerCheckinRoutes(app, checkinModule, async () => undefined, { agent: {} as OpsAgent })
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/admin/checkin/sites',
+      payload: { baseUrl: 'https://switch.example' },
+    })
+    const site = created.json<{ id: number; checkinMode: string }>()
+    expect(site.checkinMode).toBe('checkin')
+
+    const relay = await app.inject({
+      method: 'PATCH',
+      url: `/admin/checkin/sites/${site.id}`,
+      payload: { checkinMode: 'balance_only' },
+    })
+    expect(relay.statusCode).toBe(200)
+    expect(relay.json<{ checkinMode: string }>().checkinMode).toBe('balance_only')
+
+    const welfare = await app.inject({
+      method: 'PATCH',
+      url: `/admin/checkin/sites/${site.id}`,
+      payload: { checkinMode: 'checkin' },
+    })
+    expect(welfare.json<{ checkinMode: string }>().checkinMode).toBe('checkin')
+
+    await app.close()
+  })
+
   it('exposes one-time fixed-domain local execution endpoints for the extension', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)

@@ -471,10 +471,11 @@ export class AppDatabase {
     return this.getSite(Number(result.lastInsertRowid))!
   }
 
-  updateSite(id: number, input: { name?: string; baseUrl?: string; note?: string; faviconUrl?: string | null; enabled?: boolean }): Site | null {
+  updateSite(id: number, input: { name?: string; baseUrl?: string; note?: string; faviconUrl?: string | null; enabled?: boolean; checkinMode?: CheckinMode }): Site | null {
     const site = this.getSite(id)
     if (!site) return null
     const baseUrl = input.baseUrl ?? site.baseUrl
+    const checkinMode = input.checkinMode ?? (baseUrl === site.baseUrl ? site.checkinMode : 'checkin')
     const faviconUrl = input.faviconUrl !== undefined
       ? input.faviconUrl
       : baseUrl === site.baseUrl
@@ -497,7 +498,7 @@ export class AppDatabase {
       faviconUrl,
       Number(faviconCustom),
       input.enabled === undefined ? Number(site.enabled) : Number(input.enabled),
-      baseUrl === site.baseUrl ? site.checkinMode : 'checkin',
+      checkinMode,
       nowIso(),
       id,
     )

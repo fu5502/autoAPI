@@ -88,4 +88,15 @@ describe('check-in site balance updates', () => {
     database.updateSite(site.id, { baseUrl: 'https://new-balance.example' })
     expect(database.getSite(site.id)).toMatchObject({ checkinMode: 'checkin' })
   })
+
+  it('switches the site type directly and keeps it across later edits', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('中转站', 'https://relay.example')
+
+    expect(database.updateSite(site.id, { checkinMode: 'balance_only' })).toMatchObject({ checkinMode: 'balance_only' })
+    expect(database.updateSite(site.id, { name: '中转站新名称' })).toMatchObject({ checkinMode: 'balance_only' })
+    expect(database.updateSite(site.id, { checkinMode: 'checkin' })).toMatchObject({ checkinMode: 'checkin' })
+    expect(database.updateSite(site.id, { baseUrl: 'https://new-welfare.example', checkinMode: 'balance_only' })).toMatchObject({ checkinMode: 'balance_only' })
+  })
 })

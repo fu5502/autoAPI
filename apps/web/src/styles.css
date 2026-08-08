@@ -4804,6 +4804,11 @@ th:last-child {
 .usage-legend-dot.requests { background: var(--green); }
 .usage-legend-dot.errors { background: var(--red); }
 
+.usage-chart .usage-requests-line { stroke: var(--green); }
+.usage-chart .usage-errors-line { stroke: var(--red); }
+.usage-chart .usage-active-dot-requests { fill: var(--green); }
+.usage-chart .usage-active-dot-errors { fill: var(--red); }
+
 .usage-trend-panel .chart-frame {
   height: 315px;
   padding: 4px 0 0;

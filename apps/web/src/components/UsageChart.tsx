@@ -17,8 +17,8 @@ export default function UsageChart({ usage }: { usage: Usage }) {
           <Tooltip
             contentStyle={{ color: "var(--ink)", background: "var(--chart-tooltip)", border: "1px solid var(--line)", borderRadius: 6, boxShadow: "var(--shadow)", fontSize: 12 }}
           />
-          <Line type="monotone" dataKey="requests" name="请求次数" stroke="var(--green)" strokeWidth={2.2} dot={false} activeDot={{ r: 4, fill: "var(--green)" }} />
-          <Line type="monotone" dataKey="errors" name="失败次数" stroke="var(--red)" strokeWidth={1.8} dot={false} activeDot={{ r: 3, fill: "var(--red)" }} />
+          <Line type="monotone" dataKey="requests" name="请求次数" className="usage-requests-line" stroke="var(--green)" strokeWidth={2.2} dot={false} activeDot={{ r: 4, className: "usage-active-dot-requests", fill: "var(--green)" }} />
+          <Line type="monotone" dataKey="errors" name="失败次数" className="usage-errors-line" stroke="var(--red)" strokeWidth={1.8} dot={false} activeDot={{ r: 3, className: "usage-active-dot-errors", fill: "var(--red)" }} />
         </LineChart>
       </ResponsiveContainer>
     </div>

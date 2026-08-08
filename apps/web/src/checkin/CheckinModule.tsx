@@ -1148,6 +1148,7 @@ function EditSiteModal({ site, onClose, onSaved, notify }: {
   const [faviconUrl, setFaviconUrl] = useState(site.faviconUrl ?? '')
   const [note, setNote] = useState(site.note)
   const [enabled, setEnabled] = useState(site.enabled)
+  const [checkinMode, setCheckinMode] = useState<CheckinMode>(site.checkinMode)
   const [saving, setSaving] = useState(false)
   const [refreshingIcon, setRefreshingIcon] = useState(false)
 
@@ -1162,6 +1163,7 @@ function EditSiteModal({ site, onClose, onSaved, notify }: {
         baseUrl: String(form.get('baseUrl') ?? ''),
         note: String(form.get('note') ?? ''),
         enabled,
+        checkinMode,
       }
       if (submittedFaviconUrl !== (currentSite.faviconUrl ?? '')) update.faviconUrl = submittedFaviconUrl || null
       const updated = await api.updateSite(site.id, update)
@@ -1200,6 +1202,7 @@ function EditSiteModal({ site, onClose, onSaved, notify }: {
       <label><span>站点地址</span><input name="baseUrl" required value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://example.com" /></label>
       <label><span>站点图标地址 <small>支持 HTTPS 或 Data URL，清空后自动获取</small></span><input type="text" inputMode="url" autoCapitalize="none" spellCheck={false} value={faviconUrl} onChange={(event) => setFaviconUrl(event.target.value)} placeholder="https://example.com/favicon.ico 或 data:image/png;base64,..." /></label>
       <label><span>站点备注 <small>最多 500 字</small></span><textarea name="note" rows={4} maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} placeholder="记录账号用途、签到限制或其他说明" /></label>
+      <fieldset className="site-mode-fieldset"><legend>站点类型</legend><div className="segmented site-mode-segmented"><button type="button" className={checkinMode === 'checkin' ? 'active' : ''} onClick={() => setCheckinMode('checkin')}><ListChecks size={14} />公益站</button><button type="button" className={checkinMode === 'balance_only' ? 'active' : ''} onClick={() => setCheckinMode('balance_only')}><RefreshCw size={14} />中转站</button></div><small>{checkinMode === 'checkin' ? '支持签到的公益站会执行签到并读取余额' : '不执行签到，只使用登录状态读取真实余额'}</small></fieldset>
       <div className="modal-switch-row"><div><strong>自动签到</strong><p>关闭后批量与定时任务会跳过，仍可手动签到、授权和刷新信息</p></div><button type="button" className={`toggle ${enabled ? 'on' : ''}`} role="switch" aria-checked={enabled} aria-label="自动签到" onClick={() => setEnabled((value) => !value)}><span /></button></div>
       <div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>取消</button><button className="button primary" disabled={saving}>{saving ? <LoaderCircle size={17} className="spin" /> : <Check size={17} />}{saving ? '保存中' : '保存修改'}</button></div>
     </form>

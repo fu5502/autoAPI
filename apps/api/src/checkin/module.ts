@@ -39,6 +39,7 @@ const siteUpdateSchema = z.object({
   note: z.string().trim().max(500).optional(),
   faviconUrl: faviconUrlSchema.optional(),
   enabled: z.boolean().optional(),
+  checkinMode: z.enum(["checkin", "balance_only"]).optional(),
 });
 
 const settingsSchema = z.object({
@@ -417,6 +418,7 @@ export async function registerCheckinRoutes(
       if (input.note !== undefined) update.note = input.note;
       if (input.faviconUrl !== undefined) update.faviconUrl = input.faviconUrl;
       if (input.enabled !== undefined) update.enabled = input.enabled;
+      if (input.checkinMode !== undefined) update.checkinMode = input.checkinMode;
       const site = module.db.updateSite(id, update);
       if (!site) throw new Error("站点不存在");
       if (input.baseUrl !== undefined) module.localExecution?.cancelForSite(id, "目标站点地址已变更，本地执行任务已取消");
