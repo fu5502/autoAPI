@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import type { BrowserContext, Page } from 'playwright-core'
+import type { Browser, BrowserContext, Page } from 'playwright-core'
 import { BrowserManager, closeStartupBlankPages, getChromiumLaunchEnvironment, removeStaleChromeLockFiles } from './browser-manager.js'
 
 describe('closeStartupBlankPages', () => {
@@ -173,6 +173,35 @@ describe('BrowserManager connection recovery', () => {
     expect(page.close).toHaveBeenCalledWith({ runBeforeUnload: false })
     expect(shutdown).toHaveBeenCalledOnce()
     expect(forceShutdown).not.toHaveBeenCalled()
+  })
+
+  it('bounds shutdown when the browser CDP connection hangs', async () => {
+    const manager = new BrowserManager()
+    const browser = {
+      newBrowserCDPSession: async () => {
+        throw new Error('disconnected')
+      },
+      close: () => new Promise<void>(() => undefined),
+    } as unknown as Browser
+    Object.assign(manager as unknown as Record<string, unknown>, { activeBrowser: browser })
+
+    const startedAt = Date.now()
+    await manager.shutdown()
+
+    expect(Date.now() - startedAt).toBeLessThan(3_500)
+  })
+
+  it('bounds force shutdown when browser.close hangs', async () => {
+    const manager = new BrowserManager()
+    const browser = {
+      close: () => new Promise<void>(() => undefined),
+    } as unknown as Browser
+    Object.assign(manager as unknown as Record<string, unknown>, { activeBrowser: browser })
+
+    const startedAt = Date.now()
+    await manager.forceShutdown()
+
+    expect(Date.now() - startedAt).toBeLessThan(3_500)
   })
 })
 

@@ -3270,7 +3270,7 @@ th:last-child {
   .context-label,
   .gateway-endpoint,
   .gateway-live,
-  .top-actions > .icon-button:not(.theme-toggle) { display: none; }
+  .top-actions > .icon-button:not(.theme-toggle):not(.github-link) { display: none; }
   .top-actions .button { width: 36px; padding: 0; font-size: 0; }
   .top-actions .button svg { width: 17px; height: 17px; }
   .view-stack { gap: 14px; padding-top: 16px; }

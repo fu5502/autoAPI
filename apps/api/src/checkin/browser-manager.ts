@@ -8,6 +8,20 @@ import { browserProfileDir, findChromeExecutable } from './config.js'
 const debugPortFile = path.join(browserProfileDir, 'DebugPort')
 const chromeSingletonLockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket']
 
+async function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      task,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`浏览器清理超时（${timeoutMs}ms）`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 /** Remove Chromium's stale profile locks without touching a profile in use. */
 export async function removeStaleChromeLockFiles(profileDir: string, profileInUse: boolean): Promise<boolean> {
   if (profileInUse) return false
@@ -95,11 +109,11 @@ export class BrowserManager {
       const preserveStartupPage = Boolean(page && !page.isClosed() && isStartupBlankPage(page))
       const forceShutdown = timedOut || this.forceShutdownRequested
       if (options.closeBrowserWhenDone || forceShutdown) {
-        if (page && !page.isClosed()) await page.close().catch(() => undefined)
+        if (page && !page.isClosed()) await withTimeout(page.close(), 2_000).catch(() => undefined)
         if (forceShutdown) await this.forceShutdown().catch(() => undefined)
-        else await this.shutdown()
+        else await this.shutdown().catch(() => undefined)
       } else if (!preserveStartupPage && page && !page.isClosed()) {
-        await page.close().catch(() => undefined)
+        await withTimeout(page.close(), 2_000).catch(() => undefined)
       }
       this.busy = false
       release()
@@ -161,8 +175,8 @@ export class BrowserManager {
     } else if (chromeProcess && !chromeProcess.killed) {
       chromeProcess.kill()
     }
-    await browser?.close().catch(() => undefined)
-    await fs.rm(debugPortFile, { force: true }).catch(() => undefined)
+    if (browser) await withTimeout(browser.close(), 2_000).catch(() => undefined)
+    await withTimeout(fs.rm(debugPortFile, { force: true }), 1_000).catch(() => undefined)
   }
 
   async shutdown() {
@@ -189,23 +203,25 @@ export class BrowserManager {
     // browser.close() 只断开调试连接、不会让 Chrome 退出，所以先通过 CDP 的 Browser.close
     // 请求 Chrome 自行优雅退出，确认进程结束后再断开；只有优雅退出失败时才强制结束进程树。
     const closedGracefully = await this.closeChromeGracefully(browser, chromeProcessId)
-    await browser?.close().catch(() => undefined)
+    if (browser) await withTimeout(browser.close(), 2_000).catch(() => undefined)
     if (!closedGracefully) {
       if (chromeProcessId) await terminateProcessTree(chromeProcessId, chromeProcess)
       else if (chromeProcess && !chromeProcess.killed) chromeProcess.kill()
     }
-    await fs.rm(debugPortFile, { force: true }).catch(() => undefined)
+    await withTimeout(fs.rm(debugPortFile, { force: true }), 1_000).catch(() => undefined)
   }
 
   private async closeChromeGracefully(browser: Browser | null, processId: number | null): Promise<boolean> {
     if (!browser) return false
     try {
-      const session = await browser.newBrowserCDPSession()
-      await session.send('Browser.close')
+      await withTimeout((async () => {
+        const session = await browser.newBrowserCDPSession()
+        await session.send('Browser.close')
+      })(), 2_000)
       // Browser.close 会在 Chrome 开始关闭时返回；等待操作系统进程真正退出，
       // 以保证 Cookie 已经落盘。无法拿到进程号时视为已成功请求关闭。
       if (processId === null) return true
-      return await waitForProcessExit(processId, 6_000)
+      return await withTimeout(waitForProcessExit(processId, 6_000), 7_000)
     } catch {
       return false
     }
@@ -235,7 +251,7 @@ export class BrowserManager {
     this.activeBrowser = null
     this.activeContext = null
     this.contextPromise = null
-    await browser?.close().catch(() => undefined)
+    if (browser) await withTimeout(browser.close(), 2_000).catch(() => undefined)
   }
 
   private async connectOrLaunchChrome(): Promise<BrowserContext> {
@@ -321,7 +337,7 @@ export class BrowserManager {
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout })
     const context = browser.contexts()[0]
     if (!context) {
-      await browser.close().catch(() => undefined)
+      await withTimeout(browser.close(), 2_000).catch(() => undefined)
       throw new Error('无法连接 Chrome 默认浏览器上下文')
     }
 

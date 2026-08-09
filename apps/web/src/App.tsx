@@ -1,6 +1,6 @@
 import { Fragment, lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Clock3, Coins, Copy, GitBranch, Gauge, KeyRound, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun, Trash2, WalletCards, type LucideIcon } from "lucide-react";
+import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Clock3, Coins, Copy, GitBranch, Gauge, Github, KeyRound, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun, Trash2, WalletCards, type LucideIcon } from "lucide-react";
 import { ApiError, api, clearAdminSession, getAdminToken, hasAdminSession } from "./api";
 import { ChannelTable } from "./components/ChannelTable";
 import { ChannelEditor } from "./components/ChannelEditor";
@@ -272,6 +272,7 @@ export default function App() {
               <code className="mono">{status.data?.gatewayBaseUrl ?? "加载中…"}</code>
               <button className="icon-button" title={baseUrlCopied ? "已复制" : "复制 Base URL"} aria-label={baseUrlCopied ? "已复制" : "复制 Base URL"} onClick={() => void copyBaseUrl()} disabled={!status.data?.gatewayBaseUrl}>{baseUrlCopied ? <Check size={15} /> : <Copy size={15} />}</button>
             </div>
+            <a className="icon-button github-link" href="https://github.com/fu5502/autoAPI" target="_blank" rel="noreferrer" title="GitHub 项目地址" aria-label="GitHub 项目地址"><Github size={16} /></a>
             <button className="icon-button theme-toggle" title={colorTheme === "light" ? "切换至深色模式" : "切换至浅色模式"} aria-label={colorTheme === "light" ? "切换至深色模式" : "切换至浅色模式"} onClick={() => setColorTheme((theme) => theme === "light" ? "dark" : "light")}>{colorTheme === "light" ? <Moon size={16} /> : <Sun size={16} />}</button>
             <button className="button secondary key-button" onClick={() => setGatewayKeysOpen(true)}><KeyRound size={15} /> 访问密钥</button>
             <button className="button secondary security-button" onClick={() => setView("security")}><ShieldAlert size={15} /> {adminUsername}</button>
