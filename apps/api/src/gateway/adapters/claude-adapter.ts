@@ -1,7 +1,7 @@
 import type { Channel, GatewayRequest, ProbeResult } from "../../domain/types.js";
 import type { AdapterAttempt, AdapterUsage, UpstreamAdapter } from "../adapter.js";
 import { fetchUpstream, parseJson, responseHeaders } from "../http.js";
-import { errorMessage, optionalBalance, probeJson, probeStream } from "../probe-utils.js";
+import { errorMessage, optionalBalance, probeJson } from "../probe-utils.js";
 import { observeSseUsage } from "../streaming.js";
 import { apiUrl } from "../url.js";
 import { chatToClaudeBody, claudeMessageToChat, claudeStreamToChat } from "./claude-chat-bridge.js";
@@ -66,15 +66,10 @@ export class ClaudeAdapter implements UpstreamAdapter {
       const model = models[0];
       if (!model) throw new Error("Upstream did not expose any Claude models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
-      const body = { model, messages: [{ role: "user", content: "ping" }], max_tokens: 1 };
+      const body = { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 32 };
       await probeJson(
         apiUrl(channel.baseUrl, "/v1/messages"),
-        { method: "POST", headers: claudeHeaders(apiKey), body: JSON.stringify({ ...body, stream: false }) },
-        timeoutMs,
-      );
-      await probeStream(
-        apiUrl(channel.baseUrl, "/v1/messages"),
-        { method: "POST", headers: claudeHeaders(apiKey), body: JSON.stringify({ ...body, stream: true }) },
+        { method: "POST", headers: claudeHeaders(apiKey), body: JSON.stringify(body) },
         timeoutMs,
       );
       const balance = await balancePromise;
@@ -89,6 +84,7 @@ export class ClaudeAdapter implements UpstreamAdapter {
         balanceCurrency: balance.currency,
         balanceStatus: balance.status,
         error: null,
+        modelsChanged: models.length > 0 && JSON.stringify(models) !== JSON.stringify(channel.models),
       };
     } catch (error) {
       return {
@@ -102,6 +98,7 @@ export class ClaudeAdapter implements UpstreamAdapter {
         balanceCurrency: null,
         balanceStatus: "unknown",
         error: errorMessage(error),
+        modelsChanged: false,
       };
     }
   }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Channel, GatewayRequest, ProbeResult } from "../../domain/types.js";
 import type { AdapterAttempt, AdapterUsage, UpstreamAdapter } from "../adapter.js";
 import { fetchUpstream, parseJson, responseHeaders } from "../http.js";
-import { errorMessage, optionalBalance, probeJson, probeStream } from "../probe-utils.js";
+import { errorMessage, optionalBalance, probeJson } from "../probe-utils.js";
 import { mapSseStream, observeSseUsage } from "../streaming.js";
 import { apiUrl } from "../url.js";
 
@@ -89,14 +89,9 @@ export class GeminiAdapter implements UpstreamAdapter {
       const model = models[0];
       if (!model) throw new Error("Upstream did not expose any Gemini models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
-      const payload = JSON.stringify({ contents: [{ role: "user", parts: [{ text: "ping" }] }], generationConfig: { maxOutputTokens: 1 } });
+      const payload = JSON.stringify({ contents: [{ role: "user", parts: [{ text: "请用一句话说明你是谁" }] }], generationConfig: { maxOutputTokens: 32 } });
       await probeJson(
         apiUrl(channel.baseUrl, `/v1beta/models/${encodeURIComponent(model)}:generateContent`),
-        { method: "POST", headers: geminiHeaders(apiKey), body: payload },
-        timeoutMs,
-      );
-      await probeStream(
-        apiUrl(channel.baseUrl, `/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`),
         { method: "POST", headers: geminiHeaders(apiKey), body: payload },
         timeoutMs,
       );
@@ -112,6 +107,7 @@ export class GeminiAdapter implements UpstreamAdapter {
         balanceCurrency: balance.currency,
         balanceStatus: balance.status,
         error: null,
+        modelsChanged: models.length > 0 && JSON.stringify(models) !== JSON.stringify(channel.models),
       };
     } catch (error) {
       return {
@@ -125,6 +121,7 @@ export class GeminiAdapter implements UpstreamAdapter {
         balanceCurrency: null,
         balanceStatus: "unknown",
         error: errorMessage(error),
+        modelsChanged: false,
       };
     }
   }

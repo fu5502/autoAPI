@@ -247,6 +247,7 @@ export interface ProbeResult {
   balanceCurrency: string | null;
   balanceStatus: "ok" | "low" | "exhausted" | "unknown" | "error";
   error: string | null;
+  modelsChanged?: boolean;
 }
 
 export interface ProbeResponse {

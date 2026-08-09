@@ -2854,6 +2854,35 @@ th:last-child {
   white-space: nowrap;
 }
 
+.probe-models-changed {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 11px;
+  color: #8a5b12;
+  background: #fff7e6;
+  border: 1px solid #edd9a8;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.probe-models-changed svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: #c0801a;
+}
+
+:root[data-theme="dark"] .probe-models-changed {
+  color: #eac573;
+  background: #3c3020;
+  border-color: #6f5936;
+}
+
+:root[data-theme="dark"] .probe-models-changed svg {
+  color: #f1cb7d;
+}
+
 .probe-checks {
   display: flex;
   flex-wrap: wrap;

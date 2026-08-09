@@ -296,12 +296,12 @@ describe("operations agent", () => {
     expect(streamChecks).toBe(0);
 
     const probe = await agent.probeChannel(imported.channel.id);
-    expect(probe).toMatchObject({ ok: true, protocol: "openai", chatOk: true, streamOk: true, balanceStatus: "unknown" });
+    expect(probe).toMatchObject({ ok: true, protocol: "openai", chatOk: true, streamOk: true, balanceStatus: "unknown", modelsChanged: true });
     expect((await store.getChannel(imported.channel.id))?.status).toBe("healthy");
     expect((await store.getChannel(imported.channel.id))?.models).toEqual([]);
     expect((await store.listRoutingCandidates("gpt-agent-test"))).toHaveLength(0);
     expect(chatChecks).toBe(1);
-    expect(streamChecks).toBe(1);
+    expect(streamChecks).toBe(0);
   });
 
   it("isolates a channel after the configured number of failed checks and restores it after recovery", async () => {

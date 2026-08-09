@@ -19,7 +19,8 @@ export function ProbeResultDialog({ result, onClose }: { result: ProbeResponse |
             <div><span>延迟</span><strong><Clock3 size={13} /> {probe.latencyMs} ms</strong></div>
             <div><span>余额</span><strong><Coins size={13} /> {formatBalance(probe.balance, probe.balanceCurrency, probe.balanceStatus)}</strong></div>
           </div>
-          <div className="probe-checks"><span className={probe.chatOk ? "check-ok" : "check-fail"}>{probe.chatOk ? "✓" : "×"} 非流式请求</span><span className={probe.streamOk ? "check-ok" : "check-fail"}>{probe.streamOk ? "✓" : "×"} 流式请求</span></div>
+          {probe.modelsChanged ? <div className="probe-models-changed"><CircleAlert size={15} /><span>模型列表已更新，请到渠道编辑中确认是否同步到模型池。</span></div> : null}
+          <div className="probe-checks"><span className={probe.chatOk ? "check-ok" : "check-fail"}>{probe.chatOk ? "✓" : "×"} 对话请求</span></div>
           <div className="probe-models-section"><div className="probe-models-title"><span><Layers3 size={15} /> 探测到的模型</span><strong>{probe.models.length}</strong></div>{probe.models.length ? <div className="probe-model-list">{probe.models.map((model) => <span className="probe-model-item" key={model}>{model}</span>)}</div> : <div className="probe-empty">上游没有返回模型列表。</div>}</div>
           {probe.error ? <div className="form-error" role="alert">{probe.error}</div> : null}
           <p className="probe-result-note">模型列表仅供查看，不会自动覆盖当前已配置模型或加入模型池。</p>

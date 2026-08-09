@@ -499,7 +499,7 @@ describe("admin channel management", () => {
       headers: { authorization: "Bearer admin-probe-models-test" },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ probe: { ok: true, models: ["probe-model-a", "probe-model-b"] } });
+    expect(response.json()).toMatchObject({ probe: { ok: true, models: ["probe-model-a", "probe-model-b"], modelsChanged: true } });
     expect((await store.getChannel(imported.channel.id))?.models).toEqual(["selected-model"]);
   });
 

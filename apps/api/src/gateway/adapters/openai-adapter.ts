@@ -3,7 +3,7 @@ import type { AdapterAttempt, AdapterUsage, UpstreamAdapter } from "../adapter.j
 import { UpstreamError } from "../errors.js";
 import { fetchUpstream, jsonHeaders, parseJson, responseHeaders } from "../http.js";
 import { observeSseUsage } from "../streaming.js";
-import { errorMessage, optionalBalance, probeJson, probeStream } from "../probe-utils.js";
+import { errorMessage, optionalBalance, probeJson } from "../probe-utils.js";
 import { apiUrl } from "../url.js";
 
 export class OpenAiAdapter implements UpstreamAdapter {
@@ -52,8 +52,7 @@ export class OpenAiAdapter implements UpstreamAdapter {
       const model = models[0];
       if (!model) throw new Error("Upstream did not expose any models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
-      const chat = await probeOpenAiGeneration(channel, apiKey, model, false, timeoutMs);
-      const stream = await probeOpenAiGeneration(channel, apiKey, model, true, timeoutMs);
+      const chat = await probeOpenAiGeneration(channel, apiKey, model, timeoutMs);
       const balance = await balancePromise;
       return {
         ok: true,
@@ -61,11 +60,12 @@ export class OpenAiAdapter implements UpstreamAdapter {
         models,
         latencyMs: Date.now() - startedAt,
         chatOk: chat,
-        streamOk: stream,
+        streamOk: chat,
         balance: balance.balance,
         balanceCurrency: balance.currency,
         balanceStatus: balance.status,
         error: null,
+        modelsChanged: models.length > 0 && JSON.stringify(models) !== JSON.stringify(channel.models),
       };
     } catch (error) {
       return {
@@ -79,6 +79,7 @@ export class OpenAiAdapter implements UpstreamAdapter {
         balanceCurrency: null,
         balanceStatus: "unknown",
         error: errorMessage(error),
+        modelsChanged: false,
       };
     }
   }
@@ -415,41 +416,24 @@ async function probeOpenAiGeneration(
   channel: Channel,
   apiKey: string,
   model: string,
-  stream: boolean,
   timeoutMs: number,
 ): Promise<boolean> {
   const headers = jsonHeaders(apiKey);
-  const chatBody = { model, messages: [{ role: "user", content: "ping" }], max_tokens: 1, stream };
+  const chatBody = { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 32, stream: false };
   try {
-    if (stream) {
-      await probeStream(
-        apiUrl(channel.baseUrl, "/v1/chat/completions"),
-        { method: "POST", headers, body: JSON.stringify(chatBody) },
-        timeoutMs,
-      );
-    } else {
-      await probeJson(
-        apiUrl(channel.baseUrl, "/v1/chat/completions"),
-        { method: "POST", headers, body: JSON.stringify(chatBody) },
-        timeoutMs,
-      );
-    }
+    await probeJson(
+      apiUrl(channel.baseUrl, "/v1/chat/completions"),
+      { method: "POST", headers, body: JSON.stringify(chatBody) },
+      timeoutMs,
+    );
     return true;
   } catch {
-    const responseBody = { model, input: "ping", max_output_tokens: 1, stream };
-    if (stream) {
-      await probeStream(
-        apiUrl(channel.baseUrl, "/v1/responses"),
-        { method: "POST", headers, body: JSON.stringify(responseBody) },
-        timeoutMs,
-      );
-    } else {
-      await probeJson(
-        apiUrl(channel.baseUrl, "/v1/responses"),
-        { method: "POST", headers, body: JSON.stringify(responseBody) },
-        timeoutMs,
-      );
-    }
+    const responseBody = { model, input: "请用一句话说明你是谁", max_output_tokens: 32, stream: false };
+    await probeJson(
+      apiUrl(channel.baseUrl, "/v1/responses"),
+      { method: "POST", headers, body: JSON.stringify(responseBody) },
+      timeoutMs,
+    );
     return true;
   }
 }

@@ -236,6 +236,7 @@ export interface ProbeResult {
   balanceStatus: BalanceStatus;
   error: string | null;
   errorType?: string | null;
+  modelsChanged?: boolean;
 }
 
 export interface PoolSummary {
