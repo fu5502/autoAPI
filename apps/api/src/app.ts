@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import cors from "@fastify/cors";
@@ -31,10 +32,12 @@ export interface BuildAppOptions {
   runtime?: RuntimeState;
   startAgent?: boolean;
   startCheckin?: boolean;
+  version?: string;
 }
 
 export async function buildApp(options: BuildAppOptions = {}) {
   const config = options.config ?? loadConfig();
+  const version = options.version ?? resolveVersion();
   const app = Fastify({
     logger: config.nodeEnv === "test" ? false : {
       level: config.nodeEnv === "production" ? "info" : "warn",
@@ -108,7 +111,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   if (checkin) void checkin.balanceSync.syncAll().catch(() => undefined);
 
-  app.get("/healthz", async () => ({ status: "ok", mode: config.appMode, timestamp: new Date().toISOString() }));
+  app.get("/healthz", async () => ({ status: "ok", mode: config.appMode, version, timestamp: new Date().toISOString() }));
   await registerAdminRoutes(app, {
     store,
     agent,
@@ -116,6 +119,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     router,
     adminAuth,
     gatewayBaseUrl: config.gatewayBaseUrl,
+    version,
     loginRateLimitMax: config.adminLoginRateLimitMax,
     loginRateLimitWindowMs: config.adminLoginRateLimitWindowMs,
     checkinDb: checkin?.db,
@@ -158,4 +162,15 @@ async function connectProductionStore(connectionString: string): Promise<Postgre
   const store = await PostgresStore.connect(connectionString);
   await store.migrate();
   return store;
+}
+
+function resolveVersion(): string {
+  if (process.env.AUTOAPI_VERSION?.trim()) return process.env.AUTOAPI_VERSION.trim();
+  try {
+    const packageJsonPath = new URL("../../package.json", import.meta.url);
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: string };
+    return packageJson.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
 }

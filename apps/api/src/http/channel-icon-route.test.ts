@@ -31,6 +31,7 @@ describe('admin channel icon proxy', () => {
       router: {} as GatewayRouter,
       adminAuth: { isValidToken: () => true } as unknown as AdminAuthService,
       gatewayBaseUrl: 'http://localhost:8080/v1',
+      version: 'test',
       siteIcons,
     })
 
@@ -64,6 +65,7 @@ describe('admin channel icon proxy', () => {
       router: {} as GatewayRouter,
       adminAuth: { isValidToken: () => true } as unknown as AdminAuthService,
       gatewayBaseUrl: 'http://localhost:8080/v1',
+      version: 'test',
       checkinDb: {
         listSites: () => [site],
         listChannelLinks: () => [{ siteId: site.id, channelId: channel.id, createdAt: '2026-08-06T00:00:00.000Z' }],
@@ -101,6 +103,7 @@ describe('admin channel icon proxy', () => {
       router: {} as GatewayRouter,
       adminAuth: { isValidToken: () => true } as unknown as AdminAuthService,
       gatewayBaseUrl: 'http://localhost:8080/v1',
+      version: 'test',
       checkinDb: {
         listSites: () => [{ id: 8, baseUrl: 'https://checkin.example' }],
         listChannelLinks: () => [{ siteId: 8, channelId: channel.id, createdAt: '2026-08-06T00:00:00.000Z' }],

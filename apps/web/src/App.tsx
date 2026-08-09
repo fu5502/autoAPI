@@ -276,6 +276,7 @@ export default function App() {
             <button className="icon-button theme-toggle" title={colorTheme === "light" ? "切换至深色模式" : "切换至浅色模式"} aria-label={colorTheme === "light" ? "切换至深色模式" : "切换至浅色模式"} onClick={() => setColorTheme((theme) => theme === "light" ? "dark" : "light")}>{colorTheme === "light" ? <Moon size={16} /> : <Sun size={16} />}</button>
             <button className="button secondary key-button" onClick={() => setGatewayKeysOpen(true)}><KeyRound size={15} /> 访问密钥</button>
             <button className="button secondary security-button" onClick={() => setView("security")}><ShieldAlert size={15} /> {adminUsername}</button>
+            <span className="runtime-version" title="后端运行版本">{status.data?.version ?? "加载中…"}</span>
           </div>
         </header>
         {actionError ? <div className="action-error" role="alert">{actionError}</div> : null}

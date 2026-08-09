@@ -210,6 +210,7 @@ curl.exe http://localhost:8080/v1/chat/completions `
 | `FAILURE_THRESHOLD` | 连续失败达到此值后隔离，默认 3。 |
 | `TRUST_PROXY` | 反向代理后是否信任转发头；只有可信代理才启用。 |
 | `PUBLIC_BASE_URL` | 生成对外展示的网关 Base URL。 |
+| `AUTOAPI_VERSION` | 后端运行版本，用于顶栏右侧展示；留空时使用 `package.json` 版本。 |
 | `CHECKIN_ENABLE_NOVNC` | 默认 `false`；只有受控调试环境才设为 `true`。 |
 | `AUTOAPI_CHECKIN_DATA_DIR` | 签到 SQLite 和浏览器目录，Docker 默认 `/data/checkin`。 |
 

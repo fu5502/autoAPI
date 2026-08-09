@@ -256,6 +256,24 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+.runtime-version {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  max-width: 180px;
+  padding: 0 9px;
+  overflow: hidden;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 74%, var(--canvas));
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .gateway-endpoint {
   display: flex;
   align-items: center;

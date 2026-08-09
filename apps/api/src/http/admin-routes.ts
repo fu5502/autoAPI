@@ -117,6 +117,7 @@ export async function registerAdminRoutes(
     router: GatewayRouter;
     adminAuth: AdminAuthService;
     gatewayBaseUrl: string;
+    version: string;
     loginRateLimitMax?: number;
     loginRateLimitWindowMs?: number;
     checkinDb?: AppDatabase | undefined;
@@ -182,6 +183,7 @@ export async function registerAdminRoutes(
         errorRate24h: usage24h.errorRate,
         averageLatencyMs24h: usage24h.averageLatencyMs,
         gatewayBaseUrl: dependencies.gatewayBaseUrl,
+        version: dependencies.version,
       };
     });
 
