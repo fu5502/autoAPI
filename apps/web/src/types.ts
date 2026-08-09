@@ -250,6 +250,9 @@ export interface ProbeResult {
   modelsChanged?: boolean;
   probedModel?: string | null;
   probeReply?: string | null;
+  probeEndpoint?: string | null;
+  probeRequestBody?: string | null;
+  probeResponseRaw?: string | null;
 }
 
 export interface ProbeResponse {

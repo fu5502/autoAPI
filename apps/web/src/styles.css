@@ -2929,6 +2929,67 @@ th:last-child {
   overflow-wrap: anywhere;
 }
 
+.probe-reply-endpoint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.probe-reply-endpoint span,
+.probe-reply-block > span {
+  flex: 0 0 auto;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.probe-reply-endpoint code {
+  min-width: 0;
+  overflow: hidden;
+  color: #33454b;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.probe-reply-block {
+  display: grid;
+  gap: 4px;
+}
+
+.probe-reply-block pre,
+.probe-reply-raw pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 9px 10px;
+  color: #33454b;
+  background: #eef4f1;
+  border: 1px solid #d3e2dc;
+  border-radius: 5px;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.probe-reply-raw {
+  font-size: 11px;
+}
+
+.probe-reply-raw summary {
+  color: #2c6b5b;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.probe-reply-raw pre {
+  margin-top: 6px;
+}
+
 :root[data-theme="dark"] .probe-reply {
   background: #16261f;
   border-color: #305246;
@@ -2945,6 +3006,18 @@ th:last-child {
 
 :root[data-theme="dark"] .probe-reply-answer {
   color: #dce8e3;
+}
+
+:root[data-theme="dark"] .probe-reply-endpoint code,
+:root[data-theme="dark"] .probe-reply-block pre,
+:root[data-theme="dark"] .probe-reply-raw pre {
+  color: #d3e4de;
+  background: #10201b;
+  border-color: #2c463c;
+}
+
+:root[data-theme="dark"] .probe-reply-raw summary {
+  color: #9edcc6;
 }
 
 .probe-checks {

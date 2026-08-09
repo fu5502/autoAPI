@@ -52,7 +52,7 @@ export class OpenAiAdapter implements UpstreamAdapter {
       const model = models[0];
       if (!model) throw new Error("Upstream did not expose any models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
-      const reply = await probeOpenAiGeneration(channel, apiKey, model, timeoutMs);
+      const probe = await probeOpenAiGeneration(channel, apiKey, model, timeoutMs);
       const balance = await balancePromise;
       return {
         ok: true,
@@ -67,7 +67,10 @@ export class OpenAiAdapter implements UpstreamAdapter {
         error: null,
         modelsChanged: models.length > 0 && JSON.stringify(models) !== JSON.stringify(channel.models),
         probedModel: model,
-        probeReply: reply,
+        probeReply: probe.reply,
+        probeEndpoint: probe.endpoint,
+        probeRequestBody: probe.requestBody,
+        probeResponseRaw: probe.responseRaw,
       };
     } catch (error) {
       return {
@@ -414,29 +417,48 @@ function contentText(value: unknown): string {
   return value.flatMap((part) => isRecord(part) && typeof part.text === "string" ? [part.text] : []).join("");
 }
 
+interface ProbeConversation {
+  reply: string;
+  endpoint: string;
+  requestBody: string;
+  responseRaw: string;
+}
+
 async function probeOpenAiGeneration(
   channel: Channel,
   apiKey: string,
   model: string,
   timeoutMs: number,
-): Promise<string> {
+): Promise<ProbeConversation> {
   const headers = jsonHeaders(apiKey);
   const chatBody = { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 32, stream: false };
+  const chatEndpoint = apiUrl(channel.baseUrl, "/v1/chat/completions");
   try {
     const body = await probeJson(
-      apiUrl(channel.baseUrl, "/v1/chat/completions"),
+      chatEndpoint,
       { method: "POST", headers, body: JSON.stringify(chatBody) },
       timeoutMs,
     );
-    return extractChatReply(body);
+    return {
+      reply: extractChatReply(body),
+      endpoint: `POST ${chatEndpoint}`,
+      requestBody: JSON.stringify(chatBody, null, 2),
+      responseRaw: JSON.stringify(body, null, 2),
+    };
   } catch {
     const responseBody = { model, input: "请用一句话说明你是谁", max_output_tokens: 32, stream: false };
+    const responsesEndpoint = apiUrl(channel.baseUrl, "/v1/responses");
     const body = await probeJson(
-      apiUrl(channel.baseUrl, "/v1/responses"),
+      responsesEndpoint,
       { method: "POST", headers, body: JSON.stringify(responseBody) },
       timeoutMs,
     );
-    return extractResponsesReply(body);
+    return {
+      reply: extractResponsesReply(body),
+      endpoint: `POST ${responsesEndpoint}`,
+      requestBody: JSON.stringify(responseBody, null, 2),
+      responseRaw: JSON.stringify(body, null, 2),
+    };
   }
 }
 

@@ -67,8 +67,9 @@ export class ClaudeAdapter implements UpstreamAdapter {
       if (!model) throw new Error("Upstream did not expose any Claude models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
       const body = { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 32 };
+      const endpoint = apiUrl(channel.baseUrl, "/v1/messages");
       const reply = await probeJson(
-        apiUrl(channel.baseUrl, "/v1/messages"),
+        endpoint,
         { method: "POST", headers: claudeHeaders(apiKey), body: JSON.stringify(body) },
         timeoutMs,
       );
@@ -87,6 +88,9 @@ export class ClaudeAdapter implements UpstreamAdapter {
         modelsChanged: models.length > 0 && JSON.stringify(models) !== JSON.stringify(channel.models),
         probedModel: model,
         probeReply: extractClaudeReply(reply),
+        probeEndpoint: `POST ${endpoint}`,
+        probeRequestBody: JSON.stringify(body, null, 2),
+        probeResponseRaw: JSON.stringify(reply, null, 2),
       };
     } catch (error) {
       return {
