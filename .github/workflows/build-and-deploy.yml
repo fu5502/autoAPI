@@ -122,3 +122,14 @@ jobs:
             docker compose ps
             docker compose logs --tail=100 autoapi
             exit 1"
+
+      - name: Tag latest and cleanup old images
+        run: |
+          set -euo pipefail
+          remote_image=$(printf '%q' "$IMAGE_TAG")
+          ssh -o BatchMode=yes -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "set -eu
+            docker tag $remote_image autoapi:latest
+            echo 'Tagged $remote_image as autoapi:latest'
+            docker images --filter=reference='autoapi:*' --format '{{.Repository}}:{{.Tag}} {{.ID}}' | grep -v ':latest\$' | awk '{print \$2}' | sort -u | while read img_id; do
+              docker rmi \$img_id 2>/dev/null && echo \"Removed old image \$img_id\" || true
+            done"
