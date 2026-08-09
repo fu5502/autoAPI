@@ -23,10 +23,7 @@ export function ProbeResultDialog({ result, onClose }: { result: ProbeResponse |
           <div className="probe-checks"><span className={probe.chatOk ? "check-ok" : "check-fail"}>{probe.chatOk ? "✓" : "×"} 对话请求</span></div>
           {probe.chatOk ? <div className="probe-reply">
             <div className="probe-reply-head"><MessageSquareText size={14} /><span>对话测试</span>{probe.probedModel ? <code>{probe.probedModel}</code> : null}</div>
-            {probe.probeEndpoint ? <div className="probe-reply-endpoint"><span>接口</span><code>{probe.probeEndpoint}</code></div> : null}
-            <div className="probe-reply-block"><span>请求</span><pre>{probe.probeRequestBody?.trim() ? probe.probeRequestBody : "{\n  \"messages\": [{ \"role\": \"user\", \"content\": \"请用一句话说明你是谁\" }]\n}"}</pre></div>
-            <div className="probe-reply-block"><span>回复正文</span><p className="probe-reply-answer">{probe.probeReply?.trim() ? probe.probeReply : "上游返回成功，但未包含可显示的文本内容。"}</p></div>
-            {probe.probeResponseRaw?.trim() ? <details className="probe-reply-raw"><summary>完整响应</summary><pre>{probe.probeResponseRaw}</pre></details> : null}
+            <p className="probe-reply-answer">{probe.probeReply?.trim() ? probe.probeReply : "上游返回成功，但未包含可显示的文本内容。"}</p>
           </div> : null}
           <div className="probe-models-section"><div className="probe-models-title"><span><Layers3 size={15} /> 探测到的模型</span><strong>{probe.models.length}</strong></div>{probe.models.length ? <div className="probe-model-list">{probe.models.map((model) => <span className="probe-model-item" key={model}>{model}</span>)}</div> : <div className="probe-empty">上游没有返回模型列表。</div>}</div>
           {probe.error ? <div className="form-error" role="alert">{probe.error}</div> : null}

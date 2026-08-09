@@ -78,6 +78,15 @@ function extractErrorMessage(body: Uint8Array): string | null {
     if (typeof error === "string") return error;
     if (error && typeof error === "object" && "message" in error && typeof error.message === "string") return error.message;
     if (typeof value.message === "string") return value.message;
+    const header = value.header;
+    if (header && typeof header === "object" && !Array.isArray(header)) {
+      const headerRecord = header as Record<string, unknown>;
+      const code = typeof headerRecord.code === "number" || typeof headerRecord.code === "string"
+        ? String(headerRecord.code)
+        : "";
+      const message = typeof headerRecord.message === "string" ? headerRecord.message : "";
+      if (code || message) return `Upstream error ${code}${message ? `: ${message}` : ""}`.trim();
+    }
   } catch {
     const text = new TextDecoder().decode(body).trim();
     return text.slice(0, 500) || null;

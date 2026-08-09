@@ -15,6 +15,30 @@ afterEach(async () => {
 });
 
 describe("protocol adapters", () => {
+  it("tries the next probe variant after a chat probe 500", async () => {
+    let responsesCalls = 0;
+    const mock = await startMockUpstream((app) => {
+      app.get("/v1/models", async () => ({ object: "list", data: [{ id: "gpt-probe-500" }] }));
+      app.post("/v1/chat/completions", async (_request, reply) => {
+        return reply.code(500).send({ header: { code: 10910, message: "code=1001" } });
+      });
+      app.post("/v1/responses", async () => {
+        responsesCalls += 1;
+        return { object: "response", output_text: "probe-ok" };
+      });
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("openai-probe-500-test");
+    const channel = await addHealthyChannel(store, secrets, { name: "probe-500", baseUrl: mock.baseUrl, model: "gpt-probe-500" });
+
+    const result = await new OpenAiAdapter().probe(channel, "sk-probe-500", 1_000);
+
+    expect(result.ok).toBe(true);
+    expect(result.probeReply).toBe("probe-ok");
+    expect(responsesCalls).toBe(1);
+  });
+
   it("reads OpenAI cached tokens from a non-streaming usage payload", async () => {
     const mock = await startMockUpstream((app) => {
       app.post("/v1/chat/completions", async () => ({

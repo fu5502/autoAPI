@@ -150,6 +150,29 @@ export default function App() {
       setActionError(error instanceof Error ? error.message : "渠道状态更新失败，请重试。");
     },
   });
+  const updateProtocol = useMutation({
+    mutationFn: ({ channel, protocol }: { channel: Channel; protocol: string }) => api.updateChannel(channel.id, {
+      name: channel.name,
+      baseUrl: channel.baseUrl,
+      faviconUrl: channel.faviconUrl,
+      protocol,
+      models: channel.models,
+      priority: channel.priority,
+      weight: channel.weight,
+      minBalance: channel.minBalance,
+      tags: channel.tags,
+      enabled: channel.enabled,
+    }),
+    onSuccess: async (_result, variables) => {
+      setActionError(null);
+      setActionNotice(`已将 ${variables.channel.name} 的协议切换为 ${variables.protocol}`);
+      await refreshAll(queryClient);
+    },
+    onError: (error) => {
+      setActionNotice(null);
+      setActionError(error instanceof Error ? error.message : "协议切换失败，请重试。");
+    },
+  });
   const reorderChannels = useMutation({
     mutationFn: (channelIds: string[]) => api.reorderChannels(channelIds),
     onSuccess: () => refreshAll(queryClient),
@@ -287,9 +310,9 @@ export default function App() {
         {view !== "checkin" && failed && !authError ? <ErrorState error={failed} onRetry={refreshed} /> : null}
         {view !== "checkin" && !loading && !failed && status.data && channels.data && pools.data && usage.data ? (
           <>
-            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} /> : null}
-            {view === "channels" ? <ChannelsView channels={channels.data} deletedChannelRecords={deletedChannelRecords} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} onRefreshBalances={() => refreshBalances.mutate()} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} onAddChannel={() => setProviderOpen(true)} /> : null}
-            {view === "pools" ? <PoolsView pools={pools.data} onAddRoute={() => setAliasOpen(true)} /> : null}
+            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} onProtocolChange={(channel, protocol) => updateProtocol.mutate({ channel, protocol })} protocolChangingId={updateProtocol.isPending ? updateProtocol.variables?.channel.id ?? null : null} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} /> : null}
+            {view === "channels" ? <ChannelsView channels={channels.data} deletedChannelRecords={deletedChannelRecords} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} onRefreshBalances={() => refreshBalances.mutate()} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} onProtocolChange={(channel, protocol) => updateProtocol.mutate({ channel, protocol })} protocolChangingId={updateProtocol.isPending ? updateProtocol.variables?.channel.id ?? null : null} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} onAddChannel={() => setProviderOpen(true)} /> : null}
+            {view === "pools" ? <PoolsView pools={pools.data} channels={channels.data ?? []} onAddRoute={() => setAliasOpen(true)} /> : null}
             {view === "usage" ? <UsageView usage={usage.data} window={usageWindow} onWindowChange={setUsageWindow} /> : null}
             {view === "requests" ? <RequestsView page={requests.data} channels={channels.data ?? []} filters={requestFilters} refreshInterval={requestRefreshInterval} onRefreshIntervalChange={setRequestRefreshInterval} onFilterChange={(next) => setRequestFilters({ ...next, offset: 0 })} onRefresh={() => void requests.refetch()} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} /> : null}
             {view === "playground" ? <Playground channels={channels.data} onUpdated={refreshed} /> : null}
@@ -359,6 +382,8 @@ function Overview({
   onEdit,
   onDelete,
   onToggle,
+  onProtocolChange,
+  protocolChangingId,
   togglingId,
   deletingId,
   onReorder,
@@ -375,6 +400,8 @@ function Overview({
   onEdit: (channel: Channel) => void;
   onDelete: (channel: Channel) => void;
   onToggle: (channel: Channel, enabled?: boolean) => void;
+  onProtocolChange: (channel: Channel, protocol: string) => void;
+  protocolChangingId: string | null;
   togglingId: string | null;
   deletingId: string | null;
   onReorder: (channelIds: string[]) => Promise<void>;
@@ -447,7 +474,7 @@ function Overview({
       </section>
       <section className="surface">
         <SectionHead title="渠道运行情况" meta={`${channels.filter((channel) => channel.status === "isolated").length} 个已隔离`} />
-        <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
+        <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onProtocolChange={onProtocolChange} protocolChangingId={protocolChangingId} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
       </section>
     </div>
   );
@@ -511,7 +538,7 @@ function PoolHealthLegend() {
   );
 }
 
-function ChannelsView({ channels, deletedChannelRecords, syncingBalanceId, balanceRefreshPending, onSyncBalance, onRefreshBalances, probingId, onProbe, onEdit, onDelete, onToggle, togglingId, deletingId, onReorder, onAddChannel }: { channels: Channel[]; deletedChannelRecords: DeletedChannelRecord[]; syncingBalanceId: number | null; balanceRefreshPending: boolean; onSyncBalance: (siteId: number) => void; onRefreshBalances: () => void; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel, enabled?: boolean) => void; togglingId: string | null; deletingId: string | null; onReorder: (channelIds: string[]) => Promise<void>; onAddChannel: () => void }) {
+function ChannelsView({ channels, deletedChannelRecords, syncingBalanceId, balanceRefreshPending, onSyncBalance, onRefreshBalances, probingId, onProbe, onEdit, onDelete, onToggle, onProtocolChange, protocolChangingId, togglingId, deletingId, onReorder, onAddChannel }: { channels: Channel[]; deletedChannelRecords: DeletedChannelRecord[]; syncingBalanceId: number | null; balanceRefreshPending: boolean; onSyncBalance: (siteId: number) => void; onRefreshBalances: () => void; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel, enabled?: boolean) => void; onProtocolChange: (channel: Channel, protocol: string) => void; protocolChangingId: string | null; togglingId: string | null; deletingId: string | null; onReorder: (channelIds: string[]) => Promise<void>; onAddChannel: () => void }) {
   return (
     <div className="view-stack">
       <section className="channel-summary">
@@ -522,7 +549,7 @@ function ChannelsView({ channels, deletedChannelRecords, syncingBalanceId, balan
       </section>
       <section className="surface">
         <SectionHead title="全部渠道" meta="实时健康状态与余额" action={<div className="section-head-actions"><button className="button secondary" onClick={onRefreshBalances} disabled={balanceRefreshPending}><WalletCards size={15} className={balanceRefreshPending ? "spin" : ""} /> {balanceRefreshPending ? "刷新中" : "批量刷新余额"}</button><button className="button primary" onClick={onAddChannel}><CirclePlus size={15} /> 添加渠道</button></div>} />
-        <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
+        <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onProtocolChange={onProtocolChange} protocolChangingId={protocolChangingId} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
       </section>
       <section className="surface detail-list">
         <SectionHead title="隔离详情" meta={deletedChannelRecords.length > 0 ? `自动熔断状态 · 已删除 ${deletedChannelRecords.length} 条` : "自动熔断状态"} />
@@ -546,8 +573,14 @@ function ChannelsView({ channels, deletedChannelRecords, syncingBalanceId, balan
   );
 }
 
-function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => void }) {
+function PoolsView({ pools, channels, onAddRoute }: { pools: Pool[]; channels: Channel[]; onAddRoute: () => void }) {
   const [expandedAliases, setExpandedAliases] = useState<Set<string>>(new Set());
+  const recentRequests = useQuery({
+    queryKey: ["pool-recent-requests"],
+    queryFn: () => api.requests({ window: "24h", limit: 10, offset: 0 }),
+    refetchInterval: 30_000,
+  });
+  const recentItems = recentRequests.data?.items ?? [];
 
   function toggleExpanded(alias: string) {
     setExpandedAliases((current) => {
@@ -651,6 +684,56 @@ function PoolsView({ pools, onAddRoute }: { pools: Pool[]; onAddRoute: () => voi
           </table>
         </div>
       </section>
+      <section className="surface">
+        <SectionHead title="最近信息" meta={recentRequests.isLoading ? "加载中" : recentItems.length > 0 ? `最近 ${recentItems.length} 条` : "暂无记录"} action={<button className="icon-button" type="button" title="刷新最近信息" aria-label="刷新最近信息" onClick={() => void recentRequests.refetch()}><RefreshCw size={15} /></button>} />
+        <PoolRecentRequestTable items={recentItems} channels={channels} />
+      </section>
+    </div>
+  );
+}
+
+function PoolRecentRequestTable({ items, channels }: { items: RequestLogEntry[]; channels: Channel[] }) {
+  const channelUrls = new Map(channels.map((channel) => [channel.id, channel.checkinSite?.baseUrl ?? channel.baseUrl]));
+  if (items.length === 0) return <div className="request-empty compact-log-empty"><Search size={20} /><strong>暂无最近信息</strong><span>请求经过网关后会显示在这里。</span></div>;
+  return (
+    <div className="request-table-scroll pool-recent-log-scroll">
+      <table className="request-table pool-recent-log-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>来源</th>
+            <th>渠道</th>
+            <th>模型</th>
+            <th>端点</th>
+            <th>状态</th>
+            <th>错误</th>
+            <th>耗时</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => {
+            const success = item.statusCode < 400;
+            const date = new Date(item.createdAt);
+            const clientLabel = item.clientName === "channel-probe" ? "渠道探测" : item.clientName === "unknown" ? "未知客户端" : item.clientName;
+            const channelLabel = item.channelName ?? item.providerName ?? "无可用渠道";
+            const channelUrl = item.channelId ? channelUrls.get(item.channelId) : undefined;
+            return (
+              <tr className={success ? "" : "request-row-error"} key={item.id}>
+                <td data-label="时间" className="request-time" title={item.requestId}>{formatRequestTime(date)}</td>
+                <td data-label="来源"><span className="request-client">{clientLabel}</span></td>
+                <td data-label="渠道" title={channelLabel}>
+                  {channelUrl ? <a className="request-channel-with-icon request-channel-link" href={channelUrl} target="_blank" rel="noopener noreferrer" title={`新窗口打开 ${channelLabel}`}><span className="request-channel">{channelLabel}</span></a> : <span className="request-channel">{channelLabel}</span>}
+                </td>
+                <td data-label="模型" title={item.modelAlias}><strong className="request-model-name">{item.modelAlias}</strong></td>
+                <td data-label="端点" title={item.endpoint}><code className="request-endpoint">{item.endpoint}</code></td>
+                <td data-label="状态"><span className={`request-metric ${success ? "good" : "bad"}`}>{success ? "成功" : `HTTP ${item.statusCode}`}</span></td>
+                <td data-label="错误">{item.errorType ? <span className="request-error-type" title={formatErrorType(item.errorType)}>{formatErrorType(item.errorType)}</span> : <span className="request-error-none">—</span>}</td>
+                <td data-label="耗时"><span className={`request-metric ${success ? "good" : "bad"}`}>{formatDuration(item.latencyMs)}</span></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

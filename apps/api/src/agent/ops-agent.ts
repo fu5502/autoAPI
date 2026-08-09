@@ -314,7 +314,11 @@ export class OpsAgent {
         errorType: result.ok ? null : result.errorType ?? "probe_failed",
         retryCount: 0,
         streamed: false,
-        endpoint: "/channels/probe",
+        endpoint: result.protocol === "claude"
+          ? "/v1/messages"
+          : result.protocol === "gemini"
+            ? "/v1beta/models/:generateContent"
+            : "/v1/chat/completions",
         sourceIp: null,
         gatewayKeyName: null,
         reasoningEffort: null,

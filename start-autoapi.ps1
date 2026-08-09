@@ -13,18 +13,12 @@ function Write-MenuText([string]$Text, [ConsoleColor]$Color = [ConsoleColor]::Gr
 }
 
 function Clear-Screen {
-  # Clear-Host on Windows conhost keeps the scrollback buffer, so the menu can
-  # end up below old output instead of at the very top. Reset both the visible
-  # screen and the scrollback so the menu is always pinned to the top.
   try {
+    # cmd's cls clears the visible screen and scrollback together. This keeps
+    # the menu at the very top after a command has produced lots of output.
+    & $env:ComSpec /c cls
     $raw = $Host.UI.RawUI
-    $size = $raw.BufferSize
-    $blank = ' ' * $size.Width
     $origin = New-Object System.Management.Automation.Host.Coordinates 0, 0
-    for ($row = 0; $row -lt $size.Height; $row++) {
-      [System.Console]::SetCursorPosition(0, $row)
-      [System.Console]::Write($blank)
-    }
     $raw.CursorPosition = $origin
     $window = $raw.WindowPosition
     $window.X = 0
@@ -219,7 +213,6 @@ function Show-Menu {
   Write-Host "[8]" -ForegroundColor Yellow -NoNewline; Write-Host " 停止服务        停止本地 API、前端和 Docker 服务"
   Write-Host "[9]" -ForegroundColor Yellow -NoNewline; Write-Host " 数据目录        在资源管理器中打开项目目录"
   Write-Host "[B]" -ForegroundColor Yellow -NoNewline; Write-Host " 备份配置        备份 .env、迁移文件和文档"
-  Write-Host "[M]" -ForegroundColor Yellow -NoNewline; Write-Host " 迁移签到数据    从 zhongzhuanzhan 导入站点和签到历史"
   Write-Host "[K]" -ForegroundColor Yellow -NoNewline; Write-Host " 备份签到数据    备份签到 SQLite 与浏览器配置"
   Write-Host "[E]" -ForegroundColor Yellow -NoNewline; Write-Host " 授权助手目录    打开 Chrome/Edge 本地授权助手目录"
   Write-Host "[V]" -ForegroundColor Yellow -NoNewline; Write-Host " 版本信息        查看 Node、pnpm 和项目版本"
@@ -259,7 +252,9 @@ function Start-DevMode {
     $apiDirectory = Join-Path $Root "apps\api"
     $webDirectory = Join-Path $Root "apps\web"
 
+    $env:NODE_NO_WARNINGS = "1"
     $apiProcess = Start-Process -FilePath $nodeCommand -ArgumentList @($tsxScript, "watch", "src/index.ts") -WorkingDirectory $apiDirectory -NoNewWindow -PassThru
+    Remove-Item Env:NODE_NO_WARNINGS -ErrorAction SilentlyContinue
     $services += [PSCustomObject]@{ Name = "API"; Process = $apiProcess }
     if ($job -ne [IntPtr]::Zero) {
       try {
@@ -491,13 +486,6 @@ function Backup-Configuration {
   Write-MenuText "配置备份已生成: $zipPath" Green
 }
 
-function Migrate-CheckinData {
-  if (-not (Ensure-Dependencies)) { return }
-  Write-MenuText "开始迁移公益站签到数据，源目录不会被删除或修改..." Cyan
-  & pnpm.cmd --filter @autoapi/api migrate:checkin
-  if ($LASTEXITCODE -eq 0) { Write-MenuText "签到数据迁移完成。" Green } else { Write-MenuText "签到数据迁移失败。" Red }
-}
-
 function Backup-CheckinData {
   if (-not (Ensure-Dependencies)) { return }
   & pnpm.cmd --filter @autoapi/api backup:checkin
@@ -530,7 +518,6 @@ while ($true) {
     "8" { Stop-Services }
     "9" { Start-Process explorer.exe $Root }
     "B" { Backup-Configuration }
-    "M" { Migrate-CheckinData }
     "K" { Backup-CheckinData }
     "E" { Open-AuthAssistant }
     "V" { Show-Version }
@@ -538,5 +525,5 @@ while ($true) {
     default { Write-MenuText "无效选项，请重新选择。" Yellow }
   }
   Write-Host ""
-  Read-Host "按 Enter 返回菜单"
+  Read-Host "按 Enter 返回置顶菜单"
 }

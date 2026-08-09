@@ -15,6 +15,8 @@ export function ChannelTable({
   onEdit,
   onDelete,
   onToggle,
+  onProtocolChange,
+  protocolChangingId,
   togglingId,
   deletingId,
   onReorder,
@@ -28,6 +30,8 @@ export function ChannelTable({
   onEdit: (channel: Channel) => void;
   onDelete: (channel: Channel) => void;
   onToggle: (channel: Channel, enabled?: boolean) => void;
+  onProtocolChange: (channel: Channel, protocol: string) => void;
+  protocolChangingId: string | null;
   togglingId: string | null;
   deletingId: string | null;
   onReorder: (channelIds: string[]) => Promise<void>;
@@ -139,7 +143,22 @@ export function ChannelTable({
                 <td><strong className="channel-routing-number">{channel.priority}</strong></td>
                 <td><span className="channel-routing-number">{channel.weight}</span></td>
                 <td><ChannelStatusControl channel={channel} pending={togglingId === channel.id} menuAbove={index === orderedChannels.length - 1} onToggle={onToggle} /></td>
-                <td><span className="mono subtle">{channel.protocol}</span></td>
+                <td>
+                  <select
+                    className="channel-protocol-select"
+                    value={channel.protocol}
+                    disabled={protocolChangingId === channel.id}
+                    onChange={(event) => onProtocolChange(channel, event.target.value)}
+                    aria-label={`切换 ${channel.name} 协议`}
+                  >
+                    <option value="auto">自动识别</option>
+                    <option value="openai">OpenAI 兼容</option>
+                    <option value="claude">Claude 兼容</option>
+                    <option value="gemini">Gemini 兼容</option>
+                    <option value="new-api">New API</option>
+                    <option value="sub2api">Sub2API</option>
+                  </select>
+                </td>
                 <td>{formatBalance(channel, onSyncBalance, syncingBalanceId, balanceRefreshPending)}</td>
                 <td>{channel.lastLatencyMs === null ? "—" : `${channel.lastLatencyMs} ms`}</td>
                 <td>

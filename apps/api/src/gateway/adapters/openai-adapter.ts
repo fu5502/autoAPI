@@ -431,35 +431,48 @@ async function probeOpenAiGeneration(
   timeoutMs: number,
 ): Promise<ProbeConversation> {
   const headers = jsonHeaders(apiKey);
-  const chatBody = { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 32, stream: false };
-  const chatEndpoint = apiUrl(channel.baseUrl, "/v1/chat/completions");
-  try {
-    const body = await probeJson(
-      chatEndpoint,
-      { method: "POST", headers, body: JSON.stringify(chatBody) },
-      timeoutMs,
-    );
-    return {
-      reply: extractChatReply(body),
-      endpoint: `POST ${chatEndpoint}`,
-      requestBody: JSON.stringify(chatBody, null, 2),
-      responseRaw: JSON.stringify(body, null, 2),
-    };
-  } catch {
-    const responseBody = { model, input: "请用一句话说明你是谁", max_output_tokens: 32, stream: false };
-    const responsesEndpoint = apiUrl(channel.baseUrl, "/v1/responses");
-    const body = await probeJson(
-      responsesEndpoint,
-      { method: "POST", headers, body: JSON.stringify(responseBody) },
-      timeoutMs,
-    );
-    return {
-      reply: extractResponsesReply(body),
-      endpoint: `POST ${responsesEndpoint}`,
-      requestBody: JSON.stringify(responseBody, null, 2),
-      responseRaw: JSON.stringify(body, null, 2),
-    };
+  const variants: Array<{
+    path: string;
+    body: Record<string, unknown>;
+    extract: (body: Record<string, unknown>) => string;
+  }> = [
+    {
+      path: "/v1/chat/completions",
+      body: { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 1024, stream: false },
+      extract: extractChatReply,
+    },
+    {
+      path: "/v1/chat/completions",
+      body: { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], stream: false },
+      extract: extractChatReply,
+    },
+    {
+      path: "/v1/responses",
+      body: { model, input: "请用一句话说明你是谁", max_output_tokens: 1024, stream: false },
+      extract: extractResponsesReply,
+    },
+  ];
+
+  let lastError: unknown;
+  for (const variant of variants) {
+    const endpoint = apiUrl(channel.baseUrl, variant.path);
+    try {
+      const body = await probeJson(
+        endpoint,
+        { method: "POST", headers, body: JSON.stringify(variant.body) },
+        timeoutMs,
+      );
+      return {
+        reply: variant.extract(body),
+        endpoint: `POST ${endpoint}`,
+        requestBody: JSON.stringify(variant.body, null, 2),
+        responseRaw: JSON.stringify(body, null, 2),
+      };
+    } catch (error) {
+      lastError = error;
+    }
   }
+  throw lastError;
 }
 
 function extractChatReply(body: Record<string, unknown>): string {
