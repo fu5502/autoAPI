@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Copy, GripVertical, Pause, Pencil, Play, RefreshCw, Trash2, WalletCards } from "lucide-react";
+import { ChevronDown, ChevronRight, GripVertical, Pause, Pencil, Play, RefreshCw, Trash2, WalletCards } from "lucide-react";
 import type { Channel } from "../types";
 import { getAdminToken } from "../api";
 import { StatusDot } from "./StatusDot";
@@ -37,7 +37,6 @@ export function ChannelTable({
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [savingOrder, setSavingOrder] = useState(false);
   const [expandedChannelIds, setExpandedChannelIds] = useState<Set<string>>(() => new Set());
-  const [copiedBaseUrlId, setCopiedBaseUrlId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!draggingId && !savingOrder) setOrderedChannels(channels);
@@ -72,16 +71,6 @@ export function ChannelTable({
       else next.add(channelId);
       return next;
     });
-  }
-
-  async function copyBaseUrl(channel: Channel) {
-    try {
-      await copyText(channel.baseUrl);
-      setCopiedBaseUrlId(channel.id);
-      window.setTimeout(() => setCopiedBaseUrlId((current) => current === channel.id ? null : current), 1800);
-    } catch {
-      setCopiedBaseUrlId(null);
-    }
   }
 
   return (
@@ -143,19 +132,7 @@ export function ChannelTable({
                 <td><span className="channel-key-name">{channel.keyName ?? "API Key"}</span></td>
                 <td>
                   <div className="channel-base-url-cell">
-                    <button
-                      className="icon-button channel-base-url-copy"
-                      type="button"
-                      title={copiedBaseUrlId === channel.id ? "已复制 Base URL" : "复制 Base URL"}
-                      aria-label={copiedBaseUrlId === channel.id ? "已复制 Base URL" : `复制${channel.name}的 Base URL`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void copyBaseUrl(channel);
-                      }}
-                    >
-                      {copiedBaseUrlId === channel.id ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-                    <span className="channel-base-url" title={channel.baseUrl}>{channel.baseUrl}</span>
+                    <a className="channel-base-url" href={channel.baseUrl} target="_blank" rel="noopener noreferrer" title={`新窗口打开 ${channel.baseUrl}`}>{channel.baseUrl}</a>
                   </div>
                 </td>
                 <td><span className="channel-model-count">{channel.models.length}</span></td>
@@ -213,12 +190,15 @@ function ChannelStatusControl({ channel, pending, onToggle }: { channel: Channel
     return () => document.removeEventListener("pointerdown", closeOnOutside);
   }, [open]);
 
-  if (channel.status !== "isolated") return <StatusDot status={channel.status} />;
-
   function choose(enabled: boolean) {
     setOpen(false);
     onToggle(channel, enabled);
   }
+
+  const isIsolated = channel.status === "isolated";
+  const actionLabel = isIsolated ? "启用" : channel.enabled ? "停用" : "可用";
+  const actionTitle = isIsolated ? `启用${channel.name}` : channel.enabled ? `停用${channel.name}` : `启用${channel.name}`;
+  const actionEnabled = isIsolated ? true : !channel.enabled;
 
   return (
     <div className="channel-status-cell" ref={menuRef}>
@@ -227,7 +207,7 @@ function ChannelStatusControl({ channel, pending, onToggle }: { channel: Channel
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`${channel.name}已隔离，修改渠道状态`}
+        aria-label={`${channel.name}当前状态，修改渠道状态`}
         title="点击修改渠道状态"
         disabled={pending}
         onClick={(event) => {
@@ -238,10 +218,9 @@ function ChannelStatusControl({ channel, pending, onToggle }: { channel: Channel
         <StatusDot status={channel.status} />
         <ChevronDown size={13} aria-hidden="true" />
       </button>
-      <IsolationCountdown until={channel.cooldownUntil} />
+      {channel.status === "isolated" ? <IsolationCountdown until={channel.cooldownUntil} /> : null}
       {open ? <div className="channel-status-menu" role="menu">
-        <button type="button" role="menuitem" disabled={pending} onClick={() => choose(false)}>禁用</button>
-        <button type="button" role="menuitem" disabled={pending} onClick={() => choose(true)}>可用</button>
+        <button type="button" role="menuitem" disabled={pending} title={actionTitle} onClick={() => choose(actionEnabled)}>{actionLabel}</button>
       </div> : null}
     </div>
   );
@@ -348,21 +327,4 @@ function formatBalanceValue(value: number) {
 
 function formatPercent(value: number) {
   return new Intl.NumberFormat("zh-CN", { style: "percent", maximumFractionDigits: 1 }).format(value);
-}
-
-async function copyText(value: string) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
-  }
-  const input = document.createElement("textarea");
-  input.value = value;
-  input.setAttribute("readonly", "true");
-  input.style.position = "fixed";
-  input.style.opacity = "0";
-  document.body.appendChild(input);
-  input.select();
-  const copied = document.execCommand("copy");
-  input.remove();
-  if (!copied) throw new Error("copy failed");
 }

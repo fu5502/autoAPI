@@ -290,7 +290,7 @@ export default function App() {
             {view === "channels" ? <ChannelsView channels={channels.data} deletedChannelRecords={deletedChannelRecords} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} onRefreshBalances={() => refreshBalances.mutate()} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} onAddChannel={() => setProviderOpen(true)} /> : null}
             {view === "pools" ? <PoolsView pools={pools.data} onAddRoute={() => setAliasOpen(true)} /> : null}
             {view === "usage" ? <UsageView usage={usage.data} window={usageWindow} onWindowChange={setUsageWindow} /> : null}
-            {view === "requests" ? <RequestsView page={requests.data} filters={requestFilters} refreshInterval={requestRefreshInterval} onRefreshIntervalChange={setRequestRefreshInterval} onFilterChange={(next) => setRequestFilters({ ...next, offset: 0 })} onRefresh={() => void requests.refetch()} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} /> : null}
+            {view === "requests" ? <RequestsView page={requests.data} channels={channels.data ?? []} filters={requestFilters} refreshInterval={requestRefreshInterval} onRefreshIntervalChange={setRequestRefreshInterval} onFilterChange={(next) => setRequestFilters({ ...next, offset: 0 })} onRefresh={() => void requests.refetch()} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} /> : null}
             {view === "playground" ? <Playground channels={channels.data} onUpdated={refreshed} /> : null}
             {view === "security" ? <SecurityView username={adminUsername} onLogout={logout} /> : null}
           </>
@@ -850,7 +850,7 @@ function getUsagePeriodLabel(window: Usage["window"]) {
 
 type RequestFilters = { window: Usage["window"]; limit: number; offset: number; client: string; channel: string; model: string; sourceIp: string };
 
-function RequestsView({ page, filters, refreshInterval, onRefreshIntervalChange, onFilterChange, onRefresh, onPageChange }: { page: RequestLogPage | undefined; filters: RequestFilters; refreshInterval: number | false; onRefreshIntervalChange: (interval: number | false) => void; onFilterChange: (filters: RequestFilters) => void; onRefresh: () => void; onPageChange: (offset: number) => void }) {
+function RequestsView({ page, channels, filters, refreshInterval, onRefreshIntervalChange, onFilterChange, onRefresh, onPageChange }: { page: RequestLogPage | undefined; channels: Channel[]; filters: RequestFilters; refreshInterval: number | false; onRefreshIntervalChange: (interval: number | false) => void; onFilterChange: (filters: RequestFilters) => void; onRefresh: () => void; onPageChange: (offset: number) => void }) {
   const items = page?.items ?? [];
   const total = page?.total ?? 0;
   const from = total === 0 ? 0 : filters.offset + 1;
@@ -889,7 +889,7 @@ function RequestsView({ page, filters, refreshInterval, onRefreshIntervalChange,
             <button className="icon-button" type="button" title="刷新请求" aria-label="刷新请求" onClick={onRefresh}><RefreshCw size={16} /></button>
           </div>
         </form>
-        <RequestTable items={items} />
+        <RequestTable items={items} channels={channels} />
         <footer className="request-pagination">
           <span>{page?.hasMore ? "还有更多请求" : total ? "已到列表末尾" : "调整筛选条件后重试"}</span>
           <div><button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={!canPrevious} onClick={() => onPageChange(Math.max(0, filters.offset - filters.limit))}><ChevronLeft size={16} /></button><button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={!canNext} onClick={() => onPageChange(filters.offset + filters.limit)}><ChevronRight size={16} /></button></div>
@@ -899,19 +899,20 @@ function RequestsView({ page, filters, refreshInterval, onRefreshIntervalChange,
   );
 }
 
-function RequestTable({ items }: { items: RequestLogEntry[] }) {
+function RequestTable({ items, channels }: { items: RequestLogEntry[]; channels: Channel[] }) {
   if (items.length === 0) return <div className="request-empty"><Search size={22} /><strong>暂无请求</strong><span>请求经过网关后会出现在这里。</span></div>;
+  const channelUrls = new Map(channels.map((channel) => [channel.id, channel.checkinSite?.baseUrl ?? channel.baseUrl]));
   return (
     <div className="request-table-scroll">
       <table className="request-table">
         <thead><tr><th>时间</th><th>客户端</th><th>来源 IP</th><th>渠道</th><th>密钥</th><th>流式</th><th>请求模型</th><th>推理强度</th><th>端点</th><th>输入</th><th>输出</th><th>缓存</th><th>耗时</th><th>首字节</th></tr></thead>
-        <tbody>{items.map((item) => <RequestRow item={item} key={item.id} />)}</tbody>
+        <tbody>{items.map((item) => <RequestRow item={item} channelUrl={item.channelId ? channelUrls.get(item.channelId) : undefined} key={item.id} />)}</tbody>
       </table>
     </div>
   );
 }
 
-function RequestRow({ item }: { item: RequestLogEntry }) {
+function RequestRow({ item, channelUrl }: { item: RequestLogEntry; channelUrl: string | undefined }) {
   const success = item.statusCode < 400;
   const date = new Date(item.createdAt);
   const clientLabel = item.clientName === "unknown" ? "未知客户端" : item.clientName;
@@ -921,10 +922,13 @@ function RequestRow({ item }: { item: RequestLogEntry }) {
     <td data-label="客户端"><span className={`request-client request-client-${clientLabel.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`} title={clientLabel}>{clientLabel}</span></td>
     <td data-label="来源 IP" title={item.sourceIp ?? "—"}><span className="request-source-ip">{item.sourceIp ?? "—"}</span></td>
     <td data-label="渠道" title={channelLabel}>
-      <span className="request-channel-with-icon">
+      {channelUrl ? <a className="request-channel-with-icon request-channel-link" href={channelUrl} target="_blank" rel="noopener noreferrer" title={`新窗口打开 ${channelLabel}`}>
         <ChannelSiteIcon channelId={item.channelId} channelName={channelLabel} className="request-channel-icon" />
         <span className="request-channel">{channelLabel}</span>
-      </span>
+      </a> : <span className="request-channel-with-icon">
+        <ChannelSiteIcon channelId={item.channelId} channelName={channelLabel} className="request-channel-icon" />
+        <span className="request-channel">{channelLabel}</span>
+      </span>}
     </td>
     <td data-label="密钥" title={item.gatewayKeyName ?? item.keyName ?? "未记录"}><span className="request-key-name">{item.gatewayKeyName ?? item.keyName ?? "未记录"}</span></td>
     <td data-label="流式"><span className={item.streamed ? "request-pill stream" : "request-pill non-stream"}>{item.streamed ? "流式" : "非流式"}</span></td>

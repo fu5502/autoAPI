@@ -1777,6 +1777,14 @@ th:last-child {
   color: var(--faint);
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 11px;
+  text-decoration: none;
+}
+
+.channel-base-url:hover,
+.channel-base-url:focus-visible {
+  color: var(--green);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .channel-base-url-cell {
@@ -1789,22 +1797,6 @@ th:last-child {
 .channel-base-url-cell .channel-base-url {
   flex: 1 1 auto;
   min-width: 0;
-}
-
-.channel-base-url-copy {
-  width: 24px;
-  min-width: 24px;
-  min-height: 24px;
-  padding: 0;
-  color: #4a7569;
-  background: #f2f8f5;
-  border-color: #d3e4dd;
-}
-
-.channel-base-url-copy:hover {
-  color: #ffffff;
-  background: #3b8b73;
-  border-color: #3b8b73;
 }
 
 .channel-balance {
@@ -3752,6 +3744,18 @@ th:last-child {
   gap: 5px;
 }
 
+.request-channel-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.request-channel-link:hover .request-channel,
+.request-channel-link:focus-visible .request-channel {
+  color: var(--green);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .request-channel-icon {
   display: inline-flex;
   width: 18px;
@@ -4290,18 +4294,6 @@ th:last-child {
 
 :root[data-theme="dark"] .channel-site-icon-fallback {
   color: #a8dcc8;
-}
-
-:root[data-theme="dark"] .channel-base-url-copy {
-  color: #a8dcc8;
-  background: #1d352c;
-  border-color: #3e6254;
-}
-
-:root[data-theme="dark"] .channel-base-url-copy:hover {
-  color: #ffffff;
-  background: #3d9277;
-  border-color: #3d9277;
 }
 
 :root[data-theme="dark"] .channel-balance-ok {
