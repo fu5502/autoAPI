@@ -44,15 +44,22 @@ export class OpenAiAdapter implements UpstreamAdapter {
     const headers = jsonHeaders(apiKey);
     try {
       let models = channel.models;
-      try {
+      let model = models[0];
+      if (!model) {
         models = await this.listModels(channel, apiKey, timeoutMs);
-      } catch (error) {
-        if (models.length === 0) throw error;
+        model = models[0];
+        if (!model) throw new Error("Upstream did not expose any models");
       }
-      const model = models[0];
-      if (!model) throw new Error("Upstream did not expose any models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
       const probe = await probeOpenAiGeneration(channel, apiKey, model, timeoutMs);
+      if (models.length > 0) {
+        try {
+          const discovered = await this.listModels(channel, apiKey, timeoutMs);
+          if (discovered.length > 0) models = discovered;
+        } catch {
+          // Keep configured models when the model list is unavailable after a successful chat.
+        }
+      }
       const balance = await balancePromise;
       return {
         ok: true,
@@ -424,6 +431,78 @@ interface ProbeConversation {
   responseRaw: string;
 }
 
+async function probeOpenAiStream(
+  channel: Channel,
+  apiKey: string,
+  model: string,
+  timeoutMs: number,
+  body: Record<string, unknown>,
+): Promise<ProbeConversation> {
+  const endpoint = apiUrl(channel.baseUrl, "/v1/chat/completions");
+  const { body: stream } = await fetchUpstream(
+    endpoint,
+    {
+      method: "POST",
+      headers: { ...jsonHeaders(apiKey), accept: "text/event-stream" },
+      body: JSON.stringify(body),
+    },
+    timeoutMs,
+    true,
+  );
+  if (stream instanceof Uint8Array) throw new Error("Expected a stream response");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const content: string[] = [];
+  for await (const chunk of stream) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = blocks.pop() ?? "";
+    for (const block of blocks) {
+      const dataLine = block.split(/\r?\n/).find((line) => line.trimStart().startsWith("data:"));
+      if (!dataLine) continue;
+      const raw = dataLine.slice(dataLine.indexOf(":") + 1).trim();
+      if (!raw || raw === "[DONE]") continue;
+      try {
+        const payload = JSON.parse(raw) as Record<string, unknown>;
+        const choice = Array.isArray(payload.choices) && isRecord(payload.choices[0]) ? payload.choices[0] : {};
+        const delta = isRecord(choice.delta) ? choice.delta : {};
+        const text = typeof delta.content === "string" ? delta.content : contentText(delta.content);
+        if (text) content.push(text);
+      } catch {
+        // Ignore malformed intermediary events; later events may still carry text.
+      }
+    }
+    if (content.join("").trim()) break;
+  }
+  if (buffer.trim()) {
+    const dataLine = buffer.split(/\r?\n/).find((line) => line.trimStart().startsWith("data:"));
+    if (dataLine) {
+      const raw = dataLine.slice(dataLine.indexOf(":") + 1).trim();
+      if (raw && raw !== "[DONE]") {
+        try {
+          const payload = JSON.parse(raw) as Record<string, unknown>;
+          const choice = Array.isArray(payload.choices) && isRecord(payload.choices[0]) ? payload.choices[0] : {};
+          const delta = isRecord(choice.delta) ? choice.delta : {};
+          const text = typeof delta.content === "string" ? delta.content : contentText(delta.content);
+          if (text) content.push(text);
+        } catch {
+          // Ignore an incomplete final event; the stream may end without a blank line.
+        }
+      }
+    }
+  }
+
+  const reply = content.join("").trim();
+  if (!reply) throw new Error("Upstream stream ended without text");
+  return {
+    reply,
+    endpoint: `POST ${endpoint}`,
+    requestBody: JSON.stringify(body, null, 2),
+    responseRaw: content.join(""),
+  };
+}
+
 async function probeOpenAiGeneration(
   channel: Channel,
   apiKey: string,
@@ -434,8 +513,19 @@ async function probeOpenAiGeneration(
   const variants: Array<{
     path: string;
     body: Record<string, unknown>;
-    extract: (body: Record<string, unknown>) => string;
+    extract?: (body: Record<string, unknown>) => string;
+    stream?: boolean;
   }> = [
+    {
+      path: "/v1/chat/completions",
+      body: { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 1024, stream: true, stream_options: { include_usage: true } },
+      stream: true,
+    },
+    {
+      path: "/v1/chat/completions",
+      body: { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], stream: true, stream_options: { include_usage: true } },
+      stream: true,
+    },
     {
       path: "/v1/chat/completions",
       body: { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 1024, stream: false },
@@ -457,13 +547,16 @@ async function probeOpenAiGeneration(
   for (const variant of variants) {
     const endpoint = apiUrl(channel.baseUrl, variant.path);
     try {
+      if (variant.stream) {
+        return await probeOpenAiStream(channel, apiKey, model, timeoutMs, variant.body);
+      }
       const body = await probeJson(
         endpoint,
         { method: "POST", headers, body: JSON.stringify(variant.body) },
         timeoutMs,
       );
       return {
-        reply: variant.extract(body),
+        reply: variant.extract?.(body) ?? "",
         endpoint: `POST ${endpoint}`,
         requestBody: JSON.stringify(variant.body, null, 2),
         responseRaw: JSON.stringify(body, null, 2),

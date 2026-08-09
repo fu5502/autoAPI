@@ -313,7 +313,7 @@ export class OpsAgent {
         latencyMs,
         errorType: result.ok ? null : result.errorType ?? "probe_failed",
         retryCount: 0,
-        streamed: false,
+        streamed: result.streamOk,
         endpoint: result.protocol === "claude"
           ? "/v1/messages"
           : result.protocol === "gemini"

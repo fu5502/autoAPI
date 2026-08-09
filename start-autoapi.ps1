@@ -8,6 +8,9 @@ $WebPort = 5173
 $ApiUrl = "http://127.0.0.1:$ApiPort"
 $WebUrl = "http://127.0.0.1:$WebPort"
 
+$script:DevJob = [IntPtr]::Zero
+$script:DevServices = @()
+
 function Write-MenuText([string]$Text, [ConsoleColor]$Color = [ConsoleColor]::Gray) {
   Write-Host $Text -ForegroundColor $Color
 }
@@ -153,6 +156,14 @@ function Add-ProcessToJob([IntPtr]$Job, [System.Diagnostics.Process]$Process) {
   [AutoApiProcessJob]::Assign($Job, $Process.Handle)
 }
 
+function Close-DevJob {
+  if ($script:DevJob -ne [IntPtr]::Zero) {
+    [AutoApiProcessJob]::Close($script:DevJob)
+    $script:DevJob = [IntPtr]::Zero
+  }
+  $script:DevServices = @()
+}
+
 function Ensure-Dependencies {
   if (-not (Test-Command "node.exe")) {
     Write-MenuText "未找到 Node.js，请安装 Node.js 22 或更高版本。" Red
@@ -232,14 +243,15 @@ function Start-DevMode {
   }
 
   Write-Host ""
-  Write-MenuText "开发服务将在当前终端启动。" Green
+  Write-MenuText "开发服务将在后台启动，完成后自动返回菜单。" Green
   Write-Host "API: $ApiUrl"
   Write-Host "Web: $WebUrl"
-  Write-MenuText "日志会显示在此窗口；按 Ctrl+C 或关闭此窗口会停止本次启动的服务。" Yellow
+  Write-MenuText "日志会写入 logs 目录；按 8 停止服务，关闭本窗口也会停止服务。" Yellow
   Write-Host ""
 
   $job = [IntPtr]::Zero
   $services = @()
+  $started = $false
   try {
     try {
       $job = New-ProcessJob
@@ -252,8 +264,15 @@ function Start-DevMode {
     $apiDirectory = Join-Path $Root "apps\api"
     $webDirectory = Join-Path $Root "apps\web"
 
+    $logDirectory = Join-Path $Root "logs"
+    New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+    $apiOutLog = Join-Path $logDirectory "api.out.log"
+    $apiErrLog = Join-Path $logDirectory "api.err.log"
+    $webOutLog = Join-Path $logDirectory "web.out.log"
+    $webErrLog = Join-Path $logDirectory "web.err.log"
+
     $env:NODE_NO_WARNINGS = "1"
-    $apiProcess = Start-Process -FilePath $nodeCommand -ArgumentList @($tsxScript, "watch", "src/index.ts") -WorkingDirectory $apiDirectory -NoNewWindow -PassThru
+    $apiProcess = Start-Process -FilePath $nodeCommand -ArgumentList @($tsxScript, "watch", "src/index.ts") -WorkingDirectory $apiDirectory -WindowStyle Hidden -RedirectStandardOutput $apiOutLog -RedirectStandardError $apiErrLog -PassThru
     Remove-Item Env:NODE_NO_WARNINGS -ErrorAction SilentlyContinue
     $services += [PSCustomObject]@{ Name = "API"; Process = $apiProcess }
     if ($job -ne [IntPtr]::Zero) {
@@ -266,7 +285,7 @@ function Start-DevMode {
       }
     }
 
-    $webProcess = Start-Process -FilePath $nodeCommand -ArgumentList @($viteScript, "--host", "0.0.0.0") -WorkingDirectory $webDirectory -NoNewWindow -PassThru
+    $webProcess = Start-Process -FilePath $nodeCommand -ArgumentList @($viteScript, "--host", "0.0.0.0") -WorkingDirectory $webDirectory -WindowStyle Hidden -RedirectStandardOutput $webOutLog -RedirectStandardError $webErrLog -PassThru
     $services += [PSCustomObject]@{ Name = "Web"; Process = $webProcess }
     if ($job -ne [IntPtr]::Zero) {
       try {
@@ -285,33 +304,44 @@ function Start-DevMode {
       $exited = @($services | Where-Object { $_.Process.HasExited })
       if ($exited.Count -gt 0) {
         foreach ($service in $exited) {
-          Write-MenuText "$($service.Name) 服务已退出，退出码：$($service.Process.ExitCode)。请查看上方日志。" Red
+          Write-MenuText "$($service.Name) 服务已退出，退出码：$($service.Process.ExitCode)。请查看 logs 目录日志。" Red
         }
         break
       }
       if (-not $ready -and (Test-Port $ApiPort) -and (Test-Port $WebPort)) {
         Write-MenuText "API 与 Web 已启动。" Green
         $ready = $true
+        break
       }
       if (-not $ready -and (Get-Date) -ge $startupDeadline) {
-        Write-MenuText "开发服务启动超时，请查看上方 API/Web 日志。" Red
+        Write-MenuText "开发服务启动超时，请查看 logs 目录日志。" Red
         break
       }
       Start-Sleep -Milliseconds 400
     }
+
+    if ($ready) {
+      $script:DevJob = $job
+      $script:DevServices = $services
+      $started = $true
+      Write-MenuText "服务已在后台运行，按 8 可停止。" Green
+      return
+    }
   } catch {
     Write-MenuText "开发服务启动失败：$($_.Exception.Message)" Red
   } finally {
-    foreach ($service in $services) {
-      $service.Process.Refresh()
-      if (-not $service.Process.HasExited) {
-        & taskkill.exe /PID $service.Process.Id /T /F 2>$null | Out-Null
+    if (-not $started) {
+      foreach ($service in $services) {
+        $service.Process.Refresh()
+        if (-not $service.Process.HasExited) {
+          & taskkill.exe /PID $service.Process.Id /T /F 2>$null | Out-Null
+        }
       }
+      if ($job -ne [IntPtr]::Zero) {
+        [AutoApiProcessJob]::Close($job)
+      }
+      Stop-LocalServices
     }
-    if ($job -ne [IntPtr]::Zero) {
-      [AutoApiProcessJob]::Close($job)
-    }
-    Stop-LocalServices
   }
 }
 
@@ -463,6 +493,7 @@ function Stop-PreviousServices {
   Write-MenuText "启动前正在清理旧的 autoAPI 服务..." Yellow
   Stop-ManagedDevProcesses
   Stop-LocalServices
+  Close-DevJob
   if (Test-Command "docker.exe") {
     & docker compose stop 2>$null | Out-Null
   }

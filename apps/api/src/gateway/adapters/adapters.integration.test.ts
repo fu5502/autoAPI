@@ -39,6 +39,98 @@ describe("protocol adapters", () => {
     expect(responsesCalls).toBe(1);
   });
 
+  it("prefers a streaming chat probe when the relay rejects non-stream probes", async () => {
+    let streamCalls = 0;
+    let nonStreamCalls = 0;
+    const mock = await startMockUpstream((app) => {
+      app.get("/v1/models", async () => ({ object: "list", data: [{ id: "grok-probe" }] }));
+      app.post("/v1/chat/completions", async (request, reply) => {
+        const body = request.body as { stream?: boolean } | null;
+        if (body?.stream) {
+          streamCalls += 1;
+          reply.hijack();
+          reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+          reply.raw.end([
+            "data: {\"choices\":[{\"delta\":{\"content\":\"stream-probe-ok\"}}]}\n\n",
+            "data: [DONE]\n\n",
+          ].join(""));
+          return reply;
+        }
+        nonStreamCalls += 1;
+        return reply.code(500).send({ header: { code: 10910, message: "code=1001" } });
+      });
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("openai-stream-probe-test");
+    const channel = await addHealthyChannel(store, secrets, { name: "stream-probe", baseUrl: mock.baseUrl, model: "grok-probe" });
+
+    const result = await new OpenAiAdapter().probe(channel, "sk-grok", 1_000);
+
+    expect(result.ok).toBe(true);
+    expect(result.probeReply).toBe("stream-probe-ok");
+    expect(streamCalls).toBe(1);
+    expect(nonStreamCalls).toBe(0);
+  });
+
+  it("probes with a configured model before fetching the model list", async () => {
+    const order: string[] = [];
+    const mock = await startMockUpstream((app) => {
+      app.get("/v1/models", async () => {
+        order.push("models");
+        return { object: "list", data: [{ id: "grok-4.5" }, { id: "grok-other" }] };
+      });
+      app.post("/v1/chat/completions", async (_request, reply) => {
+        order.push("chat");
+        reply.hijack();
+        reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+        reply.raw.end("data: {\"choices\":[{\"delta\":{\"content\":\"ordered-probe-ok\"}}]}\n\ndata: [DONE]\n\n");
+        return reply;
+      });
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("openai-probe-order-test");
+    const channel = await addHealthyChannel(store, secrets, { name: "probe-order", baseUrl: mock.baseUrl, model: "grok-4.5" });
+
+    const result = await new OpenAiAdapter().probe(channel, "sk-probe-order", 1_000);
+
+    expect(result.ok).toBe(true);
+    expect(result.probeReply).toBe("ordered-probe-ok");
+    expect(order).toEqual(["chat", "models"]);
+  });
+
+  it("prefers a streaming Gemini probe when the relay rejects non-stream probes", async () => {
+    let streamCalls = 0;
+    let nonStreamCalls = 0;
+    const mock = await startMockUpstream((app) => {
+      app.post("/v1beta/models/*", async (request, reply) => {
+        if (request.url.includes("streamGenerateContent")) {
+          streamCalls += 1;
+          reply.hijack();
+          reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+          reply.raw.end([
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"gemini-stream-probe-ok\"}]}}]}\n\n",
+          ].join(""));
+          return reply;
+        }
+        nonStreamCalls += 1;
+        return { header: { code: 10910, message: "code=1001" } };
+      });
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("gemini-stream-probe-test");
+    const channel = await addHealthyChannel(store, secrets, { name: "gemini-stream-probe", baseUrl: mock.baseUrl, protocol: "gemini", model: "grok-4.5" });
+
+    const result = await new GeminiAdapter().probe(channel, "sk-gemini-probe", 1_000);
+
+    expect(result.ok).toBe(true);
+    expect(result.probeReply).toBe("gemini-stream-probe-ok");
+    expect(streamCalls).toBe(1);
+    expect(nonStreamCalls).toBe(0);
+  });
+
   it("reads OpenAI cached tokens from a non-streaming usage payload", async () => {
     const mock = await startMockUpstream((app) => {
       app.post("/v1/chat/completions", async () => ({

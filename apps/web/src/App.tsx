@@ -38,9 +38,18 @@ type RemoveChannelInput = {
   record: Omit<DeletedChannelRecord, "deletedAt">;
 };
 
+type OperationLogEntry = {
+  id: string;
+  createdAt: string;
+  action: string;
+  detail: string;
+  status: "running" | "success" | "error" | "info";
+};
+
 const colorThemeStorageKey = "autoapi-color-theme";
 const activeViewStorageKey = "autoapi-active-view";
 const activeCheckinViewStorageKey = "autoapi-active-checkin-view";
+const operationLogStorageKey = "autoapi-operation-log";
 
 const appViews: View[] = ["overview", "channels", "pools", "usage", "requests", "playground", "checkin", "security"];
 const checkinViews: CheckinView[] = ["dashboard", "history", "settings"];
@@ -57,6 +66,15 @@ function initialView(): View {
 function initialCheckinView(): CheckinView {
   const saved = localStorage.getItem(activeCheckinViewStorageKey);
   return saved && checkinViews.includes(saved as CheckinView) ? saved as CheckinView : "dashboard";
+}
+
+function initialOperationLog(): OperationLogEntry[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(operationLogStorageKey) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.slice(0, 10) : [];
+  } catch {
+    return [];
+  }
 }
 
 export default function App() {
@@ -77,7 +95,8 @@ export default function App() {
   const [deletedChannelRecords, setDeletedChannelRecords] = useState<DeletedChannelRecord[]>([]);
   const [probeResult, setProbeResult] = useState<ProbeResponse | null>(null);
   const [requestFilters, setRequestFilters] = useState<RequestFilters>({ window: "24h", limit: 20, offset: 0, client: "", channel: "", model: "", sourceIp: "" });
-  const [requestRefreshInterval, setRequestRefreshInterval] = useState<number | false>(30_000);
+  const [requestRefreshInterval, setRequestRefreshInterval] = useState<number | false>(5_000);
+  const [operationLog, setOperationLog] = useState<OperationLogEntry[]>(initialOperationLog);
 
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, enabled: authenticated, refetchInterval: 30_000 });
   const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels, enabled: authenticated, refetchInterval: 30_000 });
@@ -223,7 +242,18 @@ export default function App() {
     localStorage.setItem(activeCheckinViewStorageKey, checkinView);
   }, [checkinView]);
 
+  useEffect(() => {
+    localStorage.setItem(operationLogStorageKey, JSON.stringify(operationLog));
+  }, [operationLog]);
+
   if (showLogin) return <LoginPage onAuthenticated={authenticatedSuccessfully} />;
+
+  function appendOperationLog(action: string, detail: string, status: OperationLogEntry["status"] = "info") {
+    setOperationLog((current) => [
+      { id: crypto.randomUUID(), createdAt: new Date().toISOString(), action, detail, status },
+      ...current,
+    ].slice(0, 10));
+  }
 
   function refreshed() {
     void refreshAll(queryClient);
@@ -247,7 +277,8 @@ export default function App() {
   function requestDelete(channel: Channel) {
     if (!window.confirm(`确定删除渠道“${channel.name}”吗？该渠道的模型路由也会被删除。`)) return;
     setActionError(null);
-    removeChannel.mutate({
+    appendOperationLog("删除渠道", `删除 ${channel.name}`, "running");
+    void removeChannel.mutateAsync({
       id: channel.id,
       record: {
         id: channel.id,
@@ -256,12 +287,61 @@ export default function App() {
         isolationReason: channel.isolationReason,
         consecutiveFailures: channel.consecutiveFailures,
       },
-    });
+    })
+      .then(() => appendOperationLog("删除渠道", `已删除 ${channel.name}`, "success"))
+      .catch((error: unknown) => appendOperationLog("删除渠道", error instanceof Error ? error.message : "删除失败", "error"));
   }
 
   function toggle(channel: Channel, enabled = !channel.enabled) {
     setActionError(null);
-    toggleChannel.mutate({ id: channel.id, enabled });
+    appendOperationLog("启用状态", `${enabled ? "启用" : "停用"} ${channel.name}`, "running");
+    void toggleChannel.mutateAsync({ id: channel.id, enabled })
+      .then(() => appendOperationLog("启用状态", `${enabled ? "已启用" : "已停用"} ${channel.name}`, "success"))
+      .catch((error: unknown) => appendOperationLog("启用状态", error instanceof Error ? error.message : "状态更新失败", "error"));
+  }
+
+  function requestProbe(channelId: string) {
+    const channel = channels.data?.find((item) => item.id === channelId);
+    const label = channel ? channel.name : channelId;
+    setActionError(null);
+    appendOperationLog("渠道探测", `开始探测 ${label}`, "running");
+    void probe.mutateAsync(channelId)
+      .then((result) => appendOperationLog("渠道探测", `探测成功 ${label}：${result.probe.probedModel ?? "无模型"}`, "success"))
+      .catch((error: unknown) => appendOperationLog("渠道探测", error instanceof Error ? error.message : "探测失败", "error"));
+  }
+
+  function changeProtocol(channel: Channel, protocol: string) {
+    appendOperationLog("协议切换", `${channel.name} -> ${protocol}`, "running");
+    void updateProtocol.mutateAsync({ channel, protocol })
+      .then(() => appendOperationLog("协议切换", `${channel.name} 已切换为 ${protocol}`, "success"))
+      .catch((error: unknown) => appendOperationLog("协议切换", error instanceof Error ? error.message : "切换失败", "error"));
+  }
+
+  function handleSyncBalance(siteId: number) {
+    const channel = channels.data?.find((item) => item.checkinSite?.id === siteId);
+    appendOperationLog("余额同步", channel ? `同步 ${channel.name}` : `同步站点 ${siteId}`, "running");
+    void syncBalance.mutateAsync(siteId)
+      .then((result) => appendOperationLog("余额同步", result.skippedBecauseBalanceIsUnknown ? "站点暂无已知余额" : `更新 ${result.updatedChannelIds.length} 个渠道`, "success"))
+      .catch((error: unknown) => appendOperationLog("余额同步", error instanceof Error ? error.message : "同步失败", "error"));
+  }
+
+  function handleRefreshBalances() {
+    appendOperationLog("余额刷新", "开始批量刷新余额", "running");
+    void refreshBalances.mutateAsync()
+      .then((result) => appendOperationLog("余额刷新", `成功 ${result.summary.refreshed}，未知 ${result.summary.unknown}，失败 ${result.summary.failed}`, "success"))
+      .catch((error: unknown) => appendOperationLog("余额刷新", error instanceof Error ? error.message : "刷新失败", "error"));
+  }
+
+  function handleReorder(channelIds: string[]) {
+    appendOperationLog("渠道排序", "保存新排序", "running");
+    return reorderChannels.mutateAsync(channelIds)
+      .then(() => {
+        appendOperationLog("渠道排序", "排序已保存", "success");
+      })
+      .catch((error: unknown) => {
+        appendOperationLog("渠道排序", error instanceof Error ? error.message : "保存失败", "error");
+        throw error;
+      });
   }
 
   async function copyBaseUrl() {
@@ -310,9 +390,9 @@ export default function App() {
         {view !== "checkin" && failed && !authError ? <ErrorState error={failed} onRetry={refreshed} /> : null}
         {view !== "checkin" && !loading && !failed && status.data && channels.data && pools.data && usage.data ? (
           <>
-            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} onProtocolChange={(channel, protocol) => updateProtocol.mutate({ channel, protocol })} protocolChangingId={updateProtocol.isPending ? updateProtocol.variables?.channel.id ?? null : null} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} /> : null}
-            {view === "channels" ? <ChannelsView channels={channels.data} deletedChannelRecords={deletedChannelRecords} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={syncBalance.mutate} onRefreshBalances={() => refreshBalances.mutate()} probingId={probe.variables ?? null} onProbe={probe.mutate} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} onProtocolChange={(channel, protocol) => updateProtocol.mutate({ channel, protocol })} protocolChangingId={updateProtocol.isPending ? updateProtocol.variables?.channel.id ?? null : null} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={(ids) => reorderChannels.mutateAsync(ids).then(() => undefined)} onAddChannel={() => setProviderOpen(true)} /> : null}
-            {view === "pools" ? <PoolsView pools={pools.data} channels={channels.data ?? []} onAddRoute={() => setAliasOpen(true)} /> : null}
+            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={handleSyncBalance} probingId={probe.variables ?? null} onProbe={requestProbe} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} onProtocolChange={changeProtocol} protocolChangingId={updateProtocol.isPending ? updateProtocol.variables?.channel.id ?? null : null} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={handleReorder} operations={operationLog} /> : null}
+            {view === "channels" ? <ChannelsView channels={channels.data} deletedChannelRecords={deletedChannelRecords} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={handleSyncBalance} onRefreshBalances={handleRefreshBalances} probingId={probe.variables ?? null} onProbe={requestProbe} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} onProtocolChange={changeProtocol} protocolChangingId={updateProtocol.isPending ? updateProtocol.variables?.channel.id ?? null : null} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={handleReorder} onAddChannel={() => { appendOperationLog("渠道配置", "打开添加渠道", "info"); setProviderOpen(true); }} operations={operationLog} /> : null}
+            {view === "pools" ? <PoolsView pools={pools.data} channels={channels.data ?? []} onAddRoute={() => { appendOperationLog("路由配置", "打开模型路由配置", "info"); setAliasOpen(true); }} operations={operationLog} /> : null}
             {view === "usage" ? <UsageView usage={usage.data} window={usageWindow} onWindowChange={setUsageWindow} /> : null}
             {view === "requests" ? <RequestsView page={requests.data} channels={channels.data ?? []} filters={requestFilters} refreshInterval={requestRefreshInterval} onRefreshIntervalChange={setRequestRefreshInterval} onFilterChange={(next) => setRequestFilters({ ...next, offset: 0 })} onRefresh={() => void requests.refetch()} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} /> : null}
             {view === "playground" ? <Playground channels={channels.data} onUpdated={refreshed} /> : null}
@@ -320,11 +400,11 @@ export default function App() {
           </>
         ) : null}
       </main>
-      <ProviderDrawer open={providerOpen} onClose={() => setProviderOpen(false)} onCreated={refreshed} />
+      <ProviderDrawer open={providerOpen} onClose={() => setProviderOpen(false)} onCreated={() => { appendOperationLog("渠道配置", "渠道已添加", "success"); refreshed(); }} />
       <GatewayKeyDialog open={gatewayKeysOpen} onClose={() => setGatewayKeysOpen(false)} />
-      <ChannelEditor channel={editingChannel} onClose={() => setEditingChannel(null)} onSaved={refreshed} />
+      <ChannelEditor channel={editingChannel} onClose={() => setEditingChannel(null)} onSaved={() => { appendOperationLog("渠道配置", editingChannel ? `已保存 ${editingChannel.name}` : "渠道已保存", "success"); refreshed(); }} />
       <ProbeResultDialog result={probeResult} onClose={() => setProbeResult(null)} />
-      <ModelAliasDialog open={aliasOpen} channels={channels.data ?? []} onClose={() => setAliasOpen(false)} onCreated={refreshed} />
+      <ModelAliasDialog open={aliasOpen} channels={channels.data ?? []} onClose={() => setAliasOpen(false)} onCreated={() => { appendOperationLog("路由配置", "模型路由已保存", "success"); refreshed(); }} />
     </div>
   );
 }
@@ -387,6 +467,7 @@ function Overview({
   togglingId,
   deletingId,
   onReorder,
+  operations,
 }: {
   status: NonNullable<ReturnType<typeof api.status> extends Promise<infer T> ? T : never>;
   channels: Channel[];
@@ -405,6 +486,7 @@ function Overview({
   togglingId: string | null;
   deletingId: string | null;
   onReorder: (channelIds: string[]) => Promise<void>;
+  operations: OperationLogEntry[];
 }) {
   const [healthWindow, setHealthWindow] = useState<HealthWindow>("6h");
   const [healthGroup, setHealthGroup] = useState<HealthGroup>("default");
@@ -476,6 +558,7 @@ function Overview({
         <SectionHead title="渠道运行情况" meta={`${channels.filter((channel) => channel.status === "isolated").length} 个已隔离`} />
         <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onProtocolChange={onProtocolChange} protocolChangingId={protocolChangingId} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
       </section>
+      <OperationLogSection items={operations} />
     </div>
   );
 }
@@ -538,7 +621,7 @@ function PoolHealthLegend() {
   );
 }
 
-function ChannelsView({ channels, deletedChannelRecords, syncingBalanceId, balanceRefreshPending, onSyncBalance, onRefreshBalances, probingId, onProbe, onEdit, onDelete, onToggle, onProtocolChange, protocolChangingId, togglingId, deletingId, onReorder, onAddChannel }: { channels: Channel[]; deletedChannelRecords: DeletedChannelRecord[]; syncingBalanceId: number | null; balanceRefreshPending: boolean; onSyncBalance: (siteId: number) => void; onRefreshBalances: () => void; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel, enabled?: boolean) => void; onProtocolChange: (channel: Channel, protocol: string) => void; protocolChangingId: string | null; togglingId: string | null; deletingId: string | null; onReorder: (channelIds: string[]) => Promise<void>; onAddChannel: () => void }) {
+function ChannelsView({ channels, deletedChannelRecords, syncingBalanceId, balanceRefreshPending, onSyncBalance, onRefreshBalances, probingId, onProbe, onEdit, onDelete, onToggle, onProtocolChange, protocolChangingId, togglingId, deletingId, onReorder, onAddChannel, operations }: { channels: Channel[]; deletedChannelRecords: DeletedChannelRecord[]; syncingBalanceId: number | null; balanceRefreshPending: boolean; onSyncBalance: (siteId: number) => void; onRefreshBalances: () => void; probingId: string | null; onProbe: (id: string) => void; onEdit: (channel: Channel) => void; onDelete: (channel: Channel) => void; onToggle: (channel: Channel, enabled?: boolean) => void; onProtocolChange: (channel: Channel, protocol: string) => void; protocolChangingId: string | null; togglingId: string | null; deletingId: string | null; onReorder: (channelIds: string[]) => Promise<void>; onAddChannel: () => void; operations: OperationLogEntry[] }) {
   return (
     <div className="view-stack">
       <section className="channel-summary">
@@ -551,6 +634,7 @@ function ChannelsView({ channels, deletedChannelRecords, syncingBalanceId, balan
         <SectionHead title="全部渠道" meta="实时健康状态与余额" action={<div className="section-head-actions"><button className="button secondary" onClick={onRefreshBalances} disabled={balanceRefreshPending}><WalletCards size={15} className={balanceRefreshPending ? "spin" : ""} /> {balanceRefreshPending ? "刷新中" : "批量刷新余额"}</button><button className="button primary" onClick={onAddChannel}><CirclePlus size={15} /> 添加渠道</button></div>} />
         <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onProtocolChange={onProtocolChange} protocolChangingId={protocolChangingId} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
       </section>
+      <OperationLogSection items={operations} />
       <section className="surface detail-list">
         <SectionHead title="隔离详情" meta={deletedChannelRecords.length > 0 ? `自动熔断状态 · 已删除 ${deletedChannelRecords.length} 条` : "自动熔断状态"} />
         {channels.filter((channel) => channel.status === "isolated" || channel.status === "degraded").map((channel) => (
@@ -573,14 +657,8 @@ function ChannelsView({ channels, deletedChannelRecords, syncingBalanceId, balan
   );
 }
 
-function PoolsView({ pools, channels, onAddRoute }: { pools: Pool[]; channels: Channel[]; onAddRoute: () => void }) {
+function PoolsView({ pools, channels, onAddRoute, operations }: { pools: Pool[]; channels: Channel[]; onAddRoute: () => void; operations: OperationLogEntry[] }) {
   const [expandedAliases, setExpandedAliases] = useState<Set<string>>(new Set());
-  const recentRequests = useQuery({
-    queryKey: ["pool-recent-requests"],
-    queryFn: () => api.requests({ window: "24h", limit: 10, offset: 0 }),
-    refetchInterval: 30_000,
-  });
-  const recentItems = recentRequests.data?.items ?? [];
 
   function toggleExpanded(alias: string) {
     setExpandedAliases((current) => {
@@ -684,11 +762,46 @@ function PoolsView({ pools, channels, onAddRoute }: { pools: Pool[]; channels: C
           </table>
         </div>
       </section>
-      <section className="surface">
-        <SectionHead title="最近信息" meta={recentRequests.isLoading ? "加载中" : recentItems.length > 0 ? `最近 ${recentItems.length} 条` : "暂无记录"} action={<button className="icon-button" type="button" title="刷新最近信息" aria-label="刷新最近信息" onClick={() => void recentRequests.refetch()}><RefreshCw size={15} /></button>} />
-        <PoolRecentRequestTable items={recentItems} channels={channels} />
-      </section>
+      <OperationLogSection items={operations} />
     </div>
+  );
+}
+
+function OperationLogSection({ items }: { items: OperationLogEntry[] }) {
+  if (items.length === 0) {
+    return (
+      <section className="surface operation-log-section">
+        <SectionHead title="最近操作" meta="暂无记录" />
+        <div className="request-empty compact-log-empty"><Activity size={16} /><strong>暂无操作记录</strong><span>在渠道池执行探测、切换协议等操作后会显示在这里。</span></div>
+      </section>
+    );
+  }
+  return (
+    <section className="surface operation-log-section">
+      <SectionHead title="最近操作" meta={`最近 ${items.length} 条`} />
+      <div className="request-table-scroll pool-recent-log-scroll">
+        <table className="request-table operation-log-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>操作</th>
+              <th>详情</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={item.id}>
+                <td data-label="时间" className="request-time">{formatRequestTime(new Date(item.createdAt))}</td>
+                <td data-label="操作"><strong className="operation-action">{item.action}</strong></td>
+                <td data-label="详情" title={item.detail}><span className="operation-detail">{item.detail}</span></td>
+                <td data-label="状态"><span className={`request-metric operation-status operation-status-${item.status}`}>{item.status === "running" ? "执行中" : item.status === "success" ? "成功" : item.status === "error" ? "失败" : "信息"}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 

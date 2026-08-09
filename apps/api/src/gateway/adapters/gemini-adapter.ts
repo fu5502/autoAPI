@@ -81,22 +81,22 @@ export class GeminiAdapter implements UpstreamAdapter {
     const startedAt = Date.now();
     try {
       let models = channel.models;
-      try {
+      let model = models[0];
+      if (!model) {
         models = await this.listModels(channel, apiKey, timeoutMs);
-      } catch (error) {
-        if (models.length === 0) throw error;
+        model = models[0];
+        if (!model) throw new Error("Upstream did not expose any Gemini models");
       }
-      const model = models[0];
-      if (!model) throw new Error("Upstream did not expose any Gemini models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
-      const requestPayload = { contents: [{ role: "user", parts: [{ text: "请用一句话说明你是谁" }] }], generationConfig: { maxOutputTokens: 32 } };
-      const payload = JSON.stringify(requestPayload);
-      const endpoint = apiUrl(channel.baseUrl, `/v1beta/models/${encodeURIComponent(model)}:generateContent`);
-      const body = await probeJson(
-        endpoint,
-        { method: "POST", headers: geminiHeaders(apiKey), body: payload },
-        timeoutMs,
-      );
+      const probe = await probeGeminiGeneration(channel, apiKey, model, timeoutMs);
+      if (models.length > 0) {
+        try {
+          const discovered = await this.listModels(channel, apiKey, timeoutMs);
+          if (discovered.length > 0) models = discovered;
+        } catch {
+          // Keep configured models when the model list is unavailable after a successful chat.
+        }
+      }
       const balance = await balancePromise;
       return {
         ok: true,
@@ -111,10 +111,10 @@ export class GeminiAdapter implements UpstreamAdapter {
         error: null,
         modelsChanged: models.length > 0 && JSON.stringify(models) !== JSON.stringify(channel.models),
         probedModel: model,
-        probeReply: candidateText(body),
-        probeEndpoint: `POST ${endpoint}`,
-        probeRequestBody: JSON.stringify(requestPayload, null, 2),
-        probeResponseRaw: JSON.stringify(body, null, 2),
+        probeReply: probe.reply,
+        probeEndpoint: probe.endpoint,
+        probeRequestBody: probe.requestBody,
+        probeResponseRaw: probe.responseRaw,
       };
     } catch (error) {
       return {
@@ -132,6 +132,110 @@ export class GeminiAdapter implements UpstreamAdapter {
       };
     }
   }
+}
+
+interface GeminiProbeConversation {
+  reply: string;
+  endpoint: string;
+  requestBody: string;
+  responseRaw: string;
+}
+
+async function probeGeminiGeneration(
+  channel: Channel,
+  apiKey: string,
+  model: string,
+  timeoutMs: number,
+): Promise<GeminiProbeConversation> {
+  const headers = geminiHeaders(apiKey);
+  const requestPayload = {
+    contents: [{ role: "user", parts: [{ text: "请用一句话说明你是谁" }] }],
+    generationConfig: { maxOutputTokens: 1024 },
+  };
+  const variants: Array<{ method: "streamGenerateContent?alt=sse" | "generateContent"; stream: boolean }> = [
+    { method: "streamGenerateContent?alt=sse", stream: true },
+    { method: "generateContent", stream: false },
+  ];
+
+  let lastError: unknown;
+  for (const variant of variants) {
+    const endpoint = apiUrl(channel.baseUrl, `/v1beta/models/${encodeURIComponent(model)}:${variant.method}`);
+    try {
+      if (variant.stream) {
+        const { body: stream } = await fetchUpstream(
+          endpoint,
+          {
+            method: "POST",
+            headers: { ...headers, accept: "text/event-stream" },
+            body: JSON.stringify(requestPayload),
+          },
+          timeoutMs,
+          true,
+        );
+        if (stream instanceof Uint8Array) throw new Error("Expected a stream response");
+        const decoder = new TextDecoder();
+        let buffer = "";
+        const parts: string[] = [];
+        for await (const chunk of stream) {
+          buffer += decoder.decode(chunk, { stream: true });
+          const blocks = buffer.split(/\r?\n\r?\n/);
+          buffer = blocks.pop() ?? "";
+          for (const block of blocks) {
+            const dataLine = block.split(/\r?\n/).find((line) => line.trimStart().startsWith("data:"));
+            if (!dataLine) continue;
+            const raw = dataLine.slice(dataLine.indexOf(":") + 1).trim();
+            if (!raw) continue;
+            try {
+              const text = candidateText(JSON.parse(raw) as Record<string, unknown>);
+              if (text) parts.push(text);
+            } catch {
+              // Ignore malformed intermediary events; later events may still carry text.
+            }
+          }
+          if (parts.join("").trim()) break;
+        }
+        if (buffer.trim()) {
+          const dataLine = buffer.split(/\r?\n/).find((line) => line.trimStart().startsWith("data:"));
+          if (dataLine) {
+            const raw = dataLine.slice(dataLine.indexOf(":") + 1).trim();
+            if (raw) {
+              try {
+                const text = candidateText(JSON.parse(raw) as Record<string, unknown>);
+                if (text) parts.push(text);
+              } catch {
+                // Ignore an incomplete final event; the stream may end without a blank line.
+              }
+            }
+          }
+        }
+        const reply = parts.join("").trim();
+        if (!reply) throw new Error("Upstream stream ended without text");
+        return {
+          reply,
+          endpoint: `POST ${endpoint}`,
+          requestBody: JSON.stringify(requestPayload, null, 2),
+          responseRaw: parts.join(""),
+        };
+      }
+
+      const body = await probeJson(
+        endpoint,
+        { method: "POST", headers, body: JSON.stringify(requestPayload) },
+        timeoutMs,
+      );
+      const reply = candidateText(body);
+      if (!reply) throw new Error("Upstream response did not contain text");
+      return {
+        reply,
+        endpoint: `POST ${endpoint}`,
+        requestBody: JSON.stringify(requestPayload, null, 2),
+        responseRaw: JSON.stringify(body, null, 2),
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 function parseGeminiModels(response: Record<string, unknown>): string[] {

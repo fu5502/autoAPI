@@ -58,13 +58,12 @@ export class ClaudeAdapter implements UpstreamAdapter {
     const startedAt = Date.now();
     try {
       let models = channel.models;
-      try {
+      let model = models[0];
+      if (!model) {
         models = await this.listModels(channel, apiKey, timeoutMs);
-      } catch (error) {
-        if (models.length === 0) throw error;
+        model = models[0];
+        if (!model) throw new Error("Upstream did not expose any Claude models");
       }
-      const model = models[0];
-      if (!model) throw new Error("Upstream did not expose any Claude models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
       const body = { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 32 };
       const endpoint = apiUrl(channel.baseUrl, "/v1/messages");
@@ -73,6 +72,14 @@ export class ClaudeAdapter implements UpstreamAdapter {
         { method: "POST", headers: claudeHeaders(apiKey), body: JSON.stringify(body) },
         timeoutMs,
       );
+      if (models.length > 0) {
+        try {
+          const discovered = await this.listModels(channel, apiKey, timeoutMs);
+          if (discovered.length > 0) models = discovered;
+        } catch {
+          // Keep configured models when the model list is unavailable after a successful chat.
+        }
+      }
       const balance = await balancePromise;
       return {
         ok: true,

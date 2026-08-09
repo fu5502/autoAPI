@@ -300,8 +300,8 @@ describe("operations agent", () => {
     expect((await store.getChannel(imported.channel.id))?.status).toBe("healthy");
     expect((await store.getChannel(imported.channel.id))?.models).toEqual([]);
     expect((await store.listRoutingCandidates("gpt-agent-test"))).toHaveLength(0);
-    expect(chatChecks).toBe(1);
-    expect(streamChecks).toBe(0);
+    expect(chatChecks).toBe(0);
+    expect(streamChecks).toBe(1);
     expect(store.usage.at(-1)).toMatchObject({
       channelId: imported.channel.id,
       clientName: "channel-probe",
