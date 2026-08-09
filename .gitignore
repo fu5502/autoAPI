@@ -6,6 +6,8 @@ coverage/
 playwright-report/
 test-results/
 .playwright-cli/
+.codex-ui-smoke/
 *.log
+*.tsbuildinfo
 .autoapi-data/
 apps/api/.autoapi-data/
