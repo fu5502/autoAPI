@@ -1909,6 +1909,7 @@ th:last-child {
   justify-items: start;
   min-width: 112px;
   gap: 3px;
+  z-index: 20;
 }
 
 .channel-status-trigger {
@@ -1936,7 +1937,7 @@ th:last-child {
 
 .channel-status-menu {
   position: absolute;
-  z-index: 12;
+  z-index: 30;
   top: 30px;
   left: 0;
   display: grid;
@@ -1947,6 +1948,11 @@ th:last-child {
   border: 1px solid var(--line);
   border-radius: 5px;
   box-shadow: var(--shadow);
+}
+
+.channel-status-menu-above .channel-status-menu {
+  top: auto;
+  bottom: 30px;
 }
 
 .channel-status-menu button {

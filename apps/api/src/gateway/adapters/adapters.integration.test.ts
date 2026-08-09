@@ -168,6 +168,96 @@ describe("protocol adapters", () => {
     expect(attempt).toMatchObject({ promptTokens: 8, completionTokens: 3, cachedTokens: 5, firstByteLatencyMs: null });
   });
 
+  it("bridges OpenAI chat requests through a Claude messages channel", async () => {
+    let capturedBody: Record<string, unknown> = {};
+    const mock = await startMockUpstream((app) => {
+      app.post("/v1/messages", async (request) => {
+        capturedBody = request.body as Record<string, unknown>;
+        return {
+          id: "msg_chat_bridge",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "claude-chat-ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 9, output_tokens: 4, cache_read_input_tokens: 2 },
+        };
+      });
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("claude-chat-bridge-test");
+    const channel = await addHealthyChannel(store, secrets, { name: "claude-chat", baseUrl: mock.baseUrl, protocol: "claude", model: "claude-upstream" });
+    const request: GatewayRequest = {
+      requestId: crypto.randomUUID(),
+      kind: "chat",
+      model: "claude-local",
+      stream: false,
+      body: {
+        model: "claude-local",
+        messages: [
+          { role: "system", content: "be brief" },
+          { role: "user", content: "hello" },
+        ],
+        tools: [{ type: "function", function: { name: "read_file", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } } } }],
+        tool_choice: "auto",
+      },
+      clientName: "ai-sdk",
+    };
+
+    const attempt = await new ClaudeAdapter().execute(channel, "sk-chat", request, "claude-upstream", 1_000);
+    expect(capturedBody).toMatchObject({
+      model: "claude-upstream",
+      max_tokens: 4096,
+      stream: false,
+      system: [{ type: "text", text: "be brief" }],
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      tools: [{ name: "read_file", description: "Read a file" }],
+      tool_choice: { type: "auto" },
+    });
+    const body = JSON.parse(await readBody(attempt.result.body));
+    expect(body.object).toBe("chat.completion");
+    expect(body.choices[0].message.content).toBe("claude-chat-ok");
+    expect(body.choices[0].finish_reason).toBe("stop");
+    expect(body.usage).toMatchObject({ prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 });
+    expect(body.usage.prompt_tokens_details).toEqual({ cached_tokens: 2 });
+    expect(attempt).toMatchObject({ promptTokens: 9, completionTokens: 4, cachedTokens: 2 });
+  });
+
+  it("streams OpenAI chat chunks from a Claude messages channel", async () => {
+    const mock = await startMockUpstream((app) => {
+      app.post("/v1/messages", async (_request, reply) => {
+        reply.hijack();
+        reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+        reply.raw.end([
+          "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_chat_stream\",\"usage\":{\"input_tokens\":8,\"cache_read_input_tokens\":5}}}\n\n",
+          "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"claude-chat-stream\"}}\n\n",
+          "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+        ].join(""));
+        return reply;
+      });
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("claude-chat-stream-test");
+    const channel = await addHealthyChannel(store, secrets, { name: "claude-chat-stream", baseUrl: mock.baseUrl, protocol: "claude", model: "claude-upstream" });
+    const request: GatewayRequest = {
+      requestId: crypto.randomUUID(),
+      kind: "chat",
+      model: "claude-local",
+      stream: true,
+      body: { model: "claude-local", stream: true, messages: [{ role: "user", content: "hello" }] },
+      clientName: "ai-sdk",
+    };
+
+    const attempt = await new ClaudeAdapter().execute(channel, "sk-chat", request, "claude-upstream", 1_000);
+    const output = await readBody(attempt.result.body);
+    expect(output).toContain("chat.completion.chunk");
+    expect(output).toContain("claude-chat-stream");
+    expect(output).toContain("finish_reason\":\"stop");
+    expect(output).toContain("data: [DONE]");
+    await expect(attempt.streamUsage).resolves.toEqual({ promptTokens: 8, completionTokens: 3, cachedTokens: 5 });
+  });
+
   it("maps Gemini generateContent responses to OpenAI chat completions", async () => {
     const mock = await startMockUpstream((app) => {
       app.post("/v1beta/models/gemini-upstream:generateContent", async (request) => {

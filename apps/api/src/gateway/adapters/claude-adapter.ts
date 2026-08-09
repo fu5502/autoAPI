@@ -4,12 +4,13 @@ import { fetchUpstream, parseJson, responseHeaders } from "../http.js";
 import { errorMessage, optionalBalance, probeJson, probeStream } from "../probe-utils.js";
 import { observeSseUsage } from "../streaming.js";
 import { apiUrl } from "../url.js";
+import { chatToClaudeBody, claudeMessageToChat, claudeStreamToChat } from "./claude-chat-bridge.js";
 
 export class ClaudeAdapter implements UpstreamAdapter {
   readonly protocol = "claude" as const;
 
   supports(request: GatewayRequest): boolean {
-    return request.kind === "messages";
+    return request.kind === "messages" || request.kind === "chat";
   }
 
   async listModels(channel: Channel, apiKey: string, timeoutMs: number): Promise<string[]> {
@@ -26,6 +27,9 @@ export class ClaudeAdapter implements UpstreamAdapter {
     upstreamModel: string,
     timeoutMs: number,
   ): Promise<AdapterAttempt> {
+    if (request.kind === "chat") {
+      return executeChatAsMessages(channel, apiKey, request, upstreamModel, timeoutMs);
+    }
     const payload = { ...request.body, model: upstreamModel, stream: request.stream };
     const { response, body, firstByteLatencyMs, streamError } = await fetchUpstream(
       apiUrl(channel.baseUrl, "/v1/messages"),
@@ -101,6 +105,53 @@ export class ClaudeAdapter implements UpstreamAdapter {
       };
     }
   }
+}
+
+async function executeChatAsMessages(
+  channel: Channel,
+  apiKey: string,
+  request: GatewayRequest,
+  upstreamModel: string,
+  timeoutMs: number,
+): Promise<AdapterAttempt> {
+  const payload = chatToClaudeBody(request.body, upstreamModel, request.stream);
+  const { response, body, firstByteLatencyMs, streamError } = await fetchUpstream(
+    apiUrl(channel.baseUrl, "/v1/messages"),
+    { method: "POST", headers: claudeHeaders(apiKey), body: JSON.stringify(payload) },
+    timeoutMs,
+    request.stream,
+  );
+  if (!(body instanceof Uint8Array)) {
+    const observed = observeSseUsage(body, readStreamUsage);
+    return {
+      result: {
+        channelId: channel.id,
+        status: response.status,
+        headers: { ...responseHeaders(response, true), "content-type": "text/event-stream" },
+        body: claudeStreamToChat(observed.stream, request.model),
+        streaming: true,
+      },
+      promptTokens: 0,
+      completionTokens: 0,
+      cachedTokens: null,
+      firstByteLatencyMs,
+      streamUsage: observed.usage,
+      ...(streamError ? { streamError } : {}),
+    };
+  }
+  const claude = parseJson(body);
+  const normalized = new TextEncoder().encode(JSON.stringify(claudeMessageToChat(claude, request.model)));
+  return {
+    result: {
+      channelId: channel.id,
+      status: response.status,
+      headers: { ...responseHeaders(response, false), "content-type": "application/json" },
+      body: normalized,
+      streaming: false,
+    },
+    ...readUsage(body),
+    firstByteLatencyMs,
+  };
 }
 
 function claudeHeaders(apiKey: string, extra: Record<string, string> = {}): Record<string, string> {

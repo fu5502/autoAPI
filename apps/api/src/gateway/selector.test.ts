@@ -18,15 +18,26 @@ const request: GatewayRequest = {
 
 describe("routing selector", () => {
   it("filters isolated, exhausted, cooling, and protocol-incompatible channels", () => {
+    const responsesRequest = { ...request, kind: "responses" as const };
     const candidates = [
       candidate(channel({ id: "healthy" })),
       candidate(channel({ id: "isolated", status: "isolated" })),
       candidate(channel({ id: "empty", balanceStatus: "exhausted" })),
       candidate(channel({ id: "cooling", cooldownUntil: new Date(Date.now() + 60_000).toISOString() })),
       candidate(channel({ id: "claude", protocol: "claude" })),
+      candidate(channel({ id: "gemini", protocol: "gemini" })),
     ];
 
-    expect(eligibleCandidates(candidates, request, registry).map((item) => item.channel.id)).toEqual(["healthy"]);
+    expect(eligibleCandidates(candidates, responsesRequest, registry).map((item) => item.channel.id)).toEqual(["healthy"]);
+  });
+
+  it("keeps Claude channels eligible for OpenAI chat requests", () => {
+    const candidates = [
+      candidate(channel({ id: "claude", protocol: "claude" })),
+      candidate(channel({ id: "healthy" })),
+    ];
+
+    expect(eligibleCandidates(candidates, request, registry).map((item) => item.channel.id)).toEqual(["claude", "healthy"]);
   });
 
   it("uses priority before weight and rotates within the highest priority", () => {

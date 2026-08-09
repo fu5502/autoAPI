@@ -78,7 +78,7 @@ export function ChannelTable({
       <table className="channel-table">
         <thead><tr><th>渠道名称</th><th>密钥名称</th><th>Base URL</th><th>模型数</th><th>优先级</th><th>权重</th><th>状态</th><th>协议</th><th>余额</th><th>延迟</th><th>健康百分比</th><th><span className="sr-only">操作</span></th></tr></thead>
         <tbody>
-          {orderedChannels.length === 0 ? <tr><td className="empty-table-cell" colSpan={12}>暂无渠道，请先添加一个渠道。</td></tr> : orderedChannels.map((channel) => {
+          {orderedChannels.length === 0 ? <tr><td className="empty-table-cell" colSpan={12}>暂无渠道，请先添加一个渠道。</td></tr> : orderedChannels.map((channel, index) => {
             const expanded = expandedChannelIds.has(channel.id);
             return <Fragment key={channel.id}>
               <tr
@@ -138,7 +138,7 @@ export function ChannelTable({
                 <td><span className="channel-model-count">{channel.models.length}</span></td>
                 <td><strong className="channel-routing-number">{channel.priority}</strong></td>
                 <td><span className="channel-routing-number">{channel.weight}</span></td>
-                <td><ChannelStatusControl channel={channel} pending={togglingId === channel.id} onToggle={onToggle} /></td>
+                <td><ChannelStatusControl channel={channel} pending={togglingId === channel.id} menuAbove={index === orderedChannels.length - 1} onToggle={onToggle} /></td>
                 <td><span className="mono subtle">{channel.protocol}</span></td>
                 <td>{formatBalance(channel, onSyncBalance, syncingBalanceId, balanceRefreshPending)}</td>
                 <td>{channel.lastLatencyMs === null ? "—" : `${channel.lastLatencyMs} ms`}</td>
@@ -177,7 +177,7 @@ export function ChannelTable({
   );
 }
 
-function ChannelStatusControl({ channel, pending, onToggle }: { channel: Channel; pending: boolean; onToggle: (channel: Channel, enabled?: boolean) => void }) {
+function ChannelStatusControl({ channel, pending, menuAbove, onToggle }: { channel: Channel; pending: boolean; menuAbove?: boolean; onToggle: (channel: Channel, enabled?: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -201,7 +201,7 @@ function ChannelStatusControl({ channel, pending, onToggle }: { channel: Channel
   const actionEnabled = isIsolated ? true : !channel.enabled;
 
   return (
-    <div className="channel-status-cell" ref={menuRef}>
+    <div className={`channel-status-cell${menuAbove ? " channel-status-menu-above" : ""}`} ref={menuRef}>
       <button
         className="channel-status-trigger"
         type="button"

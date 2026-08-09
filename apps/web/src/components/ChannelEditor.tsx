@@ -84,8 +84,14 @@ export function ChannelEditor({ channel, onClose, onSaved }: { channel: Channel 
         apiKey: apiKey.trim(),
         protocol,
       });
-      setDiscoveredModels(result.models);
-      if (result.error && result.models.length === 0) setError(`模型获取失败：${result.error}`);
+      const fetchedModels = [...new Set(result.models.map((model) => model.trim()).filter(Boolean))];
+      setDiscoveredModels(result.error ? [] : fetchedModels);
+      if (result.error) {
+        setError(`模型获取失败：${result.error}`);
+      } else {
+        const selected = splitList(models);
+        setModels(selected.filter((model) => fetchedModels.includes(model)).join(", "));
+      }
       if (result.protocol !== "auto" && protocol === "auto") setProtocol(result.protocol as Channel["protocol"]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "模型获取失败");
