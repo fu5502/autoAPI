@@ -906,7 +906,7 @@ function RequestTable({ items, channels }: { items: RequestLogEntry[]; channels:
   return (
     <div className="request-table-scroll">
       <table className="request-table">
-        <thead><tr><th>时间</th><th>客户端</th><th>来源 IP</th><th>渠道</th><th>密钥</th><th>流式</th><th>请求模型</th><th>推理强度</th><th>端点</th><th>输入</th><th>输出</th><th>缓存</th><th>耗时</th><th>首字节</th></tr></thead>
+        <thead><tr><th>时间</th><th>客户端</th><th>来源 IP</th><th>渠道</th><th>密钥</th><th>流式</th><th>错误</th><th>请求模型</th><th>推理强度</th><th>端点</th><th>输入</th><th>输出</th><th>缓存</th><th>耗时</th><th>首字节</th></tr></thead>
         <tbody>{items.map((item) => <RequestRow item={item} channelUrl={item.channelId ? channelUrls.get(item.channelId) : undefined} key={item.id} />)}</tbody>
       </table>
     </div>
@@ -917,7 +917,7 @@ function RequestRow({ item, channelUrl }: { item: RequestLogEntry; channelUrl: s
   const success = item.statusCode < 400;
   const date = new Date(item.createdAt);
   const clientLabel = item.clientName === "unknown" ? "未知客户端" : item.clientName;
-  const channelLabel = item.channelName ?? item.providerName ?? "未路由";
+  const channelLabel = item.channelName ?? item.providerName ?? "无可用渠道";
   return <tr className={success ? "" : "request-row-error"}>
     <td data-label="时间" className="request-time">{formatRequestTime(date)}</td>
     <td data-label="客户端"><span className={`request-client request-client-${clientLabel.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`} title={clientLabel}>{clientLabel}</span></td>
@@ -933,6 +933,7 @@ function RequestRow({ item, channelUrl }: { item: RequestLogEntry; channelUrl: s
     </td>
     <td data-label="密钥" title={item.gatewayKeyName ?? item.keyName ?? "未记录"}><span className="request-key-name">{item.gatewayKeyName ?? item.keyName ?? "未记录"}</span></td>
     <td data-label="流式"><span className={item.streamed ? "request-pill stream" : "request-pill non-stream"}>{item.streamed ? "流式" : "非流式"}</span></td>
+    <td data-label="错误">{item.errorType ? <span className="request-error-type">{formatErrorType(item.errorType)}</span> : <span className="request-error-none">—</span>}</td>
     <td data-label="请求模型" title={item.modelAlias}><strong className="request-model-name">{item.modelAlias}</strong></td>
     <td data-label="推理强度"><span className={`request-reasoning${item.reasoningEffort ? " configured" : ""}`} title={item.reasoningEffort ?? ""}>{formatReasoningEffort(item.reasoningEffort)}</span></td>
     <td data-label="端点" title={item.endpoint}><code className="request-endpoint">{item.endpoint}</code></td>
@@ -954,6 +955,27 @@ function formatReasoningEffort(value: string | null | undefined) {
   };
   if (!value) return "—";
   return labels[value.toLowerCase()] ?? value;
+}
+
+function formatErrorType(value: string) {
+  const labels: Record<string, string> = {
+    no_route_configured: "未配置路由",
+    no_eligible_channel: "无可用渠道",
+    channel_unavailable: "渠道不可用",
+    unsupported_protocol: "协议不支持",
+    all_channels_failed: "全部渠道失败",
+    timeout: "上游超时",
+    connection_error: "连接失败",
+    upstream_rejected: "上游拒绝",
+    upstream_auth_failed: "认证失败",
+    upstream_5xx: "上游 5xx",
+    upstream_overloaded: "上游过载",
+    balance_exhausted: "余额不足",
+    rate_limited: "触发限流",
+    upstream_stream_interrupted: "流式中断",
+    client_closed_request: "客户端取消",
+  };
+  return labels[value] ?? value;
 }
 
 function UsageBreakdown({ title, rows }: { title: string; rows: Usage["byModel"] }) {

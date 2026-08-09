@@ -31,20 +31,17 @@ export class GatewayRouter {
 
   async execute(request: GatewayRequest): Promise<UpstreamResult> {
     const startedAt = Date.now();
-    const candidates = eligibleCandidates(
-      await this.options.store.listRoutingCandidates(request.model),
-      request,
-      this.options.registry,
-    );
+    const allCandidates = await this.options.store.listRoutingCandidates(request.model);
+    const candidates = eligibleCandidates(allCandidates, request, this.options.registry);
     if (candidates.length === 0) {
-      await this.recordFailure(request, null, null, 0, 503, "no_eligible_channel", startedAt);
-      throw new GatewayError(`No eligible channel for model ${request.model}`, 503, "no_eligible_channel");
+      return this.executePollingFallback(request, allCandidates, startedAt);
     }
     const [counter, routingHint] = await Promise.all([
       this.options.runtime.nextCounter(request.model),
       this.options.runtime.getRoutingHint(request.model, candidates.map((candidate) => candidate.channel.id)),
     ]);
     const attempts = orderCandidates(candidates, counter, routingHint);
+    const firstAttempt = attempts[0] ?? null;
     let lastError: ReturnType<typeof toUpstreamError> | null = null;
     let attemptedChannels = 0;
     for (let index = 0; index < attempts.length; index += 1) {
@@ -108,7 +105,17 @@ export class GatewayRouter {
       }
     }
     if (attemptedChannels === 0) {
-      await this.recordFailure(request, null, null, 0, 503, "no_eligible_channel", startedAt);
+      if (firstAttempt) {
+        await this.recordFailure(
+          request,
+          firstAttempt.channel.id,
+          firstAttempt.upstreamModel,
+          0,
+          503,
+          "channel_unavailable",
+          startedAt,
+        );
+      }
       throw new GatewayError(`No eligible channel for model ${request.model}`, 503, "no_eligible_channel");
     }
     throw new GatewayError(
@@ -117,6 +124,109 @@ export class GatewayRouter {
       "all_channels_failed",
       lastError ?? undefined,
     );
+  }
+
+  private async executePollingFallback(
+    request: GatewayRequest,
+    candidates: RoutingCandidate[],
+    startedAt: number,
+  ): Promise<UpstreamResult> {
+    const pollable = candidates.filter(({ channel }) => {
+      if (!channel.enabled || channel.status === "disabled") return false;
+      return this.options.registry.forChannel(channel.protocol).supports(request);
+    });
+    if (pollable.length === 0) {
+      const unsupported = candidates.find(({ channel }) => channel.enabled && channel.status !== "disabled");
+      if (!unsupported) {
+        throw new GatewayError(
+          `No route configured for model ${request.model}`,
+          503,
+          "no_route_configured",
+        );
+      }
+      await this.recordFailure(
+        request,
+        unsupported.channel.id,
+        unsupported.upstreamModel,
+        0,
+        503,
+        "unsupported_protocol",
+        startedAt,
+      );
+      throw new GatewayError(
+        `Selected channel protocol does not support ${request.kind} requests`,
+        503,
+        "unsupported_protocol",
+      );
+    }
+
+    const [counter, routingHint] = await Promise.all([
+      this.options.runtime.nextCounter(request.model),
+      this.options.runtime.getRoutingHint(request.model, pollable.map((candidate) => candidate.channel.id)),
+    ]);
+    const candidate = orderCandidates(pollable, counter, routingHint)[0]!;
+    try {
+      return await this.executeFallbackCandidate(request, candidate, startedAt);
+    } catch (error) {
+      if (error instanceof GatewayError) throw error;
+      const upstreamError = toUpstreamError(error);
+      if (upstreamError.retryable) {
+        await Promise.all([
+          this.options.store.recordChannelFailure(
+            candidate.channel.id,
+            upstreamError.errorType,
+            this.options.failureThreshold,
+          ),
+          this.options.runtime.recordRoutingFailure(request.model, candidate.channel.id),
+        ]);
+      }
+      await this.recordFailure(
+        request,
+        candidate.channel.id,
+        candidate.upstreamModel,
+        0,
+        upstreamError.statusCode,
+        upstreamError.errorType,
+        startedAt,
+      );
+      throw new GatewayError(upstreamError.message, upstreamError.statusCode, upstreamError.errorType, upstreamError);
+    }
+  }
+
+  private async executeFallbackCandidate(
+    request: GatewayRequest,
+    candidate: RoutingCandidate,
+    startedAt: number,
+  ): Promise<UpstreamResult> {
+    const channel = await this.options.store.getChannel(candidate.channel.id);
+    if (!channel) throw new GatewayError("Channel not found", 404, "not_found");
+    const adapter = this.options.registry.forChannel(channel.protocol);
+    const apiKey = this.options.secrets.decrypt(channel.keyCiphertext);
+    const attempt = await adapter.execute(
+      channel,
+      apiKey,
+      request,
+      candidate.upstreamModel,
+      this.options.timeoutMs,
+    );
+    if (request.stream && !(attempt.result.body instanceof Uint8Array)) {
+      return {
+        ...attempt.result,
+        body: finalizeStream(attempt.result.body, (consumedToEnd) => this.recordStreamResult(
+          request,
+          channel.id,
+          candidate.upstreamModel,
+          0,
+          attempt,
+          startedAt,
+          false,
+          true,
+          consumedToEnd,
+        )),
+      };
+    }
+    await this.recordSuccess(request, channel.id, candidate.upstreamModel, 0, attempt, startedAt, false);
+    return attempt.result;
   }
 
   private async getCurrentEligibleCandidate(candidate: RoutingCandidate, request: GatewayRequest): Promise<RoutingCandidate | null> {

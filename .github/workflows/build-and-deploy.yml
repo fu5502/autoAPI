@@ -32,6 +32,24 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Require version bump
+        run: |
+          set -euo pipefail
+          previous=$(git show HEAD~1:package.json | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+          current=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' package.json)
+          test -n "$current"
+          if [ "$previous" = "$current" ]; then
+            echo "package.json version must be bumped (previous=$previous current=$current)"
+            exit 1
+          fi
+          for file in apps/api/package.json apps/web/package.json; do
+            value=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file")
+            if [ "$value" != "$current" ]; then
+              echo "$file version must match root package.json ($current, found $value)"
+              exit 1
+            fi
+          done
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
 

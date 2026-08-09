@@ -80,6 +80,81 @@ describe("gateway router failover", () => {
     expect(disabledCalls).toBe(0);
   });
 
+  it("polls an isolated channel when no normal candidates are available", async () => {
+    let calls = 0;
+    const upstream = await mockJson((_, reply) => {
+      calls += 1;
+      return reply.send(completion("recovered"));
+    });
+    const { router, store, secrets } = testRouter();
+    const channel = await addHealthyChannel(store, secrets, { name: "isolated-poll", baseUrl: upstream.baseUrl });
+    const failure = {
+      ok: false,
+      protocol: "openai" as const,
+      models: [],
+      latencyMs: 10,
+      chatOk: false,
+      streamOk: false,
+      balance: null,
+      balanceCurrency: null,
+      balanceStatus: "unknown" as const,
+      error: "connection_error",
+    };
+    await store.applyProbeResult(channel.id, failure, 2);
+    await store.applyProbeResult(channel.id, failure, 2);
+    expect((await store.getChannel(channel.id))?.status).toBe("isolated");
+
+    const result = await router.execute(gatewayRequest(false));
+
+    expect(JSON.parse(await readBody(result.body)).choices[0].message.content).toBe("recovered");
+    expect(result.channelId).toBe(channel.id);
+    expect(calls).toBe(1);
+    expect(store.usage).toHaveLength(1);
+    expect(store.usage[0]).toMatchObject({ channelId: channel.id, statusCode: 200, errorType: null });
+    expect((await store.getChannel(channel.id))?.status).toBe("healthy");
+  });
+
+  it("records protocol-incompatible fallback candidates on their channel", async () => {
+    let calls = 0;
+    const upstream = await mockJson(() => {
+      calls += 1;
+      return completion("must-not-run");
+    });
+    const { router, store, secrets } = testRouter();
+    const channel = await addHealthyChannel(store, secrets, {
+      name: "claude-responses",
+      baseUrl: upstream.baseUrl,
+      protocol: "claude",
+    });
+    const request: GatewayRequest = {
+      ...gatewayRequest(false),
+      kind: "responses",
+      body: { ...gatewayRequest(false).body, stream: false },
+    };
+
+    await expect(router.execute(request)).rejects.toMatchObject({
+      statusCode: 503,
+      errorType: "unsupported_protocol",
+    });
+    expect(calls).toBe(0);
+    expect(store.usage).toHaveLength(1);
+    expect(store.usage[0]).toMatchObject({
+      channelId: channel.id,
+      statusCode: 503,
+      errorType: "unsupported_protocol",
+    });
+  });
+
+  it("does not write a null-channel usage row when no route exists", async () => {
+    const { router, store } = testRouter();
+
+    await expect(router.execute(gatewayRequest(false))).rejects.toMatchObject({
+      statusCode: 503,
+      errorType: "no_route_configured",
+    });
+    expect(store.usage).toHaveLength(0);
+  });
+
   it("round-robins healthy channels across requests", async () => {
     const calls: string[] = [];
     const first = await mockJson((_, reply) => {

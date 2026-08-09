@@ -3910,6 +3910,28 @@ th:last-child {
   border: 1px solid #f5cdd1;
 }
 
+.request-error-type {
+  display: inline-flex;
+  align-items: center;
+  min-height: 23px;
+  max-width: 150px;
+  padding: 0 9px;
+  overflow: hidden;
+  color: #c34654;
+  background: #fff0f1;
+  border: 1px solid #f5cdd1;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-error-none {
+  color: var(--faint);
+  font-size: 11px;
+}
+
 .request-empty {
   display: grid;
   justify-items: center;
@@ -4605,6 +4627,12 @@ th:last-child {
 }
 
 :root[data-theme="dark"] .request-metric.bad {
+  color: #f2ad99;
+  background: #432923;
+  border-color: #70443a;
+}
+
+:root[data-theme="dark"] .request-error-type {
   color: #f2ad99;
   background: #432923;
   border-color: #70443a;
