@@ -149,7 +149,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     browserProxy?.close();
     await Promise.all([store.close(), runtime.close(), checkin?.close()]);
   });
-  if (options.startAgent !== false && config.appMode === "production") agent.start();
+  if (options.startAgent === true) agent.start();
 
   return { app, store, runtime, router, agent, checkin, config };
 }

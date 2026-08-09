@@ -526,7 +526,7 @@ export async function registerCheckinRoutes(
               keyName: key.name,
               baseUrl: extraction.baseUrl,
               apiKey: key.apiKey,
-              protocol: extraction.protocol,
+              protocol: "auto",
             }));
           } catch (error) {
             lastError = error;

@@ -14,6 +14,61 @@ afterEach(() => {
   for (const database of databases.splice(0)) database.close()
 })
 
+describe('check-in channel import routes', () => {
+  it('prepares imported channels in auto protocol instead of the site-specific protocol', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('New API Test', 'https://new-api.example')
+    database.updateSiteAuth(site.id, { adapter: 'unknown', authStatus: 'valid' })
+
+    const prepareChannelImport = vi.fn(async () => ({
+      candidateId: 'f4be1722-7e14-4b31-b3f3-0ad861e1c4f7',
+      siteName: site.name,
+      keyName: 'WorkBuddy',
+      baseUrl: 'https://new-api.example',
+      protocol: 'auto',
+      models: [],
+      keyLast4: '3456',
+      validation: { status: 'not_probed', ok: false, chatOk: false, streamOk: false, latencyMs: 0, balance: null, balanceCurrency: null, balanceStatus: 'unknown' },
+      matchedChannel: null,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }))
+    const newApi = {
+      extractOfficialApiKeys: vi.fn(async () => ({
+        supported: true,
+        baseUrl: 'https://new-api.example',
+        protocol: 'new-api',
+        keys: [{ id: '1', name: 'WorkBuddy', apiKey: 'sk-new-api-complete-key-123456', keyLast4: '3456' }],
+      })),
+    }
+    const checkinModule = {
+      db: database,
+      events: { emit: vi.fn() },
+      siteIcons: new SiteIconService(database, fetch),
+      newApi,
+    } as unknown as CheckinModule
+    const app = Fastify()
+    await registerCheckinRoutes(app, checkinModule, async () => undefined, { agent: { prepareChannelImport } as unknown as OpsAgent })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/admin/checkin/sites/${site.id}/channel-import/prepare`,
+      payload: {},
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({ candidates: [{ protocol: 'auto' }] })
+    expect(prepareChannelImport).toHaveBeenCalledWith(expect.objectContaining({
+      siteId: site.id,
+      baseUrl: 'https://new-api.example',
+      apiKey: 'sk-new-api-complete-key-123456',
+      protocol: 'auto',
+    }))
+
+    await app.close()
+  })
+})
+
 describe('check-in site icon routes', () => {
   it('accepts and serves a base64 PNG data URL larger than the former URL limit', async () => {
     const database = new AppDatabase(':memory:')
