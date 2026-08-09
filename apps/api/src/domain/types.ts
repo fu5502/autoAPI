@@ -237,6 +237,8 @@ export interface ProbeResult {
   error: string | null;
   errorType?: string | null;
   modelsChanged?: boolean;
+  probedModel?: string | null;
+  probeReply?: string | null;
 }
 
 export interface PoolSummary {

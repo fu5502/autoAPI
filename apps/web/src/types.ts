@@ -248,6 +248,8 @@ export interface ProbeResult {
   balanceStatus: "ok" | "low" | "exhausted" | "unknown" | "error";
   error: string | null;
   modelsChanged?: boolean;
+  probedModel?: string | null;
+  probeReply?: string | null;
 }
 
 export interface ProbeResponse {

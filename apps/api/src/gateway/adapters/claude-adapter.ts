@@ -67,7 +67,7 @@ export class ClaudeAdapter implements UpstreamAdapter {
       if (!model) throw new Error("Upstream did not expose any Claude models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
       const body = { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 32 };
-      await probeJson(
+      const reply = await probeJson(
         apiUrl(channel.baseUrl, "/v1/messages"),
         { method: "POST", headers: claudeHeaders(apiKey), body: JSON.stringify(body) },
         timeoutMs,
@@ -85,6 +85,8 @@ export class ClaudeAdapter implements UpstreamAdapter {
         balanceStatus: balance.status,
         error: null,
         modelsChanged: models.length > 0 && JSON.stringify(models) !== JSON.stringify(channel.models),
+        probedModel: model,
+        probeReply: extractClaudeReply(reply),
       };
     } catch (error) {
       return {
@@ -159,6 +161,16 @@ function claudeHeaders(apiKey: string, extra: Record<string, string> = {}): Reco
     "content-type": "application/json",
     accept: "application/json",
   };
+}
+
+function extractClaudeReply(body: Record<string, unknown>): string {
+  const content = Array.isArray(body.content) ? body.content : [];
+  return content
+    .flatMap((part) => (part && typeof part === "object" && "text" in part && typeof (part as { text?: unknown }).text === "string"
+      ? [(part as { text: string }).text]
+      : []))
+    .join("")
+    .trim();
 }
 
 function parseModels(body: Record<string, unknown>): string[] {

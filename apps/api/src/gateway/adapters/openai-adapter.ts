@@ -52,20 +52,22 @@ export class OpenAiAdapter implements UpstreamAdapter {
       const model = models[0];
       if (!model) throw new Error("Upstream did not expose any models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
-      const chat = await probeOpenAiGeneration(channel, apiKey, model, timeoutMs);
+      const reply = await probeOpenAiGeneration(channel, apiKey, model, timeoutMs);
       const balance = await balancePromise;
       return {
         ok: true,
         protocol: detectFlavor(channel),
         models,
         latencyMs: Date.now() - startedAt,
-        chatOk: chat,
-        streamOk: chat,
+        chatOk: true,
+        streamOk: true,
         balance: balance.balance,
         balanceCurrency: balance.currency,
         balanceStatus: balance.status,
         error: null,
         modelsChanged: models.length > 0 && JSON.stringify(models) !== JSON.stringify(channel.models),
+        probedModel: model,
+        probeReply: reply,
       };
     } catch (error) {
       return {
@@ -417,25 +419,43 @@ async function probeOpenAiGeneration(
   apiKey: string,
   model: string,
   timeoutMs: number,
-): Promise<boolean> {
+): Promise<string> {
   const headers = jsonHeaders(apiKey);
   const chatBody = { model, messages: [{ role: "user", content: "请用一句话说明你是谁" }], max_tokens: 32, stream: false };
   try {
-    await probeJson(
+    const body = await probeJson(
       apiUrl(channel.baseUrl, "/v1/chat/completions"),
       { method: "POST", headers, body: JSON.stringify(chatBody) },
       timeoutMs,
     );
-    return true;
+    return extractChatReply(body);
   } catch {
     const responseBody = { model, input: "请用一句话说明你是谁", max_output_tokens: 32, stream: false };
-    await probeJson(
+    const body = await probeJson(
       apiUrl(channel.baseUrl, "/v1/responses"),
       { method: "POST", headers, body: JSON.stringify(responseBody) },
       timeoutMs,
     );
-    return true;
+    return extractResponsesReply(body);
   }
+}
+
+function extractChatReply(body: Record<string, unknown>): string {
+  const choice = Array.isArray(body.choices) && isRecord(body.choices[0]) ? body.choices[0] : {};
+  const message = isRecord(choice.message) ? choice.message : {};
+  return (typeof message.content === "string" ? message.content : contentText(message.content)).trim();
+}
+
+function extractResponsesReply(body: Record<string, unknown>): string {
+  if (typeof body.output_text === "string" && body.output_text.trim()) return body.output_text.trim();
+  const output = Array.isArray(body.output) ? body.output : [];
+  for (const item of output) {
+    if (!isRecord(item)) continue;
+    const content = Array.isArray(item.content) ? item.content : [];
+    const text = content.flatMap((part) => isRecord(part) && typeof part.text === "string" ? [part.text] : []).join("");
+    if (text.trim()) return text.trim();
+  }
+  return "";
 }
 
 function parseModels(body: Record<string, unknown>): string[] {

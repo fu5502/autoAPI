@@ -90,7 +90,7 @@ export class GeminiAdapter implements UpstreamAdapter {
       if (!model) throw new Error("Upstream did not expose any Gemini models");
       const balancePromise = optionalBalance(channel, apiKey, timeoutMs);
       const payload = JSON.stringify({ contents: [{ role: "user", parts: [{ text: "请用一句话说明你是谁" }] }], generationConfig: { maxOutputTokens: 32 } });
-      await probeJson(
+      const body = await probeJson(
         apiUrl(channel.baseUrl, `/v1beta/models/${encodeURIComponent(model)}:generateContent`),
         { method: "POST", headers: geminiHeaders(apiKey), body: payload },
         timeoutMs,
@@ -108,6 +108,8 @@ export class GeminiAdapter implements UpstreamAdapter {
         balanceStatus: balance.status,
         error: null,
         modelsChanged: models.length > 0 && JSON.stringify(models) !== JSON.stringify(channel.models),
+        probedModel: model,
+        probeReply: candidateText(body),
       };
     } catch (error) {
       return {
