@@ -167,7 +167,7 @@ async function connectProductionStore(connectionString: string): Promise<Postgre
 function resolveVersion(): string {
   if (process.env.AUTOAPI_VERSION?.trim()) return process.env.AUTOAPI_VERSION.trim();
   try {
-    const packageJsonPath = new URL("../../package.json", import.meta.url);
+    const packageJsonPath = new URL("../../../package.json", import.meta.url);
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: string };
     return packageJson.version ?? "unknown";
   } catch {
