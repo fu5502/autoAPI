@@ -11,3 +11,5 @@ test-results/
 *.tsbuildinfo
 .autoapi-data/
 apps/api/.autoapi-data/
+# Project context (private)
+docs/project-context.md
