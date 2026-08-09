@@ -111,9 +111,10 @@ function finiteNumber(value) {
 export function extractHybgzsBalanceRaw(payload) {
   const data = unwrapHybgzsResponse(payload)
   if (!data) return null
-  return finiteNumber(data.total)
-    ?? finiteNumber(data.wallet?.balance)
+  return finiteNumber(data.balance)
     ?? finiteNumber(data.mainSite?.balance)
+    ?? finiteNumber(data.total)
+    ?? finiteNumber(data.wallet?.balance)
 }
 
 export function extractHybgzsRewardRaw(payload) {

@@ -249,6 +249,12 @@ interface HybgzsWelfareBalance {
   total?: number
 }
 
+interface HybgzsWelfareMainSiteBalance {
+  balance?: number
+  connected?: boolean
+  withdrawMainSiteBalanceLimit?: number
+}
+
 interface ChyTrafficPageState {
   authenticated: boolean
   title: string
@@ -646,7 +652,7 @@ export class NewApiService {
             if (hybgzsWelfareSite) {
               const auth = await this.detectHybgzsWelfareAuthentication(page, 30_000)
               if (auth) {
-                const balanceRaw = numberOrNull(auth.walletBalance)
+                const balanceRaw = await this.readHybgzsWelfareBalance(page, 30_000)
                 this.db.updateSiteAuth(site.id, {
                   adapter: 'hybgzs-welfare',
                   authStatus: 'valid',
@@ -1566,9 +1572,19 @@ export class NewApiService {
   }
 
   private async readHybgzsWelfareBalance(page: Page, timeoutMs: number): Promise<number | null> {
+    const mainSiteResponse = await pageRequest<HybgzsWelfareMainSiteBalance>(
+      page,
+      '/api/wallet/mainsite-balance?force=1',
+      'GET',
+      {},
+      timeoutMs,
+    )
+    const mainSiteBalance = mainSiteResponse.success ? numberOrNull(mainSiteResponse.data?.balance) : null
+    if (mainSiteBalance !== null) return mainSiteBalance
+
     const response = await pageRequest<HybgzsWelfareBalance>(page, '/api/wallet/balance', 'GET', {}, timeoutMs)
     if (!response.success) return null
-    return numberOrNull(response.data?.total ?? response.data?.wallet?.balance ?? response.data?.mainSite?.balance)
+    return numberOrNull(response.data?.mainSite?.balance ?? response.data?.total ?? response.data?.wallet?.balance)
   }
 
   private async readFengwindMainSiteBalance(page: Page, timeoutMs: number): Promise<number | null> {

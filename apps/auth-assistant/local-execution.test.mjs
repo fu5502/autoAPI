@@ -86,12 +86,16 @@ test('requires the message and actual tab to match a configured autoAPI origin',
 test('extracts raw values only from a verified user response', () => {
   const user = { success: true, data: { user: { id: 'user-42' } } }
   const anonymous = { success: true, data: { user: { id: 0 } } }
-  const wallet = { success: true, data: { total: 750_000, wallet: { balance: 1 } } }
+  const wallet = { success: true, data: { total: 750_000, wallet: { balance: 1 }, mainSite: { balance: 1_298_180_000 } } }
+  const mainSite = { success: true, data: { balance: 1_298_180_000, connected: true } }
+  const walletOnly = { success: true, data: { total: 750_000, wallet: { balance: 1 } } }
   const config = { success: true, data: { todayCheckinInfo: { rewardQuota: 250_000 } } }
 
   assert.equal(hasVerifiedHybgzsUser(user), true)
   assert.equal(hasVerifiedHybgzsUser(anonymous), false)
-  assert.equal(extractHybgzsBalanceRaw(wallet), 750_000)
+  assert.equal(extractHybgzsBalanceRaw(wallet), 1_298_180_000)
+  assert.equal(extractHybgzsBalanceRaw(mainSite), 1_298_180_000)
+  assert.equal(extractHybgzsBalanceRaw(walletOnly), 750_000)
   assert.equal(extractHybgzsRewardRaw(config), 250_000)
   assert.equal(extractHybgzsBalanceRaw({ success: true, data: { total: '750000' } }), null)
 })

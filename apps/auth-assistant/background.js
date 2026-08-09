@@ -235,9 +235,10 @@ async function executeFixedHybgzsLocalExecution(operation) {
     if (typeof id === 'number') return Number.isFinite(id) && id > 0
     return typeof id === 'string' && id.trim().length > 0 && id.trim() !== '0'
   }
-  const readBalance = (data) => finiteNumber(data?.total)
-    ?? finiteNumber(data?.wallet?.balance)
+  const readBalance = (data) => finiteNumber(data?.balance)
     ?? finiteNumber(data?.mainSite?.balance)
+    ?? finiteNumber(data?.total)
+    ?? finiteNumber(data?.wallet?.balance)
   const readReward = (data) => finiteNumber(data?.todayCheckinInfo?.rewardQuota)
     ?? finiteNumber(data?.todayExpectedReward)
   const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -260,7 +261,8 @@ async function executeFixedHybgzsLocalExecution(operation) {
   const user = await request('/api/user/info')
   if (!hasVerifiedUser(user)) return failed('Login state is not verified')
 
-  const beforeRaw = readBalance(await request('/api/wallet/balance'))
+  const beforeRaw = readBalance(await request('/api/wallet/mainsite-balance?force=1'))
+    ?? readBalance(await request('/api/wallet/balance'))
   if (operation === 'balance_refresh') {
     if (beforeRaw === null) return failed('Wallet balance is unavailable')
     return success('Balance refreshed', beforeRaw)
@@ -285,7 +287,8 @@ async function executeFixedHybgzsLocalExecution(operation) {
     await wait(750)
     const afterConfig = await request('/api/checkin/config')
     if (afterConfig?.hasCheckedInToday) {
-      const afterRaw = readBalance(await request('/api/wallet/balance'))
+      const afterRaw = readBalance(await request('/api/wallet/mainsite-balance?force=1'))
+        ?? readBalance(await request('/api/wallet/balance'))
       return success('Check-in completed', afterRaw, readReward(afterConfig))
     }
     if (capVisible()) {

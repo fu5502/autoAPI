@@ -867,8 +867,11 @@ describe('NewApiService 黑与白福利站签到', () => {
         if (argument.pathname === '/api/user/info') {
           return { httpStatus: 200, contentType: 'application/json', success: true, data: { user: { id: 'test-user', username: 'test-user' }, walletBalance: 500_000 } }
         }
+        if (argument.pathname === '/api/wallet/mainsite-balance?force=1') {
+          return { httpStatus: 200, contentType: 'application/json', success: true, data: { balance: 1_298_180_000, connected: true } }
+        }
         if (argument.pathname === '/api/wallet/balance') {
-          return { httpStatus: 200, contentType: 'application/json', success: true, data: { total: 750_000 } }
+          return { httpStatus: 200, contentType: 'application/json', success: true, data: { total: 750_000, wallet: { balance: 37_500_000 }, mainSite: { balance: 1_298_180_000 } } }
         }
         if (argument.pathname === '/api/checkin/config') {
           return {
@@ -898,8 +901,8 @@ describe('NewApiService 黑与白福利站签到', () => {
     expect(result).toMatchObject({
       status: 'success',
       rewardRaw: 250_000,
-      balanceBeforeRaw: 750_000,
-      balanceAfterRaw: 750_000,
+      balanceBeforeRaw: 1_298_180_000,
+      balanceAfterRaw: 1_298_180_000,
       loginVerified: true,
     })
   })
@@ -1502,6 +1505,41 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
     expect(requestedPaths).toEqual(['/api/user/info'])
     preserveSiteResult(database, site.id, result)
     expect(database.getSite(site.id)?.authStatus).toBe('valid')
+  })
+
+  it('falls back to mainSite.balance when the force refresh endpoint is rate limited', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('黑与白福利站 NEXT', 'https://cdk.hybgzs.com')
+    database.updateSiteAuth(site.id, { adapter: 'hybgzs-welfare', authStatus: 'valid' })
+    const { page, requestedPaths } = createStorageBackedPage(
+      { id: 1, username: 'test-user', quota: 1 },
+      (pathname) => {
+        if (pathname === '/api/user/info') {
+          return { httpStatus: 200, contentType: 'application/json', success: true, data: { user: { id: '1', username: 'test-user' } } }
+        }
+        if (pathname === '/api/wallet/mainsite-balance?force=1') {
+          return { httpStatus: 429, contentType: 'application/json', success: false, message: '请求频繁，请稍后再试' }
+        }
+        if (pathname === '/api/wallet/balance') {
+          return { httpStatus: 200, contentType: 'application/json', success: true, data: { total: 37_500_000, wallet: { balance: 37_500_000 }, mainSite: { balance: 1_298_180_000 } } }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    )
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task({}, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
+
+    expect(result).toMatchObject({
+      status: 'disabled',
+      balanceAfterRaw: 1_298_180_000,
+      loginVerified: true,
+    })
+    expect(requestedPaths).toContain('/api/wallet/mainsite-balance?force=1')
+    expect(requestedPaths).toContain('/api/wallet/balance')
   })
 
   it('marks a JSON 401 as an actual authentication failure', async () => {
