@@ -12,6 +12,29 @@ function Write-MenuText([string]$Text, [ConsoleColor]$Color = [ConsoleColor]::Gr
   Write-Host $Text -ForegroundColor $Color
 }
 
+function Clear-Screen {
+  # Clear-Host on Windows conhost keeps the scrollback buffer, so the menu can
+  # end up below old output instead of at the very top. Reset both the visible
+  # screen and the scrollback so the menu is always pinned to the top.
+  try {
+    $raw = $Host.UI.RawUI
+    $size = $raw.BufferSize
+    $blank = ' ' * $size.Width
+    $origin = New-Object System.Management.Automation.Host.Coordinates 0, 0
+    for ($row = 0; $row -lt $size.Height; $row++) {
+      [System.Console]::SetCursorPosition(0, $row)
+      [System.Console]::Write($blank)
+    }
+    $raw.CursorPosition = $origin
+    $window = $raw.WindowPosition
+    $window.X = 0
+    $window.Y = 0
+    $raw.WindowPosition = $window
+  } catch {
+    Clear-Host
+  }
+}
+
 function Test-Command([string]$Name) {
   return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
@@ -170,7 +193,7 @@ function Show-ServiceStatus {
 }
 
 function Show-Menu {
-  Clear-Host
+  Clear-Screen
   Write-Host "============================================================" -ForegroundColor DarkCyan
   Write-Host " autoAPI 多渠道模型网关 - 控制台" -ForegroundColor White
   Write-Host "============================================================" -ForegroundColor DarkCyan
