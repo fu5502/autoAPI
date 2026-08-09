@@ -1434,6 +1434,17 @@ select:focus-visible {
   font-weight: 680;
 }
 
+.pool-health-summary > strong.pool-health-percent {
+  font-size: 22px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.pool-health-percent.tone-available { color: #08775d; }
+.pool-health-percent.tone-degraded { color: #9a5d08; }
+.pool-health-percent.tone-abnormal { color: #ae2344; }
+.pool-health-percent.tone-no-data { color: #7a858a; }
+
 .pool-hour-grid {
   display: grid;
   grid-template-columns: repeat(24, minmax(0, 1fr));
@@ -3779,6 +3790,41 @@ th:last-child {
   border-radius: 4px;
   font-variant-numeric: tabular-nums;
 }
+.channel-health-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 92px;
+}
+.channel-health-pct {
+  display: inline-flex;
+  width: max-content;
+  min-width: 58px;
+  justify-content: center;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+.channel-health-pct.good { color: #08775d; background: #dff3eb; border-color: #c3e5d9; }
+.channel-health-pct.warn { color: #9a5d08; background: #fff0d2; border-color: #f0dcb0; }
+.channel-health-pct.bad { color: #ae2344; background: #fde5ec; border-color: #f3c8d3; }
+.channel-health-pct.none { color: #7a858a; background: #eef1f2; border-color: #dde3e4; }
+.channel-health-bar {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: #e7ecec;
+}
+.channel-health-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: #3d9b80;
+}
 .channel-models-row td { height: auto; padding: 0 16px 12px; background: #fbfcfc; }
 .channel-models-row:hover { background: #fbfcfc; }
 .channel-models-detail { padding: 10px 12px; border-left: 2px solid #62ad98; background: #f6faf8; }
@@ -4474,10 +4520,22 @@ th:last-child {
   color: #c4d8cf;
 }
 
+:root[data-theme="dark"] .pool-health-percent.tone-available { color: #a8e49c; }
+:root[data-theme="dark"] .pool-health-percent.tone-degraded { color: #f1cb7d; }
+:root[data-theme="dark"] .pool-health-percent.tone-abnormal { color: #f5a4b2; }
+:root[data-theme="dark"] .pool-health-percent.tone-no-data { color: #b2c0bb; }
+
 :root[data-theme="dark"] .pool-health-status.status-available { color: #a8e49c; background: #1c3a26; }
 :root[data-theme="dark"] .pool-health-status.status-degraded { color: #f1cb7d; background: #3c3020; }
 :root[data-theme="dark"] .pool-health-status.status-abnormal { color: #f5a4b2; background: #41242b; }
 :root[data-theme="dark"] .pool-health-status.status-no-data { color: #b2c0bb; background: #293632; }
+
+:root[data-theme="dark"] .channel-health-pct.good { color: #a8e49c; background: #1c3a26; border-color: #315d4f; }
+:root[data-theme="dark"] .channel-health-pct.warn { color: #f1cb7d; background: #3c3020; border-color: #6f5936; }
+:root[data-theme="dark"] .channel-health-pct.bad { color: #f5a4b2; background: #41242b; border-color: #70443a; }
+:root[data-theme="dark"] .channel-health-pct.none { color: #b2c0bb; background: #293632; border-color: #3b4b45; }
+:root[data-theme="dark"] .channel-health-bar { background: #2a3834; }
+:root[data-theme="dark"] .channel-health-bar i { background: #53c489; }
 
 :root[data-theme="dark"] .hour-no_request { background: #43504b; }
 

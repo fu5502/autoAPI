@@ -273,6 +273,7 @@ export class OpsAgent {
     const channel = await this.options.store.getChannel(channelId);
     if (!channel) throw new GatewayError("Channel not found", 404, "not_found");
     const key = this.options.secrets.decrypt(channel.keyCiphertext);
+    const startedAt = Date.now();
     let result: ProbeResult;
     if (channel.protocol === "auto") {
       const attempts: ProbeResult[] = [];
@@ -282,6 +283,7 @@ export class OpsAgent {
         if (candidate.ok) {
           result = candidate;
           await this.options.store.applyProbeResult(channelId, result, this.options.failureThreshold);
+          await this.recordProbeUsage(channel, result, Date.now() - startedAt);
           return result;
         }
       }
@@ -291,7 +293,37 @@ export class OpsAgent {
       result = await this.options.registry.forChannel(channel.protocol).probe(channel, key, this.options.timeoutMs);
     }
     await this.options.store.applyProbeResult(channelId, result, this.options.failureThreshold);
+    await this.recordProbeUsage(channel, result, Date.now() - startedAt);
     return result;
+  }
+
+  private async recordProbeUsage(channel: Channel, result: ProbeResult, latencyMs: number): Promise<void> {
+    const requestKind = result.protocol === "claude" ? "messages" : "chat";
+    try {
+      await this.options.store.recordUsage({
+        requestId: randomUUID(),
+        channelId: channel.id,
+        modelAlias: result.probedModel ?? channel.models[0] ?? "channel-probe",
+        upstreamModel: result.probedModel ?? channel.models[0] ?? null,
+        clientName: "channel-probe",
+        requestKind,
+        statusCode: result.ok ? 200 : 502,
+        promptTokens: 0,
+        completionTokens: 0,
+        latencyMs,
+        errorType: result.ok ? null : result.errorType ?? "probe_failed",
+        retryCount: 0,
+        streamed: false,
+        endpoint: "/channels/probe",
+        sourceIp: null,
+        gatewayKeyName: null,
+        reasoningEffort: null,
+        cachedTokens: null,
+        firstByteLatencyMs: null,
+      });
+    } catch {
+      // Recording a probe log must never break the probe result itself.
+    }
   }
 
   async runHealthSweep(): Promise<void> {

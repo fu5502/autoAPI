@@ -67,6 +67,19 @@ describe("pool health metrics", () => {
       successRate: 1,
     });
   });
+
+  it("excludes channel probe requests from health metrics", () => {
+    const probe = event("2026-08-04T12:31:10.000Z", 200, 100);
+    probe.clientName = "channel-probe";
+    const metrics = buildPoolHealth([
+      event("2026-08-04T12:30:10.000Z", 200, 100),
+      probe,
+    ], now);
+
+    expect(metrics.requests24h).toBe(1);
+    expect(metrics.successfulRequests24h).toBe(1);
+    expect(metrics.successRate24h).toBe(1);
+  });
 });
 
 function event(createdAt: string, statusCode: number, latencyMs: number): UsageEventInput & { createdAt: string } {

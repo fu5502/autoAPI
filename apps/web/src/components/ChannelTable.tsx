@@ -142,7 +142,12 @@ export function ChannelTable({
                 <td><span className="mono subtle">{channel.protocol}</span></td>
                 <td>{formatBalance(channel, onSyncBalance, syncingBalanceId, balanceRefreshPending)}</td>
                 <td>{channel.lastLatencyMs === null ? "—" : `${channel.lastLatencyMs} ms`}</td>
-                <td className={channel.recentRequestCount === 0 ? "subtle" : channel.recentErrorRate > 0.2 ? "danger-text" : channel.recentErrorRate > 0.05 ? "warning-text" : "success-text"}>{channel.recentRequestCount === 0 ? "—" : formatPercent(1 - channel.recentErrorRate)}</td>
+                <td>
+                  <div className="channel-health-cell">
+                    <span className={`channel-health-pct ${channel.recentRequestCount === 0 ? "none" : channel.recentErrorRate > 0.2 ? "bad" : channel.recentErrorRate > 0.05 ? "warn" : "good"}`}>{channel.recentRequestCount === 0 ? "—" : formatPercent(1 - channel.recentErrorRate)}</span>
+                    {channel.recentRequestCount > 0 ? <span className="channel-health-bar"><i style={{ width: `${Math.max(0, Math.min(100, (1 - channel.recentErrorRate) * 100))}%` }} /></span> : null}
+                  </div>
+                </td>
                 <td>
                   <div className="table-actions">
                     {channel.checkinSite ? <button className="icon-button" type="button" title={syncingBalanceId === channel.checkinSite.id ? "同步中…" : "同步签到站余额"} aria-label={`${syncingBalanceId === channel.checkinSite.id ? "同步中" : "同步"}${channel.checkinSite.name}余额`} disabled={syncingBalanceId !== null} onClick={() => onSyncBalance(channel.checkinSite!.id)}>

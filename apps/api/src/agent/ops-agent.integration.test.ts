@@ -302,6 +302,13 @@ describe("operations agent", () => {
     expect((await store.listRoutingCandidates("gpt-agent-test"))).toHaveLength(0);
     expect(chatChecks).toBe(1);
     expect(streamChecks).toBe(0);
+    expect(store.usage.at(-1)).toMatchObject({
+      channelId: imported.channel.id,
+      clientName: "channel-probe",
+      modelAlias: "gpt-agent-test",
+      statusCode: 200,
+      errorType: null,
+    });
   });
 
   it("isolates a channel after the configured number of failed checks and restores it after recovery", async () => {

@@ -55,8 +55,12 @@ export function buildPoolHealth(events: readonly UsageEvent[], now = Date.now())
   };
 }
 
-export function isHealthRelevantEvent(event: Pick<UsageEventInput, "errorType">): boolean {
-  return event.errorType !== "client_closed_request";
+export const PROBE_CLIENT_NAME = "channel-probe";
+
+export function isHealthRelevantEvent(event: Pick<UsageEventInput, "errorType" | "clientName">): boolean {
+  if (event.errorType === "client_closed_request") return false;
+  if (event.clientName === PROBE_CLIENT_NAME) return false;
+  return true;
 }
 
 export function createHourlyHealth(now = Date.now(), hours = DAY_HOURS): PoolHealthPoint[] {

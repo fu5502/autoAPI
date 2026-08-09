@@ -457,7 +457,6 @@ function PoolHealthCard({ pool, window }: { pool: Pool; window: HealthWindow }) 
   const availability = getPoolAvailability(pool, window);
   const metrics = getPoolHealthMetrics(pool, window);
   const config = getHealthWindowConfig(window);
-  const successLabel = metrics.successRate === null ? "暂无请求" : `${formatPercent(metrics.successRate, 2)} 健康百分比`;
   return (
     <article className="pool-health-card">
       <div className="pool-health-head">
@@ -466,7 +465,7 @@ function PoolHealthCard({ pool, window }: { pool: Pool; window: HealthWindow }) 
           <span className={`pool-health-status status-${availability.tone}`}>{availability.label}</span>
         </div>
         <div className="pool-health-summary">
-          <strong>{successLabel}</strong>
+          <strong className={`pool-health-percent tone-${availability.tone}`}>{metrics.successRate === null ? "暂无请求" : formatPercent(metrics.successRate, 1)}</strong>
           <span>{metrics.requests.toLocaleString("zh-CN")} 请求</span>
         </div>
       </div>
@@ -916,7 +915,7 @@ function RequestTable({ items, channels }: { items: RequestLogEntry[]; channels:
 function RequestRow({ item, channelUrl }: { item: RequestLogEntry; channelUrl: string | undefined }) {
   const success = item.statusCode < 400;
   const date = new Date(item.createdAt);
-  const clientLabel = item.clientName === "unknown" ? "未知客户端" : item.clientName;
+  const clientLabel = item.clientName === "unknown" ? "未知客户端" : item.clientName === "channel-probe" ? "渠道探测" : item.clientName;
   const channelLabel = item.channelName ?? item.providerName ?? "无可用渠道";
   return <tr className={success ? "" : "request-row-error"}>
     <td data-label="时间" className="request-time">{formatRequestTime(date)}</td>

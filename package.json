@@ -1,6 +1,6 @@
 {
   "name": "autoapi",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "packageManager": "pnpm@10.14.0",
   "scripts": {
