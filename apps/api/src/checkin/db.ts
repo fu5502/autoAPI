@@ -745,7 +745,7 @@ export class AppDatabase {
         last_balance_raw = COALESCE(?, last_balance_raw),
         last_balance_amount = COALESCE(?, last_balance_amount),
         last_balance_updated_at = CASE WHEN ? IS NOT NULL OR ? IS NOT NULL THEN ? ELSE last_balance_updated_at END,
-        last_checked_at = ?, last_status = CASE WHEN ? THEN last_status ELSE ? END,
+        last_checked_at = ?, last_status = CASE WHEN ? AND last_status <> 'running' THEN last_status ELSE ? END,
         last_reward_amount = COALESCE(?, last_reward_amount),
         last_reward_at = CASE
           WHEN ? IS NOT NULL THEN ?

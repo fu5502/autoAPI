@@ -192,4 +192,31 @@ describe('check-in site balance updates', () => {
 
     expect(database.getSite(site.id)).toMatchObject({ lastStatus: 'success', lastRewardAmount: 5 })
   })
+
+  it('clears a running marker when a balance refresh finishes as disabled', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('中转站', 'https://relay.example')
+    const run = database.startRun('manual')
+    const completedAt = new Date().toISOString()
+
+    database.markSiteRunning(site.id)
+    database.applyResult(site.id, {
+      runId: run.id,
+      siteId: site.id,
+      status: 'disabled',
+      rewardRaw: null,
+      rewardAmount: null,
+      balanceBeforeRaw: null,
+      balanceBeforeAmount: null,
+      balanceAfterRaw: 10,
+      balanceAfterAmount: 10,
+      balanceDeltaAmount: null,
+      message: '自动签到已关闭，余额已刷新',
+      startedAt: completedAt,
+      completedAt,
+    }, { preserveLastStatus: true })
+
+    expect(database.getSite(site.id)).toMatchObject({ lastStatus: 'disabled', lastBalanceAmount: 10 })
+  })
 })
