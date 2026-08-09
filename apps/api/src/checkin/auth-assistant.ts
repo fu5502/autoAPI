@@ -12,6 +12,16 @@ const MAX_COOKIES = 1_000
 const MAX_STORAGE_ITEMS = 2_000
 const MAX_STORAGE_VALUE_LENGTH = 256 * 1024
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
+const AUTH_TOKEN_KEYS = new Set([
+  'auth_token',
+  'access_token',
+  'accesstoken',
+  'refresh_token',
+  'refreshtoken',
+  'sub2api_token',
+  'token',
+])
+const NEW_API_UID_KEYS = new Set(['uid', 'user_id', 'userid', 'new-api-user'])
 
 export interface BrowserCookie {
   name: string
@@ -221,6 +231,7 @@ export class AuthAssistantService {
       const site = this.db.getSite(pairing.siteId)
       if (!site) throw new Error('签到站点不存在')
       const snapshot = normalizeSnapshot(payload, site.baseUrl, pairing.domain)
+      assertKnownHostAuthState(snapshot, site.baseUrl)
       const pageTitle = normalizePageTitle(payload.pageTitle)
       if (!snapshot.cookies.length && !Object.keys(snapshot.localStorageByHost).length) {
         throw new Error('当前页面没有读取到 Cookie 或 Local Storage，请先登录目标签到站点')
@@ -532,6 +543,80 @@ function isAllowedHost(host: string, siteHost: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function assertKnownHostAuthState(snapshot: BrowserAuthSnapshot, baseUrl: string): void {
+  let host = ''
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '')
+  } catch {
+    return
+  }
+  const storageItems = Object.values(snapshot.localStorageByHost).flatMap((values) => Object.entries(values))
+  if (host === 'token.dialoguedui.com' && !hasSub2ApiAuthStorage(storageItems)) {
+    throw new Error('未检测到 token.dialoguedui.com 的有效登录状态，请完成登录后再同步')
+  }
+  if ((host === 'chybenzun.top' || host === 'www.chybenzun.top') && !hasNewApiAuthStorage(storageItems)) {
+    throw new Error('未检测到 chybenzun.top 的有效登录状态，请完成登录后再同步')
+  }
+}
+
+function hasSub2ApiAuthStorage(items: Array<[string, string]>): boolean {
+  return items.some(([key, value]) => {
+    const normalizedKey = key.toLowerCase()
+    if (AUTH_TOKEN_KEYS.has(normalizedKey) && hasMeaningfulValue(value)) return true
+    return (normalizedKey === 'auth_user' || normalizedKey === 'user') && hasRealUser(value)
+  })
+}
+
+function hasNewApiAuthStorage(items: Array<[string, string]>): boolean {
+  return items.some(([key, value]) => {
+    const normalizedKey = key.toLowerCase()
+    if (NEW_API_UID_KEYS.has(normalizedKey) && positiveNumber(value)) return true
+    if (AUTH_TOKEN_KEYS.has(normalizedKey) && hasMeaningfulValue(value)) return true
+    if (normalizedKey === 'localapi_user_token' && hasMeaningfulValue(value)) return true
+    return (normalizedKey === 'user' || normalizedKey === 'auth_user') && hasRealUser(value)
+  })
+}
+
+function hasRealUser(value: string): boolean {
+  if (!value.trim()) return false
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return false
+  }
+  const record = isRecord(parsed) ? parsed as Record<string, unknown> : null
+  if (!record) return false
+  const user = isRecord(record.user) ? record.user as Record<string, unknown> : null
+  const state = isRecord(record.state) ? record.state as Record<string, unknown> : null
+  const stateUser = state && isRecord(state.user) ? state.user as Record<string, unknown> : null
+  const data = isRecord(record.data) ? record.data as Record<string, unknown> : null
+  const dataUser = data && isRecord(data.user) ? data.user as Record<string, unknown> : null
+  const candidates = [record, user, stateUser, data, dataUser]
+  return candidates.some((candidate) => candidate !== null
+    && (positiveNumber(candidate.id ?? candidate.uid ?? candidate.user_id)
+      || meaningfulName(candidate.username)
+      || meaningfulName(candidate.display_name)
+      || meaningfulName(candidate.email)))
+}
+
+function hasMeaningfulValue(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  return !/^(?:null|undefined|false|0|-1|guest|anonymous|public)$/i.test(trimmed)
+}
+
+function positiveNumber(value: unknown): boolean {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0
+}
+
+function meaningfulName(value: unknown): boolean {
+  if (typeof value !== 'string' && typeof value !== 'number') return false
+  const trimmed = String(value).trim()
+  return Boolean(trimmed) && !/^(?:null|undefined|0|-1|guest|anonymous|public)$/i.test(trimmed)
 }
 
 function secureEqual(left: string, right: string): boolean {

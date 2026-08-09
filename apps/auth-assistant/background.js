@@ -419,7 +419,7 @@ async function tryAutoSync(pairId) {
   // Some SPA login pages keep the password form mounted after authentication.
   // Session state is the reliable signal, so do not block a sync just because
   // a hidden or stale password input is still present in the DOM.
-  if (!hasLikelyAuthState(cookies, storageItems)) {
+  if (!hasLikelyAuthState(cookies, storageItems, current.hostname)) {
     await updateTaskStatus(task, 'waiting-login', '等待站点登录完成。登录后页面会自动同步。')
     scheduleAutoSyncRetry(pairId)
     return
@@ -467,7 +467,7 @@ async function syncActiveAutoAuth({ tabId, url }) {
   } catch (error) {
     if (!cookies.length) return { handled: true, ok: false, message: error?.message || '未读取到当前页面登录状态，请先完成登录' }
   }
-  if (!hasLikelyAuthState(cookies, storageItems)) {
+  if (!hasLikelyAuthState(cookies, storageItems, current.hostname)) {
     return { handled: true, ok: false, message: '未读取到登录会话，请先在当前页面完成登录后再同步' }
   }
   try {
@@ -497,6 +497,9 @@ async function syncCurrentTab({ origin, code, tabId, url }) {
       storageItems = await readCurrentStorage(tabId)
     } catch (error) {
       if (!cookies.length) throw error
+    }
+    if (!hasLikelyAuthState(cookies, storageItems, current.hostname)) {
+      throw new Error('未读取到登录会话，请先在当前页面完成登录后再同步')
     }
     return await uploadClaimedSnapshot({ autoApiOrigin, claim, tabId, current, cookies, storageItems })
   } catch (error) {

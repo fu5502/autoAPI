@@ -126,6 +126,72 @@ describe('autoAPI authorization assistant', () => {
     expect(database.listAuthSyncEvents(site.id)).toHaveLength(1)
   })
 
+  it('rejects a token.dialoguedui snapshot without a real login session', () => {
+    const { database, service } = makeService()
+    const site = database.createSite('小白Code', 'https://token.dialoguedui.com')
+    const pairing = service.createPair(site)
+    const claim = service.claim(pairing.code)
+    const encrypted = encryptPayload({
+      siteOrigin: 'https://token.dialoguedui.com',
+      cookies: [{ name: 'theme', value: 'dark', domain: 'token.dialoguedui.com', path: '/' }],
+      localStorage: { theme: 'dark' },
+    }, claim.secret)
+
+    expect(() => service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted }))
+      .toThrow('未检测到 token.dialoguedui.com 的有效登录状态')
+    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'unknown' })
+  })
+
+  it('accepts a token.dialoguedui snapshot with an auth token', () => {
+    const { database, service } = makeService()
+    const site = database.createSite('小白Code', 'https://token.dialoguedui.com')
+    const pairing = service.createPair(site)
+    const claim = service.claim(pairing.code)
+    const encrypted = encryptPayload({
+      siteOrigin: 'https://token.dialoguedui.com',
+      cookies: [],
+      localStorage: { auth_token: 'opaque-token', auth_user: '{"id":42,"username":"demo"}' },
+    }, claim.secret)
+
+    const status = service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
+
+    expect(status).toMatchObject({ status: 'received', localStorageCount: 2 })
+    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'valid' })
+  })
+
+  it('rejects a chybenzun.top snapshot without a real login session', () => {
+    const { database, service } = makeService()
+    const site = database.createSite('CHY', 'https://chybenzun.top')
+    const pairing = service.createPair(site)
+    const claim = service.claim(pairing.code)
+    const encrypted = encryptPayload({
+      siteOrigin: 'https://chybenzun.top',
+      cookies: [{ name: 'aff', value: '123', domain: 'chybenzun.top', path: '/' }],
+      localStorage: { aff: '123' },
+    }, claim.secret)
+
+    expect(() => service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted }))
+      .toThrow('未检测到 chybenzun.top 的有效登录状态')
+    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'unknown' })
+  })
+
+  it('accepts a chybenzun.top snapshot with New API user state', () => {
+    const { database, service } = makeService()
+    const site = database.createSite('CHY', 'https://chybenzun.top')
+    const pairing = service.createPair(site)
+    const claim = service.claim(pairing.code)
+    const encrypted = encryptPayload({
+      siteOrigin: 'https://chybenzun.top',
+      cookies: [],
+      localStorage: { uid: '42', user: '{"id":42,"username":"demo"}' },
+    }, claim.secret)
+
+    const status = service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
+
+    expect(status).toMatchObject({ status: 'received', localStorageCount: 2 })
+    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'valid' })
+  })
+
   it('records a failure reported by the assistant and invalidates the upload token', () => {
     const { database, service } = makeService()
     const site = database.createSite('测试站点', 'https://example.com')
