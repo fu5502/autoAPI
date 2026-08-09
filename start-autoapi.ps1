@@ -174,6 +174,11 @@ function Show-Menu {
   Write-Host "============================================================" -ForegroundColor DarkCyan
   Write-Host " autoAPI 多渠道模型网关 - 控制台" -ForegroundColor White
   Write-Host "============================================================" -ForegroundColor DarkCyan
+  Write-Host "网关入口  " -NoNewline -ForegroundColor Gray
+  Write-Host $ApiUrl -ForegroundColor Cyan
+  Write-Host "管理后台  " -NoNewline -ForegroundColor Gray
+  Write-Host $WebUrl -ForegroundColor Cyan
+  Write-Host "------------------------------------------------------------" -ForegroundColor DarkCyan
   Show-ServiceStatus
   Write-Host ""
   Write-Host "-- 启动 ----------------------------------------------------" -ForegroundColor Magenta
