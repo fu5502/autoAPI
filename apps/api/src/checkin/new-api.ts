@@ -1008,7 +1008,7 @@ export class NewApiService {
         await this.applyImportedCookies(context, site)
         this.logProgress(runId, site, '已恢复登录状态，正在读取余额')
         const noPageBalance = ['new-api-modern', 'new-api-legacy'].includes(site.adapter)
-          ? await this.tryReadNewApiBalanceWithoutPage(context, site, requestTimeoutMs)
+          ? await this.tryReadNewApiBalanceWithoutPage(context, site, requestTimeoutMs, page)
           : { kind: 'skip' as const }
         if (noPageBalance.kind === 'success') {
           this.persistNewApiBalance(site, noPageBalance.read, noPageBalance.money)
@@ -1935,26 +1935,30 @@ export class NewApiService {
     context: BrowserContext,
     site: Site,
     timeoutMs: number,
+    page: Page,
   ): Promise<
     | { kind: 'success'; read: NewApiBalanceRead; money: ReturnType<typeof deriveMoneySettings> }
     | { kind: 'auth_failed'; money: ReturnType<typeof deriveMoneySettings> }
     | { kind: 'skip' }
   > {
     if (!(context as { request?: { fetch?: unknown } }).request?.fetch) return { kind: 'skip' }
-    const statusResponse = await contextRequest<RemoteStatus>(context, site.baseUrl, '/api/status', 'GET', {}, timeoutMs)
+    const statusResponse = await pageRequest<RemoteStatus>(page, '/api/status', 'GET', {}, timeoutMs)
     if (!statusResponse.success || statusResponse.data?.checkin_enabled !== false) return { kind: 'skip' }
     const money = deriveMoneySettings(statusResponse.data)
     const snapshot = await this.authAssistant?.getSnapshot(site.id) ?? null
     const token = snapshot ? readSnapshotAccessToken(snapshot) : null
 
+    // page.evaluate-based fetch sends sameSite=Strict cookies correctly,
+    // unlike context.request which drops them.
+    const pageFetch = async <T>(pathname: string, method: 'GET' | 'POST', headers: Record<string, string> = {}): Promise<RemoteResponse<T>> => {
+      return pageRequest<T>(page, pathname, method, headers, timeoutMs)
+    }
+
     const readWithToken = async (accessToken: string): Promise<NewApiBalanceRead | null> => {
-      const self = await contextRequest<unknown>(
-        context,
-        site.baseUrl,
+      const self = await pageFetch<unknown>(
         '/api/user/self',
         'GET',
         { Authorization: `Bearer ${accessToken}` },
-        timeoutMs,
       )
       this.noteAuthenticationResponse(self)
       const user = self.success ? normalizeNewApiUser(self.data) : null
@@ -1967,13 +1971,10 @@ export class NewApiService {
       if (read) return { kind: 'success', read, money }
     }
 
-    const refresh = await contextRequest<{ access_token?: string }>(
-      context,
-      site.baseUrl,
+    const refresh = await pageFetch<{ access_token?: string }>(
       '/api/user/auth/refresh',
       'POST',
       {},
-      timeoutMs,
     )
     this.noteAuthenticationResponse(refresh)
     if (refresh.success && typeof refresh.data?.access_token === 'string' && refresh.data.access_token.trim()) {
