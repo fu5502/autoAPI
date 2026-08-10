@@ -1868,7 +1868,15 @@ export class NewApiService {
         await this.installImportedStorage(page, site, snapshot)
         await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
         await page.waitForTimeout(1_000)
-        const auth = await this.detectAuthentication(page, site.legacyUserId, 30_000, false)
+        const auth = await this.detectAuthentication(page, site.legacyUserId, 30_000)
+        if (auth?.adapter === 'new-api-modern' && auth.accessToken) {
+          try {
+            const host = new URL(site.baseUrl).hostname.toLowerCase().replace(/\.$/, '')
+            this.authAssistant?.updateSnapshotLocalStorage(site.id, host, { auth_token: auth.accessToken })
+          } catch {
+            // A stale snapshot is not fatal; balance refresh can still retry.
+          }
+        }
         return Boolean(auth?.user && (
           Number(auth.user.id ?? auth.legacyUserId) > 0
           || Boolean(auth.user.username)
@@ -2685,6 +2693,12 @@ function normalizeOfficialApiKey(value: string): string | null {
 async function readNewApiAccessToken(page: Page): Promise<string | null> {
   const token = await page.evaluate(() => {
     for (const storage of [localStorage, sessionStorage]) {
+      for (const key of ['auth_token', 'access_token', 'accesstoken', 'token']) {
+        const direct = storage.getItem(key)?.trim()
+        if (direct && !/^(?:null|undefined|false|0|-1|guest|anonymous|public)$/i.test(direct)) {
+          return direct.replace(/^Bearer\s+/i, '')
+        }
+      }
       const rawUser = storage.getItem('user')
       if (!rawUser || rawUser.length > 100_000) continue
       try {
