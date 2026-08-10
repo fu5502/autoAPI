@@ -152,6 +152,55 @@ describe('check-in site balance updates', () => {
     expect(database.getSite(site.id)).toMatchObject({ lastStatus: 'already_checked', lastRewardAt: completedAt })
   })
 
+  it('does not update balance or reward times when a disabled refresh reads no balance', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('no-read-site', 'https://no-read.example')
+    const firstRun = database.startRun('manual')
+    const secondRun = database.startRun('manual')
+    const previous = new Date('2026-08-09T08:00:00.000Z').toISOString()
+    const today = new Date('2026-08-10T08:00:00.000Z').toISOString()
+
+    database.applyResult(site.id, {
+      runId: firstRun.id,
+      siteId: site.id,
+      status: 'success',
+      rewardRaw: 5,
+      rewardAmount: 5,
+      balanceBeforeRaw: 10,
+      balanceBeforeAmount: 10,
+      balanceAfterRaw: 10,
+      balanceAfterAmount: 10,
+      balanceDeltaAmount: 0,
+      balanceUpdated: true,
+      message: 'checkin success',
+      startedAt: previous,
+      completedAt: previous,
+    })
+    const before = database.getSite(site.id)!
+
+    database.applyResult(site.id, {
+      runId: secondRun.id,
+      siteId: site.id,
+      status: 'disabled',
+      rewardRaw: null,
+      rewardAmount: null,
+      balanceBeforeRaw: 10,
+      balanceBeforeAmount: 10,
+      balanceAfterRaw: 10,
+      balanceAfterAmount: 10,
+      balanceDeltaAmount: 0,
+      balanceUpdated: false,
+      message: '自动签到已关闭，未读取到最新余额',
+      startedAt: today,
+      completedAt: today,
+    })
+
+    const after = database.getSite(site.id)!
+    expect(after.lastBalanceUpdatedAt).toBe(before.lastBalanceUpdatedAt)
+    expect(after.lastRewardAt).toBe(before.lastRewardAt)
+  })
+
   it('keeps the last check-in status when a balance refresh returns disabled', () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)

@@ -886,7 +886,7 @@ export class NewApiService {
           const message = balanceRead === null ? '签到功能未启用' : '签到功能未启用，余额已刷新'
           return this.makeResult(site, runId, startedAt, 'disabled', message, {
             beforeRaw: site.lastBalanceRaw,
-            afterRaw: balanceRead?.balance ?? site.lastBalanceRaw,
+            ...(balanceRead ? { afterRaw: balanceRead.balance } : {}),
             money,
             loginVerified: balanceRead !== null || this.loginRemainsValid(site),
           })
@@ -931,7 +931,7 @@ export class NewApiService {
               loginVerified: !definitiveFailure,
             })
           }
-          if (message.includes('未启用')) return this.makeResult(site, runId, startedAt, 'disabled', message, { beforeRaw, money, loginVerified: true })
+          if (message.includes('未启用')) return this.makeResult(site, runId, startedAt, 'disabled', message, { beforeRaw, afterRaw: beforeRaw, money, loginVerified: true })
           return this.makeResult(site, runId, startedAt, 'failed', message, { beforeRaw, money, loginVerified: true })
         }
 
@@ -1129,7 +1129,7 @@ export class NewApiService {
           const message = balanceRead === null ? '自动签到已关闭，未读取到最新余额' : '自动签到已关闭，余额已刷新'
           return this.makeResult(site, runId, startedAt, 'disabled', message, {
             beforeRaw: site.lastBalanceRaw,
-            afterRaw: balanceRead?.balance ?? site.lastBalanceRaw,
+            ...(balanceRead ? { afterRaw: balanceRead.balance } : {}),
             money,
             loginVerified: balanceRead !== null || this.loginRemainsValid(site),
           })
@@ -1208,6 +1208,9 @@ export class NewApiService {
     const balanceDeltaAmount = balanceBeforeAmount !== null && balanceAfterAmount !== null
       ? roundAmount(balanceAfterAmount - balanceBeforeAmount)
       : null
+    const balanceUpdated = (values.afterRaw !== undefined && values.afterRaw !== null)
+      || (status === 'success' && rewardRaw !== null && balanceBeforeRaw !== null)
+      || (status === 'already_checked' && balanceBeforeRaw !== null)
     return {
       id: 0,
       runId,
@@ -1221,6 +1224,7 @@ export class NewApiService {
       balanceAfterRaw,
       balanceAfterAmount,
       balanceDeltaAmount,
+      balanceUpdated,
       message,
       startedAt,
       completedAt: nowIso(),
@@ -1257,7 +1261,7 @@ export class NewApiService {
       })
     }
     if (before.data?.settings?.enabled === false) {
-      return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw: beforePoints, money })
+      return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw: beforePoints, afterRaw: beforePoints, money })
     }
     if (before.data?.can_checkin === false) {
       const message = before.data.at_balance_cap ? '积分持有已达上限' : '当前不可签到'
@@ -1324,7 +1328,7 @@ export class NewApiService {
     }
 
     if (statusResponse.data?.config?.enabled === false) {
-      return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw: beforeBalance, money })
+      return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw: beforeBalance, afterRaw: beforeBalance, money })
     }
     if (statusResponse.data?.signedToday) {
       const today = statusResponse.data.today || localDateKey(new Date())
@@ -1502,7 +1506,7 @@ export class NewApiService {
       })
     }
     if (status.data?.enabled === false) {
-      return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw, money: hybgzsWelfareMoney, loginVerified: true })
+      return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw, afterRaw: beforeRaw, money: hybgzsWelfareMoney, loginVerified: true })
     }
     const signInButton = page.getByRole('button', { name: /立即签到/ })
     if (await signInButton.count() === 0) {

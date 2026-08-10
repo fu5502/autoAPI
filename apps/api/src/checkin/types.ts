@@ -96,6 +96,8 @@ export interface CheckinResult {
   balanceAfterRaw: number | null
   balanceAfterAmount: number | null
   balanceDeltaAmount: number | null
+  /** True when a fresh balance was actually read during this run. */
+  balanceUpdated?: boolean | undefined
   message: string
   startedAt: string
   completedAt: string

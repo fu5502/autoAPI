@@ -719,6 +719,8 @@ export class AppDatabase {
   ) {
     const site = this.getSite(siteId)
     if (!site) throw new Error('站点不存在')
+    const balanceUpdated = result.balanceUpdated
+      ?? (result.balanceAfterRaw !== null && result.balanceAfterRaw !== result.balanceBeforeRaw)
     this.db.prepare(`
       INSERT INTO checkin_results (
         run_id, site_id, site_name, status, reward_raw, reward_amount,
@@ -744,7 +746,7 @@ export class AppDatabase {
       UPDATE sites SET
         last_balance_raw = COALESCE(?, last_balance_raw),
         last_balance_amount = COALESCE(?, last_balance_amount),
-        last_balance_updated_at = CASE WHEN ? IS NOT NULL OR ? IS NOT NULL THEN ? ELSE last_balance_updated_at END,
+        last_balance_updated_at = CASE WHEN ? THEN ? ELSE last_balance_updated_at END,
         last_checked_at = ?, last_status = CASE WHEN ? AND last_status <> 'running' THEN last_status ELSE ? END,
         last_reward_amount = COALESCE(?, last_reward_amount),
         last_reward_at = CASE
@@ -757,9 +759,8 @@ export class AppDatabase {
     `).run(
       result.balanceAfterRaw,
       result.balanceAfterAmount,
-      result.balanceAfterRaw,
-      result.balanceAfterAmount,
-      result.balanceAfterRaw !== null || result.balanceAfterAmount !== null ? result.completedAt : null,
+      Number(balanceUpdated),
+      balanceUpdated ? result.completedAt : null,
       result.completedAt,
       Number(options.preserveLastStatus ?? false),
       result.status,

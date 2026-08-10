@@ -1080,6 +1080,7 @@ describe('NewApiService known balance-only sites', () => {
       lastBalanceRaw: 2_000_000,
       lastBalanceAmount: 4,
     })
+    const balanceUpdatedAtBefore = database.getSite(site.id)!.lastBalanceUpdatedAt
     const page = {
       goto: async () => undefined,
       waitForTimeout: async () => undefined,
@@ -1127,6 +1128,7 @@ describe('NewApiService known balance-only sites', () => {
       lastBalanceRaw: 2_000_000,
       lastBalanceAmount: 4,
     })
+    expect(database.getSite(site.id)!.lastBalanceUpdatedAt).toBe(balanceUpdatedAtBefore)
   })
 
   it('accepts a zero Any Router balance for an identified user', async () => {

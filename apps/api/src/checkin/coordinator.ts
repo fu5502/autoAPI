@@ -489,6 +489,7 @@ export class CheckinCoordinator {
         balanceAfterRaw: report.balanceRaw,
         balanceAfterAmount,
         balanceDeltaAmount,
+        balanceUpdated: report.balanceRaw !== null,
         message: report.message,
         startedAt: run.startedAt,
         completedAt,

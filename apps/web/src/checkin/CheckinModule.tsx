@@ -1647,7 +1647,8 @@ function balanceRefreshStatusLabel(site: Site): string {
   if (site.lastStatus === 'cancelled') return '已终止'
   if (site.lastStatus === 'failed') return '刷新失败'
   if (site.lastStatus === 'manual_required') return site.authStatus === 'valid' ? '需浏览器验证' : '需重新授权'
-  if (site.lastBalanceUpdatedAt) return '余额已刷新'
+  if (site.lastBalanceUpdatedAt && rewardTimingTone(site.lastBalanceUpdatedAt) === 'today') return '余额已刷新'
+  if (site.lastBalanceUpdatedAt) return '上次已刷新'
   return '待刷新'
 }
 
@@ -1656,7 +1657,7 @@ function balanceRefreshStatusTone(site: Site): ReturnType<typeof statusTone> {
   if (site.lastStatus === 'cancelled') return 'neutral'
   if (site.lastStatus === 'failed') return 'danger'
   if (site.lastStatus === 'manual_required') return 'warning'
-  return site.lastBalanceUpdatedAt ? 'success' : 'neutral'
+  return site.lastBalanceUpdatedAt && rewardTimingTone(site.lastBalanceUpdatedAt) === 'today' ? 'success' : 'neutral'
 }
 
 function balanceRefreshTimingLabel(value: string | null | undefined): string {

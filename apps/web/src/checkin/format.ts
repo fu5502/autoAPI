@@ -109,11 +109,12 @@ export function siteCheckinTone(site: Site): ReturnType<typeof statusTone> {
   if (site.lastStatus === 'cancelled') return 'neutral'
   if (site.lastStatus === 'failed') return 'danger'
   if (site.lastStatus === 'manual_required') return 'warning'
+  const signedInToday = Boolean(site.lastRewardAt && rewardTimingTone(site.lastRewardAt) === 'today')
   if (
     site.lastStatus === 'success'
     || site.lastStatus === 'already_checked'
     || (site.lastStatus === 'disabled' && site.lastRewardAt)
-  ) return 'success'
+  ) return signedInToday ? 'success' : 'neutral'
   return 'neutral'
 }
 
