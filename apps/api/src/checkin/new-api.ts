@@ -1868,7 +1868,7 @@ export class NewApiService {
         await this.installImportedStorage(page, site, snapshot)
         await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
         await page.waitForTimeout(1_000)
-        const auth = await this.detectAuthentication(page, site.legacyUserId, 30_000)
+        const auth = await this.detectAuthentication(page, site.legacyUserId, 30_000, false)
         return Boolean(auth?.user && (
           Number(auth.user.id ?? auth.legacyUserId) > 0
           || Boolean(auth.user.username)
