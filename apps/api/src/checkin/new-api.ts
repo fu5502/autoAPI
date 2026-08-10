@@ -883,6 +883,12 @@ export class NewApiService {
         if (remoteStatus?.checkin_enabled === false) {
           const balanceRead = await this.readNewApiBalanceWithoutRefresh(page, site, requestTimeoutMs, modernAccessToken)
           if (balanceRead) this.persistNewApiBalance(site, balanceRead, money)
+          if (balanceRead === null && !this.loginRemainsValid(site)) {
+            return this.authenticationRequiredResult(site, runId, startedAt, {
+              money,
+              beforeRaw: site.lastBalanceRaw,
+            })
+          }
           const message = balanceRead === null ? '签到功能未启用' : '签到功能未启用，余额已刷新'
           return this.makeResult(site, runId, startedAt, 'disabled', message, {
             beforeRaw: site.lastBalanceRaw,
@@ -1126,6 +1132,12 @@ export class NewApiService {
           const money = deriveMoneySettings(statusResponse.data)
           const balanceRead = await this.readNewApiBalanceWithoutRefresh(page, site, requestTimeoutMs, modernAccessToken)
           if (balanceRead) this.persistNewApiBalance(site, balanceRead, money)
+          if (balanceRead === null && !this.loginRemainsValid(site)) {
+            return this.authenticationRequiredResult(site, runId, startedAt, {
+              money,
+              beforeRaw: site.lastBalanceRaw,
+            })
+          }
           const message = balanceRead === null ? '自动签到已关闭，未读取到最新余额' : '自动签到已关闭，余额已刷新'
           return this.makeResult(site, runId, startedAt, 'disabled', message, {
             beforeRaw: site.lastBalanceRaw,
@@ -1876,6 +1888,7 @@ export class NewApiService {
   ): Promise<NewApiBalanceRead | null> {
     const readAuthenticatedBalance = async (auth: RemoteAuth): Promise<NewApiBalanceRead | null> => {
       const authenticated = await pageRequest<unknown>(page, '/api/user/self', 'GET', buildAuthHeaders(auth), timeoutMs)
+      this.noteAuthenticationResponse(authenticated)
       if (!authenticated.success) return null
       const user = normalizeNewApiUser(authenticated.data)
       if (!user) return null
