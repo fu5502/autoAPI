@@ -338,7 +338,7 @@ describe('NewApiService YiAPI balance', () => {
 })
 
 describe('NewApiService dashboard balance fallback', () => {
-  it('opens /dashboard before reading a legacy New API balance', async () => {
+  it('reads a legacy New API balance without opening /dashboard when check-in is disabled', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('New API dashboard', 'https://new-api-dashboard.example')
@@ -380,7 +380,7 @@ describe('NewApiService dashboard balance fallback', () => {
     const result = await service.refreshBalanceSite(database.getSite(site.id)!, run.id)
 
     expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 42, loginVerified: true })
-    expect(navigatedTo).toEqual(['https://new-api-dashboard.example', 'https://new-api-dashboard.example/dashboard'])
+    expect(navigatedTo).toEqual(['https://new-api-dashboard.example'])
     expect(requestedPaths).toEqual(['/api/status', '/api/user/self'])
   })
 

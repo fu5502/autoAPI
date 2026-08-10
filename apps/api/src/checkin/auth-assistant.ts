@@ -238,12 +238,14 @@ export class AuthAssistantService {
       const site = this.db.getSite(pairing.siteId)
       if (!site) throw new Error('签到站点不存在')
       const snapshot = normalizeSnapshot(payload, site.baseUrl, pairing.domain)
-      assertAuthenticatedSnapshot(snapshot, site.baseUrl)
       if (this.verifyLogin) {
+        assertKnownHostAuthState(snapshot, site.baseUrl)
         const verified = await this.verifyLogin(snapshot, site)
         if (!verified) {
           throw new Error('\u5df2\u4e0a\u4f20\u767b\u5f55\u72b6\u6001\uff0c\u4f46\u7ad9\u70b9\u5b9e\u9645\u4f1a\u8bdd\u6821\u9a8c\u672a\u901a\u8fc7\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u540e\u91cd\u8bd5')
         }
+      } else {
+        assertAuthenticatedSnapshot(snapshot, site.baseUrl)
       }
       const pageTitle = normalizePageTitle(payload.pageTitle)
       if (!snapshot.cookies.length && !Object.keys(snapshot.localStorageByHost).length) {

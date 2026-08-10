@@ -179,6 +179,30 @@ describe('autoAPI authorization assistant', () => {
     expect(database.getSite(site.id)).toMatchObject({ authStatus: 'unknown' })
   })
 
+  it('accepts an upload when live session verification succeeds', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const service = new AuthAssistantService(
+      database,
+      createSecretBox('auth-assistant-test-key'),
+      new EventBus(),
+      { verifyLogin: async () => true },
+    )
+    const site = database.createSite('测试站点', 'https://example.com')
+    const pairing = service.createPair(site)
+    const claim = service.claim(pairing.code)
+    const encrypted = encryptPayload({
+      siteOrigin: 'https://example.com',
+      cookies: [{ name: 'device_id', value: 'device-123', domain: '.example.com', path: '/', secure: true }],
+      localStorage: { theme: 'dark' },
+    }, claim.secret)
+
+    const status = await service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
+
+    expect(status).toMatchObject({ status: 'received' })
+    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'valid' })
+  })
+
   it('accepts a token.dialoguedui snapshot with an auth token', async () => {
     const { database, service } = makeService()
     const site = database.createSite('小白Code', 'https://token.dialoguedui.com')

@@ -1126,7 +1126,6 @@ export class NewApiService {
           })
         }
 
-        if (!isAnyRouterSite(site.baseUrl)) await this.openBalanceDashboard(page, site)
         const statusResponse = await this.getRemoteStatus(page, requestTimeoutMs)
         if (statusResponse.success && statusResponse.data?.checkin_enabled === false) {
           const money = deriveMoneySettings(statusResponse.data)
@@ -1147,6 +1146,7 @@ export class NewApiService {
           })
         }
 
+        if (!isAnyRouterSite(site.baseUrl)) await this.openBalanceDashboard(page, site)
         const auth = await this.detectAuthentication(page, site.legacyUserId, requestTimeoutMs)
         if (!auth) return this.authenticationRequiredResult(site, runId, startedAt)
 
