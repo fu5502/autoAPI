@@ -4,6 +4,7 @@ import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Clock3, Coins, 
 import { ApiError, api, clearAdminSession, getAdminToken, hasAdminSession } from "./api";
 import { ChannelTable } from "./components/ChannelTable";
 import { ChannelEditor } from "./components/ChannelEditor";
+import { HealthMeter } from "./components/HealthMeter";
 import { MetricStrip } from "./components/MetricStrip";
 import { ModelAliasDialog } from "./components/ModelAliasDialog";
 import { Playground } from "./components/Playground";
@@ -71,10 +72,30 @@ function initialCheckinView(): CheckinView {
 function initialOperationLog(): OperationLogEntry[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(operationLogStorageKey) ?? "[]") as unknown;
-    return Array.isArray(parsed) ? parsed.slice(0, 10) : [];
+    return Array.isArray(parsed)
+      ? (parsed as OperationLogEntry[]).slice(0, 10).filter((entry) => entry.status !== "running")
+      : [];
   } catch {
     return [];
   }
+}
+
+type SyncBalanceResult = Awaited<ReturnType<typeof api.syncCheckinSiteBalance>>;
+
+function formatBalanceSyncDetail(channels: Channel[] | undefined, result: SyncBalanceResult): string {
+  if (result.skippedBecauseBalanceIsUnknown) return "站点暂无已知余额，未更新渠道";
+  const updatedNames = result.updatedChannelIds.map(
+    (id) => channels?.find((channel) => channel.id === id)?.name ?? `渠道 ${id.slice(0, 8)}`,
+  );
+  const balance = result.result?.balance;
+  const balanceText = balance === null || balance === undefined
+    ? ""
+    : `${result.result?.currency === "USD" ? "$" : `${result.result?.currency ?? ""} `}${balance.toLocaleString("zh-CN", { maximumFractionDigits: 8 })}`;
+  return [
+    `更新 ${updatedNames.length} 个渠道：${updatedNames.join("、")}`,
+    balanceText ? `签到站余额 ${balanceText}` : "",
+    result.result?.status ? `状态 ${result.result.status}` : "",
+  ].filter(Boolean).join("；");
 }
 
 export default function App() {
@@ -121,7 +142,7 @@ export default function App() {
     mutationFn: (siteId: number) => api.syncCheckinSiteBalance(siteId),
     onSuccess: async (result) => {
       setActionError(null);
-      setActionNotice(result.skippedBecauseBalanceIsUnknown ? "签到站暂无已知余额，未更新渠道余额。" : `已同步签到站余额，更新 ${result.updatedChannelIds.length} 个渠道。`);
+      setActionNotice(formatBalanceSyncDetail(channels.data, result));
       await refreshAll(queryClient);
     },
     onError: (error) => {
@@ -248,11 +269,18 @@ export default function App() {
 
   if (showLogin) return <LoginPage onAuthenticated={authenticatedSuccessfully} />;
 
-  function appendOperationLog(action: string, detail: string, status: OperationLogEntry["status"] = "info") {
-    setOperationLog((current) => [
-      { id: crypto.randomUUID(), createdAt: new Date().toISOString(), action, detail, status },
-      ...current,
-    ].slice(0, 10));
+  function appendOperationLog(action: string, detail: string, status: OperationLogEntry["status"] = "info", id?: string) {
+    const entryId = id ?? crypto.randomUUID();
+    setOperationLog((current) => {
+      if (id) {
+        return current.map((entry) => entry.id === id ? { ...entry, detail, status } : entry).slice(0, 10);
+      }
+      return [
+        { id: entryId, createdAt: new Date().toISOString(), action, detail, status },
+        ...current,
+      ].slice(0, 10);
+    });
+    return entryId;
   }
 
   function refreshed() {
@@ -277,7 +305,7 @@ export default function App() {
   function requestDelete(channel: Channel) {
     if (!window.confirm(`确定删除渠道“${channel.name}”吗？该渠道的模型路由也会被删除。`)) return;
     setActionError(null);
-    appendOperationLog("删除渠道", `删除 ${channel.name}`, "running");
+    const logId = appendOperationLog("删除渠道", `删除 ${channel.name}`, "running");
     void removeChannel.mutateAsync({
       id: channel.id,
       record: {
@@ -288,58 +316,58 @@ export default function App() {
         consecutiveFailures: channel.consecutiveFailures,
       },
     })
-      .then(() => appendOperationLog("删除渠道", `已删除 ${channel.name}`, "success"))
-      .catch((error: unknown) => appendOperationLog("删除渠道", error instanceof Error ? error.message : "删除失败", "error"));
+      .then(() => appendOperationLog("删除渠道", `已删除 ${channel.name}`, "success", logId))
+      .catch((error: unknown) => appendOperationLog("删除渠道", error instanceof Error ? error.message : "删除失败", "error", logId));
   }
 
   function toggle(channel: Channel, enabled = !channel.enabled) {
     setActionError(null);
-    appendOperationLog("启用状态", `${enabled ? "启用" : "停用"} ${channel.name}`, "running");
+    const logId = appendOperationLog("启用状态", `${enabled ? "启用" : "停用"} ${channel.name}`, "running");
     void toggleChannel.mutateAsync({ id: channel.id, enabled })
-      .then(() => appendOperationLog("启用状态", `${enabled ? "已启用" : "已停用"} ${channel.name}`, "success"))
-      .catch((error: unknown) => appendOperationLog("启用状态", error instanceof Error ? error.message : "状态更新失败", "error"));
+      .then(() => appendOperationLog("启用状态", `${enabled ? "已启用" : "已停用"} ${channel.name}`, "success", logId))
+      .catch((error: unknown) => appendOperationLog("启用状态", error instanceof Error ? error.message : "状态更新失败", "error", logId));
   }
 
   function requestProbe(channelId: string) {
     const channel = channels.data?.find((item) => item.id === channelId);
     const label = channel ? channel.name : channelId;
     setActionError(null);
-    appendOperationLog("渠道探测", `开始探测 ${label}`, "running");
+    const logId = appendOperationLog("渠道探测", `开始探测 ${label}`, "running");
     void probe.mutateAsync(channelId)
-      .then((result) => appendOperationLog("渠道探测", `探测成功 ${label}：${result.probe.probedModel ?? "无模型"}`, "success"))
-      .catch((error: unknown) => appendOperationLog("渠道探测", error instanceof Error ? error.message : "探测失败", "error"));
+      .then((result) => appendOperationLog("渠道探测", `探测成功 ${label}：${result.probe.probedModel ?? "无模型"}`, "success", logId))
+      .catch((error: unknown) => appendOperationLog("渠道探测", error instanceof Error ? error.message : "探测失败", "error", logId));
   }
 
   function changeProtocol(channel: Channel, protocol: string) {
-    appendOperationLog("协议切换", `${channel.name} -> ${protocol}`, "running");
+    const logId = appendOperationLog("协议切换", `${channel.name} -> ${protocol}`, "running");
     void updateProtocol.mutateAsync({ channel, protocol })
-      .then(() => appendOperationLog("协议切换", `${channel.name} 已切换为 ${protocol}`, "success"))
-      .catch((error: unknown) => appendOperationLog("协议切换", error instanceof Error ? error.message : "切换失败", "error"));
+      .then(() => appendOperationLog("协议切换", `${channel.name} 已切换为 ${protocol}`, "success", logId))
+      .catch((error: unknown) => appendOperationLog("协议切换", error instanceof Error ? error.message : "切换失败", "error", logId));
   }
 
   function handleSyncBalance(siteId: number) {
     const channel = channels.data?.find((item) => item.checkinSite?.id === siteId);
-    appendOperationLog("余额同步", channel ? `同步 ${channel.name}` : `同步站点 ${siteId}`, "running");
+    const logId = appendOperationLog("余额同步", channel ? `同步 ${channel.name}` : `同步站点 ${siteId}`, "running");
     void syncBalance.mutateAsync(siteId)
-      .then((result) => appendOperationLog("余额同步", result.skippedBecauseBalanceIsUnknown ? "站点暂无已知余额" : `更新 ${result.updatedChannelIds.length} 个渠道`, "success"))
-      .catch((error: unknown) => appendOperationLog("余额同步", error instanceof Error ? error.message : "同步失败", "error"));
+      .then((result) => appendOperationLog("余额同步", formatBalanceSyncDetail(channels.data, result), "success", logId))
+      .catch((error: unknown) => appendOperationLog("余额同步", error instanceof Error ? error.message : "同步失败", "error", logId));
   }
 
   function handleRefreshBalances() {
-    appendOperationLog("余额刷新", "开始批量刷新余额", "running");
+    const logId = appendOperationLog("余额刷新", "开始批量刷新余额", "running");
     void refreshBalances.mutateAsync()
-      .then((result) => appendOperationLog("余额刷新", `成功 ${result.summary.refreshed}，未知 ${result.summary.unknown}，失败 ${result.summary.failed}`, "success"))
-      .catch((error: unknown) => appendOperationLog("余额刷新", error instanceof Error ? error.message : "刷新失败", "error"));
+      .then((result) => appendOperationLog("余额刷新", `成功 ${result.summary.refreshed}，未知 ${result.summary.unknown}，失败 ${result.summary.failed}`, "success", logId))
+      .catch((error: unknown) => appendOperationLog("余额刷新", error instanceof Error ? error.message : "刷新失败", "error", logId));
   }
 
   function handleReorder(channelIds: string[]) {
-    appendOperationLog("渠道排序", "保存新排序", "running");
+    const logId = appendOperationLog("渠道排序", "保存新排序", "running");
     return reorderChannels.mutateAsync(channelIds)
       .then(() => {
-        appendOperationLog("渠道排序", "排序已保存", "success");
+        appendOperationLog("渠道排序", "排序已保存", "success", logId);
       })
       .catch((error: unknown) => {
-        appendOperationLog("渠道排序", error instanceof Error ? error.message : "保存失败", "error");
+        appendOperationLog("渠道排序", error instanceof Error ? error.message : "保存失败", "error", logId);
         throw error;
       });
   }
@@ -703,7 +731,14 @@ function PoolsView({ pools, channels, onAddRoute, operations }: { pools: Pool[];
                       <strong className="pool-health-count">{pool.healthyChannels}/{pool.channels}</strong>
                     </td>
                     <td>{pool.totalRequests1h.toLocaleString("zh-CN")} 次</td>
-                    <td className={pool.totalRequests1h === 0 ? "subtle" : pool.errorRate1h > 0.2 ? "danger-text" : pool.errorRate1h > 0.05 ? "warning-text" : "success-text"}>{pool.totalRequests1h === 0 ? "—" : formatPercent(1 - pool.errorRate1h)}</td>
+                    <td>
+                      <HealthMeter
+                        percent={pool.totalRequests1h === 0 ? null : (1 - pool.errorRate1h) * 100}
+                        tone={pool.totalRequests1h === 0 ? "none" : pool.errorRate1h > 0.2 ? "bad" : pool.errorRate1h > 0.05 ? "warn" : "good"}
+                        value={pool.totalRequests1h === 0 ? "—" : formatPercent(1 - pool.errorRate1h)}
+                        label={`${pool.alias} 最近 1 小时健康百分比`}
+                      />
+                    </td>
                     <td>{pool.averageLatencyMs1h} ms</td>
                     <td>
                       <div className="pool-route-cell">
@@ -825,7 +860,7 @@ function PoolRecentRequestTable({ items, channels }: { items: RequestLogEntry[];
         </thead>
         <tbody>
           {items.map((item) => {
-            const success = item.statusCode < 400;
+            const success = item.statusCode < 400 || item.errorType === "client_closed_request";
             const date = new Date(item.createdAt);
             const clientLabel = item.clientName === "channel-probe" ? "渠道探测" : item.clientName === "unknown" ? "未知客户端" : item.clientName;
             const channelLabel = item.channelName ?? item.providerName ?? "无可用渠道";
@@ -840,7 +875,7 @@ function PoolRecentRequestTable({ items, channels }: { items: RequestLogEntry[];
                 <td data-label="模型" title={item.modelAlias}><strong className="request-model-name">{item.modelAlias}</strong></td>
                 <td data-label="端点" title={item.endpoint}><code className="request-endpoint">{item.endpoint}</code></td>
                 <td data-label="状态"><span className={`request-metric ${success ? "good" : "bad"}`}>{success ? "成功" : `HTTP ${item.statusCode}`}</span></td>
-                <td data-label="错误">{item.errorType ? <span className="request-error-type" title={formatErrorType(item.errorType)}>{formatErrorType(item.errorType)}</span> : <span className="request-error-none">—</span>}</td>
+                <td data-label="错误">{item.errorType && item.errorType !== "client_closed_request" ? <span className="request-error-type" title={formatErrorType(item.errorType)}>{formatErrorType(item.errorType)}</span> : <span className="request-error-none">—</span>}</td>
                 <td data-label="耗时"><span className={`request-metric ${success ? "good" : "bad"}`}>{formatDuration(item.latencyMs)}</span></td>
               </tr>
             );
@@ -1109,7 +1144,7 @@ function RequestTable({ items, channels }: { items: RequestLogEntry[]; channels:
 }
 
 function RequestRow({ item, channelUrl }: { item: RequestLogEntry; channelUrl: string | undefined }) {
-  const success = item.statusCode < 400;
+  const success = item.statusCode < 400 || item.errorType === "client_closed_request";
   const date = new Date(item.createdAt);
   const clientLabel = item.clientName === "unknown" ? "未知客户端" : item.clientName === "channel-probe" ? "渠道探测" : item.clientName;
   const channelLabel = item.channelName ?? item.providerName ?? "无可用渠道";
@@ -1128,7 +1163,7 @@ function RequestRow({ item, channelUrl }: { item: RequestLogEntry; channelUrl: s
     </td>
     <td data-label="密钥" title={item.gatewayKeyName ?? item.keyName ?? "未记录"}><span className="request-key-name">{item.gatewayKeyName ?? item.keyName ?? "未记录"}</span></td>
     <td data-label="流式"><span className={item.streamed ? "request-pill stream" : "request-pill non-stream"}>{item.streamed ? "流式" : "非流式"}</span></td>
-    <td data-label="错误">{item.errorType ? <span className="request-error-type">{formatErrorType(item.errorType)}</span> : <span className="request-error-none">—</span>}</td>
+    <td data-label="错误">{item.errorType && item.errorType !== "client_closed_request" ? <span className="request-error-type">{formatErrorType(item.errorType)}</span> : <span className="request-error-none">—</span>}</td>
     <td data-label="请求模型" title={item.modelAlias}><strong className="request-model-name">{item.modelAlias}</strong></td>
     <td data-label="推理强度"><span className={`request-reasoning${item.reasoningEffort ? " configured" : ""}`} title={item.reasoningEffort ?? ""}>{formatReasoningEffort(item.reasoningEffort)}</span></td>
     <td data-label="端点" title={item.endpoint}><code className="request-endpoint">{item.endpoint}</code></td>
@@ -1168,7 +1203,7 @@ function formatErrorType(value: string) {
     balance_exhausted: "余额不足",
     rate_limited: "触发限流",
     upstream_stream_interrupted: "流式中断",
-    client_closed_request: "客户端取消",
+    client_closed_request: "客户端提前断开",
   };
   return labels[value] ?? value;
 }

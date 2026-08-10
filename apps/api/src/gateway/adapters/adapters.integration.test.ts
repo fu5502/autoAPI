@@ -396,6 +396,23 @@ describe("protocol adapters", () => {
     expect(attempt).toMatchObject({ promptTokens: 7, completionTokens: 4, cachedTokens: 2, firstByteLatencyMs: null });
   });
 
+  it("normalizes models/ prefixes when routing Gemini upstream models", async () => {
+    const mock = await startMockUpstream((app) => {
+      app.post("/v1beta/models/gemini-upstream:generateContent", async () => ({
+        candidates: [{ content: { role: "model", parts: [{ text: "gemini-ok" }] }, finishReason: "STOP" }],
+      }));
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("gemini-prefix-key");
+    const channel = await addHealthyChannel(store, secrets, { name: "gemini-prefix", baseUrl: mock.baseUrl, protocol: "gemini", model: "models/gemini-upstream" });
+    const request: GatewayRequest = { requestId: crypto.randomUUID(), kind: "chat", model: "gemini-local", stream: false, body: { model: "gemini-local", messages: [{ role: "user", content: "hello" }] }, clientName: "test" };
+
+    const attempt = await new GeminiAdapter().execute(channel, "sk-test-gemini", request, "models/gemini-upstream", 1_000);
+    const body = JSON.parse(await readBody(attempt.result.body));
+    expect(body.choices[0].message.content).toBe("gemini-ok");
+  });
+
   it("collects Gemini streaming usage metadata", async () => {
     const mock = await startMockUpstream((app) => {
       app.post("/v1beta/models/gemini-stream:streamGenerateContent", async (_request, reply) => {

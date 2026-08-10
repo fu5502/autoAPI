@@ -811,7 +811,7 @@ export class PostgresStore implements GatewayStore {
     const [total, byClient, byError, byModel, byChannel, timeline] = await Promise.all([
       this.pool.query(
         `SELECT count(*)::int AS requests,
-                count(*) FILTER (WHERE status_code < 400)::int AS successes,
+                count(*) FILTER (WHERE status_code < 400 OR error_type = 'client_closed_request')::int AS successes,
                 coalesce(avg(latency_ms), 0)::float AS latency,
                 coalesce(sum(prompt_tokens), 0)::int AS prompt_tokens,
                 coalesce(sum(completion_tokens), 0)::int AS completion_tokens
@@ -820,22 +820,23 @@ export class PostgresStore implements GatewayStore {
       ),
       this.pool.query(
         `SELECT client_name AS name, count(*)::int AS requests,
-                count(*) FILTER (WHERE status_code >= 400)::int AS errors,
+                count(*) FILTER (WHERE status_code >= 400 AND error_type IS DISTINCT FROM 'client_closed_request')::int AS errors,
                 coalesce(avg(latency_ms), 0)::float AS latency
          FROM usage_events WHERE created_at >= now() - $1::interval
          GROUP BY client_name ORDER BY requests DESC LIMIT 20`,
         [interval],
       ),
       this.pool.query(
-        `SELECT error_type AS name, count(*)::int AS requests, count(*)::int AS errors,
+        `SELECT error_type AS name, count(*)::int AS requests,
+                count(*) FILTER (WHERE status_code >= 400 AND error_type IS DISTINCT FROM 'client_closed_request')::int AS errors,
                 coalesce(avg(latency_ms), 0)::float AS latency
-         FROM usage_events WHERE created_at >= now() - $1::interval AND error_type IS NOT NULL
+         FROM usage_events WHERE created_at >= now() - $1::interval AND error_type IS NOT NULL AND error_type IS DISTINCT FROM 'client_closed_request'
          GROUP BY error_type ORDER BY requests DESC LIMIT 20`,
         [interval],
       ),
       this.pool.query(
         `SELECT model_alias AS name, count(*)::int AS requests,
-                count(*) FILTER (WHERE status_code >= 400)::int AS errors,
+                count(*) FILTER (WHERE status_code >= 400 AND error_type IS DISTINCT FROM 'client_closed_request')::int AS errors,
                 coalesce(avg(latency_ms), 0)::float AS latency
          FROM usage_events WHERE created_at >= now() - $1::interval
          GROUP BY model_alias ORDER BY requests DESC LIMIT 20`,
@@ -843,7 +844,7 @@ export class PostgresStore implements GatewayStore {
       ),
       this.pool.query(
         `SELECT coalesce(c.name, 'unrouted') AS name, count(*)::int AS requests,
-                count(*) FILTER (WHERE ue.status_code >= 400)::int AS errors,
+                count(*) FILTER (WHERE ue.status_code >= 400 AND ue.error_type IS DISTINCT FROM 'client_closed_request')::int AS errors,
                 coalesce(avg(ue.latency_ms), 0)::float AS latency
          FROM usage_events ue LEFT JOIN channels c ON c.id = ue.channel_id
          WHERE ue.created_at >= now() - $1::interval
@@ -852,7 +853,7 @@ export class PostgresStore implements GatewayStore {
       ),
       this.pool.query(
         `SELECT date_trunc($2, created_at) AS bucket, count(*)::int AS requests,
-                count(*) FILTER (WHERE status_code >= 400)::int AS errors
+                count(*) FILTER (WHERE status_code >= 400 AND error_type IS DISTINCT FROM 'client_closed_request')::int AS errors
          FROM usage_events WHERE created_at >= now() - $1::interval
          GROUP BY 1 ORDER BY 1`,
         [interval, bucket],

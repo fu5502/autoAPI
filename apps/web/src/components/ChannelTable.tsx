@@ -2,8 +2,26 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, GripVertical, Pause, Pencil, Play, RefreshCw, Trash2, WalletCards } from "lucide-react";
 import type { Channel } from "../types";
 import { getAdminToken } from "../api";
+import { HealthMeter } from "./HealthMeter";
 import { StatusDot } from "./StatusDot";
 import { isLowBalance } from "../checkin/format";
+
+const protocolLabels: Record<string, string> = {
+  auto: "自动识别",
+  openai: "OpenAI 兼容",
+  claude: "Claude 兼容",
+  gemini: "Gemini 兼容",
+  "new-api": "New API",
+  sub2api: "Sub2API",
+};
+
+function protocolLabel(protocol: string): string {
+  return protocolLabels[protocol] ?? protocol;
+}
+
+function protocolClosedLabel(protocol: string): string {
+  return protocolLabel(protocol).replace("兼容", "").trim();
+}
 
 export function ChannelTable({
   channels,
@@ -144,28 +162,34 @@ export function ChannelTable({
                 <td><span className="channel-routing-number">{channel.weight}</span></td>
                 <td><ChannelStatusControl channel={channel} pending={togglingId === channel.id} menuAbove={index === orderedChannels.length - 1} onToggle={onToggle} /></td>
                 <td>
-                  <select
-                    className="channel-protocol-select"
-                    value={channel.protocol}
-                    disabled={protocolChangingId === channel.id}
-                    onChange={(event) => onProtocolChange(channel, event.target.value)}
-                    aria-label={`切换 ${channel.name} 协议`}
-                  >
-                    <option value="auto">自动识别</option>
-                    <option value="openai">OpenAI 兼容</option>
-                    <option value="claude">Claude 兼容</option>
-                    <option value="gemini">Gemini 兼容</option>
-                    <option value="new-api">New API</option>
-                    <option value="sub2api">Sub2API</option>
-                  </select>
+                  <div className={`channel-protocol-control${protocolChangingId === channel.id ? " channel-protocol-control-disabled" : ""}`}>
+                    <select
+                      className="channel-protocol-select"
+                      value={channel.protocol}
+                      disabled={protocolChangingId === channel.id}
+                      onChange={(event) => onProtocolChange(channel, event.target.value)}
+                      aria-label={`切换 ${channel.name} 协议`}
+                    >
+                      <option value="auto">自动识别</option>
+                      <option value="openai">OpenAI 兼容</option>
+                      <option value="claude">Claude 兼容</option>
+                      <option value="gemini">Gemini 兼容</option>
+                      <option value="new-api">New API</option>
+                      <option value="sub2api">Sub2API</option>
+                    </select>
+                    <span className="channel-protocol-label" aria-hidden="true">{protocolClosedLabel(channel.protocol)}</span>
+                    <ChevronDown className="channel-protocol-arrow" size={13} aria-hidden="true" />
+                  </div>
                 </td>
                 <td>{formatBalance(channel, onSyncBalance, syncingBalanceId, balanceRefreshPending)}</td>
                 <td>{channel.lastLatencyMs === null ? "—" : `${channel.lastLatencyMs} ms`}</td>
                 <td>
-                  <div className="channel-health-cell">
-                    <span className={`channel-health-pct ${channel.recentRequestCount === 0 ? "none" : channel.recentErrorRate > 0.2 ? "bad" : channel.recentErrorRate > 0.05 ? "warn" : "good"}`}>{channel.recentRequestCount === 0 ? "—" : formatPercent(1 - channel.recentErrorRate)}</span>
-                    {channel.recentRequestCount > 0 ? <span className="channel-health-bar"><i style={{ width: `${Math.max(0, Math.min(100, (1 - channel.recentErrorRate) * 100))}%` }} /></span> : null}
-                  </div>
+                  <HealthMeter
+                    percent={channel.recentRequestCount === 0 ? null : (1 - channel.recentErrorRate) * 100}
+                    tone={channel.recentRequestCount === 0 ? "none" : channel.recentErrorRate > 0.2 ? "bad" : channel.recentErrorRate > 0.05 ? "warn" : "good"}
+                    value={channel.recentRequestCount === 0 ? "—" : formatPercent(1 - channel.recentErrorRate)}
+                    label={`${channel.name} 健康百分比`}
+                  />
                 </td>
                 <td>
                   <div className="table-actions">

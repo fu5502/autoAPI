@@ -297,6 +297,25 @@ describe("MemoryStore channel management", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("does not count client-closed streaming requests as usage errors", async () => {
+    const store = new MemoryStore();
+    const now = new Date().toISOString();
+    await store.recordUsage({
+      ...usageEvent("client-closed", now, 499),
+      errorType: "client_closed_request",
+      streamed: true,
+      completionTokens: 12,
+    });
+
+    const usage = await store.getUsage("24h");
+    expect(usage.totalRequests).toBe(1);
+    expect(usage.successfulRequests).toBe(1);
+    expect(usage.errorRate).toBe(0);
+    expect(usage.byModel[0]?.errors).toBe(0);
+    expect(usage.timeline[0]?.errors).toBe(0);
+    expect(usage.byError).toHaveLength(0);
+  });
 });
 
 function usageEvent(channelId: string, createdAt: string, statusCode: number) {

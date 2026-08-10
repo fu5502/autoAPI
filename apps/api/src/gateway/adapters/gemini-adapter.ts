@@ -32,7 +32,7 @@ export class GeminiAdapter implements UpstreamAdapter {
     timeoutMs: number,
   ): Promise<AdapterAttempt> {
     const method = request.stream ? "streamGenerateContent?alt=sse" : "generateContent";
-    const path = `/v1beta/models/${encodeURIComponent(upstreamModel)}:${method}`;
+    const path = `/v1beta/models/${encodeURIComponent(normalizeGeminiModel(upstreamModel))}:${method}`;
     const { response, body, firstByteLatencyMs, streamError } = await fetchUpstream(
       apiUrl(channel.baseUrl, path),
       { method: "POST", headers: geminiHeaders(apiKey), body: JSON.stringify(toGeminiBody(request.body)) },
@@ -159,7 +159,7 @@ async function probeGeminiGeneration(
 
   let lastError: unknown;
   for (const variant of variants) {
-    const endpoint = apiUrl(channel.baseUrl, `/v1beta/models/${encodeURIComponent(model)}:${variant.method}`);
+    const endpoint = apiUrl(channel.baseUrl, `/v1beta/models/${encodeURIComponent(normalizeGeminiModel(model))}:${variant.method}`);
     try {
       if (variant.stream) {
         const { body: stream } = await fetchUpstream(
@@ -243,6 +243,10 @@ function parseGeminiModels(response: Record<string, unknown>): string[] {
     if (!item || typeof item !== "object" || !("name" in item) || typeof item.name !== "string") return [];
     return [item.name.replace(/^models\//, "")];
   });
+}
+
+function normalizeGeminiModel(model: string): string {
+  return model.replace(/^models\//, "");
 }
 
 function geminiHeaders(apiKey: string): Record<string, string> {

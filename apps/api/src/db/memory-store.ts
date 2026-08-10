@@ -386,7 +386,7 @@ export class MemoryStore implements GatewayStore {
   async getUsage(window: "1h" | "24h" | "7d"): Promise<UsageSummary> {
     const duration = { "1h": 3_600_000, "24h": 86_400_000, "7d": 604_800_000 }[window];
     const events = this.usage.filter((event) => Date.parse(event.createdAt) >= Date.now() - duration);
-    const successes = events.filter((event) => event.statusCode < 400).length;
+    const successes = events.filter((event) => event.statusCode < 400 || event.errorType === "client_closed_request").length;
     return {
       window,
       totalRequests: events.length,
@@ -398,7 +398,10 @@ export class MemoryStore implements GatewayStore {
       byModel: groupUsage(events, (event) => event.modelAlias),
       byChannel: groupUsage(events, (event) => this.channels.get(event.channelId ?? "")?.name ?? "unrouted"),
       byClient: groupUsage(events, (event) => event.clientName),
-      byError: groupUsage(events.filter((event) => event.errorType !== null), (event) => event.errorType ?? "unknown"),
+      byError: groupUsage(
+        events.filter((event) => event.errorType !== null && event.errorType !== "client_closed_request"),
+        (event) => event.errorType ?? "unknown",
+      ),
       timeline: buildTimeline(events, window),
     };
   }
@@ -761,7 +764,7 @@ function groupUsage(
   return [...groups.entries()].map(([name, items]) => ({
     name,
     requests: items.length,
-    errors: items.filter((event) => event.statusCode >= 400).length,
+    errors: items.filter((event) => event.statusCode >= 400 && event.errorType !== "client_closed_request").length,
     latencyMs: average(items.map((event) => event.latencyMs)),
   }));
 }
@@ -773,7 +776,7 @@ function buildTimeline(events: Array<UsageEventInput & { createdAt: string }>, w
     const bucket = Math.floor(Date.parse(event.createdAt) / bucketMs) * bucketMs;
     const current = groups.get(bucket) ?? { requests: 0, errors: 0 };
     current.requests += 1;
-    if (event.statusCode >= 400) current.errors += 1;
+    if (event.statusCode >= 400 && event.errorType !== "client_closed_request") current.errors += 1;
     groups.set(bucket, current);
   }
   return [...groups.entries()]

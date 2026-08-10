@@ -3711,59 +3711,99 @@ th:last-child {
   border-radius: 4px;
   font-variant-numeric: tabular-nums;
 }
-.channel-health-cell {
+.health-meter {
   display: grid;
   gap: 4px;
-  min-width: 92px;
+  width: 100%;
+  min-width: 0;
 }
-.channel-health-pct {
-  display: inline-flex;
+.health-meter-value {
+  display: block;
   width: max-content;
-  min-width: 58px;
-  justify-content: center;
-  padding: 3px 8px;
-  border: 1px solid transparent;
-  border-radius: 999px;
+  min-width: 44px;
+  color: #506066;
   font-size: 11px;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
   line-height: 1.25;
 }
-.channel-health-pct.good { color: #08775d; background: #dff3eb; border-color: #c3e5d9; }
-.channel-health-pct.warn { color: #9a5d08; background: #fff0d2; border-color: #f0dcb0; }
-.channel-health-pct.bad { color: #ae2344; background: #fde5ec; border-color: #f3c8d3; }
-.channel-health-pct.none { color: #7a858a; background: #eef1f2; border-color: #dde3e4; }
-.channel-health-bar {
+.health-meter-good .health-meter-value { color: #08775d; }
+.health-meter-warn .health-meter-value { color: #9a5d08; }
+.health-meter-bad .health-meter-value { color: #ae2344; }
+.health-meter-none .health-meter-value { color: #7a858a; }
+.health-meter-track {
   display: block;
-  height: 4px;
+  height: 8px;
   overflow: hidden;
-  border-radius: 2px;
+  border-radius: 4px;
   background: #e7ecec;
+  box-shadow: inset 0 1px 2px rgba(30, 50, 60, 0.08);
 }
-.channel-health-bar i {
+.health-meter-track i {
   display: block;
   height: 100%;
-  border-radius: 2px;
+  border-radius: 4px;
   background: #3d9b80;
+  transition: width 180ms ease;
 }
-.channel-protocol-select {
-  min-width: 112px;
+.health-meter-good .health-meter-track i { background: #2fa276; }
+.health-meter-warn .health-meter-track i { background: #d99a2b; }
+.health-meter-bad .health-meter-track i { background: #d9485f; }
+.health-meter-none .health-meter-track i { background: #9aa8a6; }
+.channel-protocol-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  min-width: 0;
   height: 28px;
-  padding: 0 22px 0 8px;
+  padding: 0 8px;
   color: #33454b;
   background: #ffffff;
   border: 1px solid #d5dcdf;
   border-radius: 4px;
-  font-size: 10px;
-  font-weight: 650;
+  cursor: pointer;
 }
-.channel-protocol-select:hover:not(:disabled) {
+.channel-protocol-control:hover:not(.channel-protocol-control-disabled) {
   background: #f8fafb;
   border-color: #bcc7cb;
 }
-.channel-protocol-select:disabled {
+.channel-protocol-control:focus-within {
+  outline: 2px solid #4d8175;
+  outline-offset: 1px;
+}
+.channel-protocol-control-disabled {
   cursor: wait;
   opacity: 0.6;
+}
+.channel-protocol-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 10px;
+}
+.channel-protocol-control-disabled .channel-protocol-select {
+  cursor: wait;
+}
+.channel-protocol-label {
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.channel-protocol-arrow {
+  flex: 0 0 auto;
+  color: #7a888f;
+  pointer-events: none;
 }
 .channel-models-row td { height: auto; padding: 0 16px 12px; background: #fbfcfc; }
 .channel-models-row:hover { background: #fbfcfc; }
@@ -3886,26 +3926,27 @@ th:last-child {
 .operation-log-table th:nth-child(4) { width: 110px; }
 
 .operation-log-table th {
+  font-size: 11px;
   padding: 3px 6px;
 }
 
 .operation-log-table td {
-  padding: 2px 6px;
+  padding: 10px 8px;
   height: auto;
   min-height: 0;
-  line-height: 1.15;
+  line-height: 1.4;
 }
 
 .operation-log-table .request-metric {
-  min-height: 17px;
-  padding: 0 6px;
-  border-radius: 9px;
-  font-size: 9px;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 11px;
 }
 
 .operation-action {
   color: #2c383d;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 680;
 }
 
@@ -3915,8 +3956,8 @@ th:last-child {
   max-width: 100%;
   overflow: hidden;
   color: #526168;
-  font-size: 9px;
-  line-height: 1.15;
+  font-size: 11px;
+  line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4561,20 +4602,26 @@ th:last-child {
 :root[data-theme="dark"] .pool-health-status.status-abnormal { color: #f5a4b2; background: #41242b; }
 :root[data-theme="dark"] .pool-health-status.status-no-data { color: #b2c0bb; background: #293632; }
 
-:root[data-theme="dark"] .channel-health-pct.good { color: #a8e49c; background: #1c3a26; border-color: #315d4f; }
-:root[data-theme="dark"] .channel-health-pct.warn { color: #f1cb7d; background: #3c3020; border-color: #6f5936; }
-:root[data-theme="dark"] .channel-health-pct.bad { color: #f5a4b2; background: #41242b; border-color: #70443a; }
-:root[data-theme="dark"] .channel-health-pct.none { color: #b2c0bb; background: #293632; border-color: #3b4b45; }
-:root[data-theme="dark"] .channel-health-bar { background: #2a3834; }
-:root[data-theme="dark"] .channel-health-bar i { background: #53c489; }
-:root[data-theme="dark"] .channel-protocol-select {
+:root[data-theme="dark"] .health-meter-good .health-meter-value { color: #a8e49c; }
+:root[data-theme="dark"] .health-meter-warn .health-meter-value { color: #f1cb7d; }
+:root[data-theme="dark"] .health-meter-bad .health-meter-value { color: #f5a4b2; }
+:root[data-theme="dark"] .health-meter-none .health-meter-value { color: #b2c0bb; }
+:root[data-theme="dark"] .health-meter-track { background: #2a3834; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.24); }
+:root[data-theme="dark"] .health-meter-good .health-meter-track i { background: #53c489; }
+:root[data-theme="dark"] .health-meter-warn .health-meter-track i { background: #e2a23a; }
+:root[data-theme="dark"] .health-meter-bad .health-meter-track i { background: #e4667f; }
+:root[data-theme="dark"] .health-meter-none .health-meter-track i { background: #55655f; }
+:root[data-theme="dark"] .channel-protocol-control {
   color: #dce8e3;
   background: #111f2d;
   border-color: #33485a;
 }
-:root[data-theme="dark"] .channel-protocol-select:hover:not(:disabled) {
+:root[data-theme="dark"] .channel-protocol-control:hover:not(.channel-protocol-control-disabled) {
   background: #1b3041;
   border-color: #5a7487;
+}
+:root[data-theme="dark"] .channel-protocol-arrow {
+  color: #7e93a6;
 }
 
 :root[data-theme="dark"] .operation-action {
