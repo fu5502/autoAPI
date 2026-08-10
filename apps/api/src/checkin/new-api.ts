@@ -1949,6 +1949,7 @@ export class NewApiService {
       {},
       timeoutMs,
     )
+    this.noteAuthenticationResponse(refresh)
     if (refresh.success && typeof refresh.data?.access_token === 'string' && refresh.data.access_token.trim()) {
       const refreshedToken = refresh.data.access_token.trim().replace(/^Bearer\s+/i, '')
       try {
@@ -1960,7 +1961,9 @@ export class NewApiService {
       const read = await readWithToken(refreshedToken)
       if (read) return { kind: 'success', read, money }
     }
-    return { kind: 'auth_failed', money }
+    return this.authenticationProbe?.definitiveFailure
+      ? { kind: 'auth_failed', money }
+      : { kind: 'skip' }
   }
 
   private async readNewApiBalanceWithoutRefresh(
