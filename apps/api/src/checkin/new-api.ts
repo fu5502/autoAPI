@@ -3073,10 +3073,14 @@ function deriveMoneySettings(status?: RemoteStatus) {
     return { currencySymbol: '¥', quotaPerUnit, displayScale: Number(status?.usd_exchange_rate) || 1 }
   }
   if (displayType === 'CUSTOM') {
+    const customSymbol = String(status?.custom_currency_symbol ?? '').trim().toUpperCase()
+    const displayScale = customSymbol && !['$', 'USD'].includes(customSymbol)
+      ? Number(status?.custom_currency_exchange_rate) || 1
+      : 1
     return {
       currencySymbol: status?.custom_currency_symbol || '$',
       quotaPerUnit,
-      displayScale: Number(status?.custom_currency_exchange_rate) || 1,
+      displayScale,
     }
   }
   return { currencySymbol: '$', quotaPerUnit, displayScale: 1 }

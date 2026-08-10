@@ -1313,7 +1313,7 @@ describe('NewApiService known balance-only sites', () => {
 
     const result = await service.refreshBalanceSite(database.getSite(site.id)!, database.startRun('manual').id)
 
-    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 1_234_000, balanceAfterAmount: 2.468, loginVerified: true })
+    expect(result).toMatchObject({ status: 'disabled', balanceAfterRaw: 1_234_000, balanceAfterAmount: 2.47, loginVerified: true })
     expect(requested).toEqual([
       { pathname: '/api/status', userId: undefined },
       { pathname: '/api/user/self', userId: undefined },
@@ -1465,7 +1465,7 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
       status: 'disabled',
       message: '该站点不支持自动签到，余额已刷新',
       balanceAfterRaw: 1_234_000,
-      balanceAfterAmount: 2.468,
+      balanceAfterAmount: 2.47,
       loginVerified: true,
     })
     expect(requested).toEqual([
@@ -1478,7 +1478,7 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
       checkinMode: 'balance_only',
       authStatus: 'valid',
       lastBalanceRaw: 1_234_000,
-      lastBalanceAmount: 2.468,
+      lastBalanceAmount: 2.47,
     })
     preserveSiteResult(database, site.id, result)
     expect(database.getSite(site.id)?.authStatus).toBe('valid')

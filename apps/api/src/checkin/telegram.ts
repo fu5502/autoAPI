@@ -136,10 +136,9 @@ function summarizeRewards(results: SummaryResult[]): string {
 }
 
 function formatAmount(value: number, symbol: string): string {
-  const digits = Math.abs(value) < 0.01 && value !== 0 ? 4 : 2
   const amount = Math.abs(value).toLocaleString('zh-CN', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   })
   return `${value > 0 ? '+' : ''}${formatUnitValue(amount, symbol)}`
 }
@@ -147,7 +146,7 @@ function formatAmount(value: number, symbol: string): string {
 function formatBalance(value: number, symbol: string): string {
   const amount = value.toLocaleString('zh-CN', {
     minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
+    maximumFractionDigits: 2,
   })
   return formatUnitValue(amount, symbol)
 }

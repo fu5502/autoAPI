@@ -2,14 +2,13 @@ import type { AuthStatus, CheckinStatus, Site } from './shared/types'
 
 export function formatAmount(value: number | null | undefined, symbol = '$'): string {
   if (value === null || value === undefined) return '--'
-  const digits = Math.abs(value) < 0.01 && value !== 0 ? 4 : 2
-  const amount = Math.abs(value).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits })
+  const amount = Math.abs(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return `${value > 0 ? '+' : ''}${formatUnitValue(amount, symbol)}`
 }
 
 export function formatBalance(value: number | null | undefined, symbol = '$'): string {
   if (value === null || value === undefined) return '--'
-  const amount = value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
+  const amount = value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return formatUnitValue(amount, symbol)
 }
 

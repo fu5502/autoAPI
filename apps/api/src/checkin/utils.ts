@@ -41,7 +41,7 @@ export function quotaToAmount(raw: number | null | undefined, quotaPerUnit: numb
 }
 
 export function roundAmount(value: number): number {
-  return Math.round((value + Number.EPSILON) * 10000) / 10000
+  return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
 export function safeMessage(value: unknown, fallback = '请求失败'): string {
