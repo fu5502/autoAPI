@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS usage_events (
   completion_tokens integer NOT NULL DEFAULT 0,
   latency_ms integer NOT NULL,
   error_type text,
+  error_detail text,
   retry_count integer NOT NULL DEFAULT 0,
   streamed boolean NOT NULL DEFAULT false,
   endpoint text,
@@ -135,6 +136,7 @@ ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS gateway_key_name text;
 ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS reasoning_effort text;
 ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cached_tokens integer;
 ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cost_usd numeric(18, 8);
+ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS error_detail text;
 ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS first_byte_latency_ms integer;
 
 CREATE TABLE IF NOT EXISTS balance_snapshots (

@@ -397,6 +397,7 @@ export class GatewayRouter {
     rememberRoute: boolean,
   ): Promise<void> {
     const { promptTokens, completionTokens, cachedTokens } = await this.readAttemptUsage(attempt);
+    const moderationInfo = attempt.moderation ? await attempt.moderation : null;
     const latencyMs = Date.now() - startedAt;
     await this.options.store.recordChannelSuccess(channelId, latencyMs);
     if (rememberRoute) await this.options.runtime.recordRoutingSuccess(request.model, channelId);
@@ -411,7 +412,8 @@ export class GatewayRouter {
       promptTokens,
       completionTokens,
       latencyMs,
-      errorType: null,
+      errorType: moderationInfo ? moderationInfo.errorType : null,
+      errorDetail: moderationInfo ? moderationInfo.reason : null,
       retryCount,
       streamed: request.stream,
       endpoint: request.endpoint ?? null,

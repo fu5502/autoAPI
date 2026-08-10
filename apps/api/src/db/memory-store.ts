@@ -280,6 +280,7 @@ export class MemoryStore implements GatewayStore {
       latencyMs: event.latencyMs,
       firstByteLatencyMs: event.firstByteLatencyMs ?? null,
       errorType: event.errorType,
+      errorDetail: event.errorDetail ?? null,
       retryCount: event.retryCount,
       streamed: event.streamed,
     };

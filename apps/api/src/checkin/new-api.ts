@@ -393,6 +393,15 @@ export class NewApiService {
     return this.authAssistant?.applyToContext(context, site.id) ?? null
   }
 
+  private async captureSiteCookies(context: BrowserContext, baseUrl: string): Promise<BrowserAuthSnapshot['cookies']> {
+    const host = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '')
+    const cookies = await context.cookies()
+    return cookies.filter((cookie) => {
+      const domain = cookie.domain.toLowerCase().replace(/^\./, '')
+      return domain === host || host.endsWith(`.${domain}`)
+    })
+  }
+
   private pageIsLoginPath(page: Page): boolean {
     try {
       const pathname = new URL(page.url()).pathname.toLowerCase().replace(/\/+$/, '')
@@ -783,13 +792,34 @@ export class NewApiService {
                 const money = auth.adapter === 'local-api'
                   ? { currencySymbol: 'P', quotaPerUnit: 1, displayScale: 1 }
                   : deriveMoneySettings(status.data)
-                const balanceRaw = numberOrNull(auth.user.quota)
+                const balanceOnly = (auth.adapter === 'new-api-modern' || auth.adapter === 'new-api-legacy')
+                  && (site.checkinMode === 'balance_only' || status.data?.checkin_enabled === false)
+                let authToPersist = auth
+                let balanceRaw = numberOrNull(auth.user.quota)
+                if (balanceOnly) {
+                  const balanceRead = await this.tryReadNewApiBalanceWithoutPage(context, site, 30_000, page, auth.accessToken, effectiveBaseUrl)
+                  if (balanceRead.kind !== 'success') {
+                    state.message = '已检测到登录，正在等待余额读取成功'
+                    await page.waitForTimeout(4_000)
+                    continue
+                  }
+                  balanceRaw = balanceRead.read.balance
+                  authToPersist = balanceRead.read.auth
+                }
+                if (authToPersist.adapter === 'new-api-modern' && authToPersist.accessToken) {
+                  const host = new URL(effectiveBaseUrl).hostname.toLowerCase().replace(/\.$/, '')
+                  this.authAssistant?.updateSnapshotLocalStorage(site.id, host, { auth_token: authToPersist.accessToken })
+                }
+                const currentCookies = await this.captureSiteCookies(context, effectiveBaseUrl)
+                if (currentCookies.length) {
+                  this.authAssistant?.updateSnapshotCookies(site.id, currentCookies)
+                }
                 this.db.updateSiteAuth(site.id, {
-                  adapter: auth.adapter,
+                  adapter: authToPersist.adapter,
                   authStatus: 'valid',
                   baseUrl: effectiveBaseUrl,
-                  username: auth.user.display_name || auth.user.username || null,
-                  legacyUserId: auth.legacyUserId ?? null,
+                  username: authToPersist.user.display_name || authToPersist.user.username || null,
+                  legacyUserId: authToPersist.legacyUserId ?? null,
                   currencySymbol: money.currencySymbol,
                   quotaPerUnit: money.quotaPerUnit,
                   displayScale: money.displayScale,
@@ -798,7 +828,7 @@ export class NewApiService {
                   lastError: null,
                 })
                 state.status = 'success'
-                state.message = `授权成功，已识别为 ${adapterLabel(auth.adapter)}`
+                state.message = `授权成功，已识别为 ${adapterLabel(authToPersist.adapter)}`
                 state.completedAt = nowIso()
                 this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 已可自动签到`, data: { siteId: site.id } })
                 return
@@ -1885,46 +1915,66 @@ export class NewApiService {
         try { await context.clearCookies({ domain: host }) } catch {
           // The profile may not expose cookie clearing in older Chrome builds.
         }
-       if (snapshot.cookies.length) await context.addCookies(snapshot.cookies)
-       const hostItems = snapshot.localStorageByHost[host] ?? {}
-       await page.addInitScript((items) => {
-         localStorage.clear()
-         sessionStorage.clear()
-         for (const [key, value] of Object.entries(items)) localStorage.setItem(key, value)
-       }, hostItems)
-       // When using connectOverCDP, addCookies does not propagate to fetch
-       // requests immediately. Navigating to about:blank first, then to
-       // the site, forces Chrome to re-read its cookie jar.
-       await page.goto('about:blank')
-       await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
-       await page.waitForTimeout(3_000)
-       let auth: RemoteAuth | null = null
+        if (snapshot.cookies.length) await context.addCookies(snapshot.cookies)
+        const hostItems = snapshot.localStorageByHost[host] ?? {}
+        await page.addInitScript((items) => {
+          localStorage.clear()
+          sessionStorage.clear()
+          for (const [key, value] of Object.entries(items)) localStorage.setItem(key, value)
+        }, hostItems)
+        // When using connectOverCDP, addCookies does not propagate to fetch
+        // requests immediately. Navigating to about:blank first, then to
+        // the site, forces Chrome to re-read its cookie jar.
+        await page.goto('about:blank')
+        await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+        await page.waitForTimeout(3_000)
+        let auth: RemoteAuth | null = null
         for (let attempt = 0; attempt < 2 && !auth; attempt += 1) {
           auth = await this.detectAuthentication(page, site.legacyUserId, 30_000)
           if (!auth) await page.waitForTimeout(1_500)
         }
-       if (auth?.adapter === 'new-api-modern' && auth.accessToken) {
-         try {
-           this.authAssistant?.updateSnapshotLocalStorage(site.id, host, { auth_token: auth.accessToken })
-         } catch {
-           // A stale snapshot is not fatal; balance refresh can still retry.
-         }
-       }
+        if (!auth) return false
+
+        // Balance-only sites must prove that the imported session can read a
+        // real balance before authorization is considered successful.
+        const newApiAuth = auth.adapter === 'new-api-modern' || auth.adapter === 'new-api-legacy'
+        let balanceOnly = newApiAuth && site.checkinMode === 'balance_only'
+        if (newApiAuth && !balanceOnly) {
+          const status = await this.getRemoteStatus(page)
+          balanceOnly = status.data?.checkin_enabled === false
+        }
+        if (balanceOnly) {
+          const balanceRead = await this.tryReadNewApiBalanceWithoutPage(context, site, 30_000, page, auth.accessToken)
+          if (balanceRead.kind !== 'success') return false
+          auth = balanceRead.read.auth
+        }
+
+        if (auth.adapter === 'new-api-modern' && auth.accessToken) {
+          const items = snapshot.localStorageByHost[host] ??= {}
+          items.auth_token = auth.accessToken
+          try {
+            this.authAssistant?.updateSnapshotLocalStorage(site.id, host, { auth_token: auth.accessToken })
+          } catch {
+            // A stale snapshot is not fatal; balance refresh can still retry.
+          }
+        }
         // detectAuthentication may have rotated the session cookie via
         // /api/user/auth/refresh. Capture the current cookies from the
-        // browser context and persist them back into the snapshot so that
-        // the next balance refresh uses the fresh session.
-        if (auth?.user) {
+        // browser context and persist them back into the uploaded snapshot so
+        // that the next balance refresh uses the fresh session.
+        if (auth.user) {
           try {
-            const currentCookies = await context.cookies(site.baseUrl)
+            const currentCookies = await this.captureSiteCookies(context, site.baseUrl)
             if (currentCookies.length) {
+              snapshot.cookies = mergeSnapshotCookies(snapshot.cookies, currentCookies)
+              snapshot.updatedAt = nowIso()
               this.authAssistant?.updateSnapshotCookies(site.id, currentCookies)
             }
           } catch {
             // Cookie capture is best-effort; the token was already saved.
           }
         }
-       return Boolean(auth?.user && (
+        return Boolean(auth.user && (
           Number(auth.user.id ?? auth.legacyUserId) > 0
           || Boolean(auth.user.username)
           || Boolean(auth.user.display_name)
@@ -1940,17 +1990,23 @@ export class NewApiService {
     site: Site,
     timeoutMs: number,
     page: Page,
+    preferredToken?: string,
+    baseUrl = site.baseUrl,
   ): Promise<
     | { kind: 'success'; read: NewApiBalanceRead; money: ReturnType<typeof deriveMoneySettings> }
     | { kind: 'auth_failed'; money: ReturnType<typeof deriveMoneySettings> }
     | { kind: 'skip' }
   > {
     if (!(context as { request?: { fetch?: unknown } }).request?.fetch) return { kind: 'skip' }
+    if (typeof page.url === 'function' && !page.url().startsWith(baseUrl)) {
+      await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+      await page.waitForTimeout(1_000)
+    }
     const statusResponse = await pageRequest<RemoteStatus>(page, '/api/status', 'GET', {}, timeoutMs)
     if (!statusResponse.success || statusResponse.data?.checkin_enabled !== false) return { kind: 'skip' }
     const money = deriveMoneySettings(statusResponse.data)
     const snapshot = await this.authAssistant?.getSnapshot(site.id) ?? null
-    const token = snapshot ? readSnapshotAccessToken(snapshot) : null
+    const token = preferredToken ?? (snapshot ? readSnapshotAccessToken(snapshot) : null)
 
     // page.evaluate-based fetch sends sameSite=Strict cookies correctly,
     // unlike context.request which drops them.
@@ -1984,7 +2040,7 @@ export class NewApiService {
     if (refresh.success && typeof refresh.data?.access_token === 'string' && refresh.data.access_token.trim()) {
       const refreshedToken = refresh.data.access_token.trim().replace(/^Bearer\s+/i, '')
       try {
-        const host = new URL(site.baseUrl).hostname.toLowerCase().replace(/\.$/, '')
+        const host = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '')
         this.authAssistant?.updateSnapshotLocalStorage(site.id, host, { auth_token: refreshedToken })
       } catch {
         // Keep the token in memory for this read even if the snapshot is stale.
@@ -2857,6 +2913,17 @@ function readSnapshotAccessToken(snapshot: BrowserAuthSnapshot): string | null {
     }
   }
   return null
+}
+
+function mergeSnapshotCookies(
+  existing: BrowserAuthSnapshot['cookies'],
+  incoming: BrowserAuthSnapshot['cookies'],
+): BrowserAuthSnapshot['cookies'] {
+  const seen = new Map(existing.map((cookie) => [`${cookie.domain}\u0000${cookie.path}\u0000${cookie.name}`, cookie]))
+  for (const cookie of incoming) {
+    seen.set(`${cookie.domain}\u0000${cookie.path}\u0000${cookie.name}`, cookie)
+  }
+  return [...seen.values()]
 }
 
 async function readNewApiLegacyUserId(page: Page): Promise<number | null> {

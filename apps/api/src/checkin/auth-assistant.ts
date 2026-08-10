@@ -312,6 +312,12 @@ export class AuthAssistantService {
     const snapshot = await this.getSnapshot(siteId)
     if (!snapshot) return null
     try {
+      try {
+        const host = new URL(snapshot.siteOrigin).hostname.toLowerCase().replace(/\.$/, '')
+        await context.clearCookies({ domain: host })
+      } catch {
+        // The profile may not expose cookie clearing in older Chrome builds.
+      }
       if (snapshot.cookies.length) await context.addCookies(snapshot.cookies)
       return snapshot
     } catch {

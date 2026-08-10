@@ -908,6 +908,119 @@ describe('NewApiService 黑与白福利站签到', () => {
   })
 })
 
+describe('NewApiService authorization snapshot persistence', () => {
+  it('rejects a balance-only snapshot when the balance cannot be read', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('ooioo', 'https://ooioo.work')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const page = {
+      url: () => site.baseUrl,
+      goto: async () => undefined,
+      addInitScript: async () => undefined,
+      waitForTimeout: async () => undefined,
+      evaluate: async (_callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) return []
+        if (input.pathname === '/api/user/auth/refresh') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { access_token: 'rotated-token', user: { id: 7, username: 'test-user', quota: 12 } },
+          }
+        }
+        if (input.pathname === '/api/status') {
+          return { httpStatus: 200, contentType: 'application/json', success: true, data: { checkin_enabled: false } }
+        }
+        return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+      },
+    }
+    const context = {
+      clearCookies: async () => undefined,
+      addCookies: async () => undefined,
+      cookies: async () => [],
+      request: { fetch: async () => undefined },
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task(context, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const snapshot = {
+      siteOrigin: 'https://ooioo.work',
+      cookies: [{ name: 'session', value: 'old-session', domain: 'ooioo.work', path: '/', secure: true, httpOnly: true, sameSite: 'Strict' as const, expires: 1 }],
+      localStorageByHost: { 'ooioo.work': {} },
+      updatedAt: '2026-08-10T00:00:00.000Z',
+    }
+
+    await expect(service.verifySnapshotLogin(site, snapshot)).resolves.toBe(false)
+  })
+
+  it('persists the rotated token and path-scoped cookie into the verified snapshot', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const site = database.createSite('ooioo', 'https://ooioo.work')
+    database.updateSiteCheckinMode(site.id, 'balance_only')
+    const page = {
+      url: () => site.baseUrl,
+      goto: async () => undefined,
+      addInitScript: async () => undefined,
+      waitForTimeout: async () => undefined,
+      evaluate: async (_callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
+        if (!input?.pathname) return []
+        if (input.pathname === '/api/user/auth/refresh') {
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { access_token: 'fresh-token', user: { id: 7, username: 'test-user', quota: 12 } },
+          }
+        }
+        if (input.pathname === '/api/status') {
+          return { httpStatus: 200, contentType: 'application/json', success: true, data: { checkin_enabled: false } }
+        }
+        if (input.pathname === '/api/user/self') {
+          if (input.headers?.Authorization !== 'Bearer fresh-token') {
+            return { httpStatus: 401, contentType: 'application/json', success: false, message: 'Unauthorized' }
+          }
+          return {
+            httpStatus: 200,
+            contentType: 'application/json',
+            success: true,
+            data: { id: 7, username: 'test-user', quota: 12 },
+          }
+        }
+        return { httpStatus: 404, contentType: 'application/json', success: false, message: 'Not Found' }
+      },
+    }
+    const context = {
+      clearCookies: async () => undefined,
+      addCookies: async () => undefined,
+      request: { fetch: async () => undefined },
+      cookies: async () => [
+        { name: 'session', value: 'new-session', domain: 'ooioo.work', path: '/', secure: true, httpOnly: true, sameSite: 'Strict', expires: 1 },
+        { name: 'new_api_refresh', value: 'new-refresh', domain: 'ooioo.work', path: '/api/user/auth', secure: true, httpOnly: true, sameSite: 'Strict', expires: 1 },
+      ],
+    }
+    const browser = {
+      run: async (_options: unknown, task: (_context: unknown, activePage: typeof page) => Promise<unknown>) => task(context, page),
+    } as unknown as BrowserManager
+    const service = new NewApiService(database, browser, new EventBus())
+    const snapshot = {
+      siteOrigin: 'https://ooioo.work',
+      cookies: [{ name: 'session', value: 'old-session', domain: 'ooioo.work', path: '/', secure: true, httpOnly: true, sameSite: 'Strict' as const, expires: 1 }],
+      localStorageByHost: { 'ooioo.work': {} },
+      updatedAt: '2026-08-10T00:00:00.000Z',
+    }
+
+    await expect(service.verifySnapshotLogin(site, snapshot)).resolves.toBe(true)
+    expect(snapshot.localStorageByHost['ooioo.work']).toMatchObject({ auth_token: 'fresh-token' })
+    expect(snapshot.cookies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'session', value: 'new-session' }),
+      expect.objectContaining({ name: 'new_api_refresh', value: 'new-refresh', path: '/api/user/auth' }),
+    ]))
+  })
+})
+
 describe('NewApiService known balance-only sites', () => {
   it('reads Home - AI Gateway through its Sub2API auth profile', async () => {
     const database = new AppDatabase(':memory:')

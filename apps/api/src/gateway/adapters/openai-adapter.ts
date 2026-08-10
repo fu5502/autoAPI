@@ -1,5 +1,5 @@
 import type { Channel, GatewayRequest, ProbeResult, Protocol } from "../../domain/types.js";
-import type { AdapterAttempt, AdapterUsage, UpstreamAdapter } from "../adapter.js";
+import type { AdapterAttempt, AdapterUsage, ModerationInfo, UpstreamAdapter } from "../adapter.js";
 import { UpstreamError } from "../errors.js";
 import { fetchUpstream, jsonHeaders, parseJson, responseHeaders } from "../http.js";
 import { observeSseUsage } from "../streaming.js";
@@ -148,15 +148,26 @@ async function executeResponsesViaChat(
   const chatRequest: GatewayRequest = { ...request, kind: "chat", body: chatBody };
   const attempt = await executeOpenAiPath(channel, apiKey, chatRequest, upstreamModel, timeoutMs, "/v1/chat/completions", chatBody);
   if (attempt.result.body instanceof Uint8Array) {
-    const body = new TextEncoder().encode(JSON.stringify(chatToResponses(parseJson(attempt.result.body), upstreamModel)));
+    const parsed = parseJson(attempt.result.body) as Record<string, unknown>;
+    const choice = Array.isArray(parsed.choices) && isRecord(parsed.choices[0]) ? (parsed.choices[0] as Record<string, unknown>) : {};
+    const message = isRecord(choice.message) ? choice.message : {};
+    const finishReason = typeof choice.finish_reason === "string" ? choice.finish_reason : "";
+    const moderationInfo: ModerationInfo | null =
+      finishReason === "content_filter"
+        ? { errorType: "content_filter", reason: typeof message.content === "string" && message.content ? (message.content as string).slice(0, 300) : "上游内容审核拦截 (content_filter)" }
+        : null;
+    const body = new TextEncoder().encode(JSON.stringify(chatToResponses(parsed, upstreamModel)));
     return {
       ...attempt,
       result: { ...attempt.result, headers: { ...attempt.result.headers, "content-type": "application/json" }, body, streaming: false },
+      moderation: Promise.resolve(moderationInfo),
     };
   }
+  const converted = chatStreamToResponses(attempt.result.body, upstreamModel);
   return {
     ...attempt,
-    result: { ...attempt.result, body: chatStreamToResponses(attempt.result.body, upstreamModel), streaming: true },
+    result: { ...attempt.result, body: converted.stream, streaming: true },
+    moderation: converted.moderation,
   };
 }
 
@@ -194,7 +205,7 @@ function toChatMessages(value: unknown): Record<string, unknown>[] {
       tool_calls: [{ id: callId, type: "function", function: { name, arguments: typeof value.arguments === "string" ? value.arguments : "{}" } }],
     }];
   }
-  const role = value.role === "assistant" || value.role === "developer" || value.role === "system" ? value.role : "user";
+  const role = value.role === "assistant" ? "assistant" : value.role === "developer" || value.role === "system" ? "system" : "user";
   if (typeof value.content === "string") return [{ role, content: value.content }];
   if (!Array.isArray(value.content)) return [];
   const text = value.content.flatMap((part) => {
@@ -268,126 +279,208 @@ function chatToResponses(payload: Record<string, unknown>, model: string): Recor
   };
 }
 
-function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string): AsyncIterable<Uint8Array> {
-  return {
+function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string): { stream: AsyncIterable<Uint8Array>; moderation: Promise<ModerationInfo | null> } {
+  let moderationInfo: ModerationInfo | null = null;
+  let resolveModeration!: (info: ModerationInfo | null) => void;
+  let moderationResolved = false;
+  const moderation = new Promise<ModerationInfo | null>((resolve) => {
+    resolveModeration = resolve;
+  });
+  const finishModeration = () => {
+    if (!moderationResolved) {
+      moderationResolved = true;
+      resolveModeration(moderationInfo);
+    }
+  };
+  const stream: AsyncIterable<Uint8Array> = {
     async *[Symbol.asyncIterator]() {
       const decoder = new TextDecoder();
       const encoder = new TextEncoder();
       let buffer = "";
+      const createdAt = Math.floor(Date.now() / 1000);
       const responseId = `resp_${Date.now()}`;
       const messageId = `${responseId}_msg`;
       const toolCalls = new Map<number, { index: number; itemId: string; callId: string; name: string; arguments: string }>();
       let outputText = "";
       let failed = false;
-      yield sseEvent(encoder, "response.created", {
-        type: "response.created",
-        response: { id: responseId, object: "response", model, status: "in_progress", output: [] },
-      });
-      for await (const chunk of source) {
-        buffer += decoder.decode(chunk, { stream: true });
-        const blocks = buffer.split("\n\n");
-        buffer = blocks.pop() ?? "";
-        for (const block of blocks) {
-          const eventName = block.split(/\r?\n/).find((item) => item.startsWith("event:"))?.slice(6).trim();
-          const line = block.split("\n").find((item) => item.startsWith("data:"));
-          if (!line) continue;
-          const raw = line.slice(5).trim();
-          if (raw === "[DONE]") continue;
-          try {
-            const event = JSON.parse(raw) as unknown;
-            if (!isRecord(event)) continue;
-            if (eventName === "error" || isRecord(event.error)) {
-              failed = true;
-              yield sseEvent(encoder, "response.failed", {
-                type: "response.failed",
-                response: { id: responseId, object: "response", model, status: "failed", error: event.error ?? event },
-              });
-              continue;
-            }
-            const choices = Array.isArray(event.choices) ? event.choices : [];
-            const choice = isRecord(choices[0]) ? choices[0] : {};
-            const delta = isRecord(choice.delta) ? choice.delta : {};
-            const text = typeof delta.content === "string" ? delta.content : "";
-            if (text) {
-              outputText += text;
-              yield sseEvent(encoder, "response.output_text.delta", {
-                type: "response.output_text.delta",
-                item_id: messageId,
-                output_index: 0,
-                content_index: 0,
-                delta: text,
-              });
-            }
-            const deltas = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
-            for (const rawToolCall of deltas) {
-              if (!isRecord(rawToolCall)) continue;
-              const index = typeof rawToolCall.index === "number" ? rawToolCall.index : toolCalls.size;
-              const fn = isRecord(rawToolCall.function) ? rawToolCall.function : {};
-              let state = toolCalls.get(index);
-              if (!state) {
-                const callId = typeof rawToolCall.id === "string" ? rawToolCall.id : `call_${responseId}_${index}`;
-                state = {
-                  index,
-                  itemId: `fc_${callId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
-                  callId,
-                  name: typeof fn.name === "string" ? fn.name : "",
-                  arguments: "",
+      let messageAnnounced = false;
+      let usage: { input_tokens: number; output_tokens: number; total_tokens: number } | null = null;
+      const baseResponse = { id: responseId, object: "response" as const, created_at: createdAt, model };
+      try {
+        yield sseEvent(encoder, "response.created", {
+          type: "response.created",
+          response: { ...baseResponse, status: "in_progress", output: [] },
+        });
+        yield sseEvent(encoder, "response.in_progress", {
+          type: "response.in_progress",
+          response: { ...baseResponse, status: "in_progress", output: [] },
+        });
+        for await (const chunk of source) {
+          buffer += decoder.decode(chunk, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop() ?? "";
+          for (const block of blocks) {
+            const eventName = block.split(/\r?\n/).find((item) => item.startsWith("event:"))?.slice(6).trim();
+            const line = block.split("\n").find((item) => item.startsWith("data:"));
+            if (!line) continue;
+            const raw = line.slice(5).trim();
+            if (raw === "[DONE]") continue;
+            try {
+              const event = JSON.parse(raw) as unknown;
+              if (!isRecord(event)) continue;
+              if (eventName === "error" || isRecord(event.error)) {
+                failed = true;
+                const errObj = isRecord(event.error) ? event.error : event;
+                if (!moderationInfo) {
+                  const rawReason = typeof errObj.message === "string" && errObj.message
+                    ? errObj.message
+                    : JSON.stringify(errObj);
+                  moderationInfo = { errorType: "upstream_error", reason: rawReason.slice(0, 300) };
+                }
+                yield sseEvent(encoder, "response.failed", {
+                  type: "response.failed",
+                  response: { id: responseId, object: "response", model, status: "failed", error: errObj },
+                });
+                continue;
+              }
+              if (isRecord(event.usage)) {
+                const u = event.usage as Record<string, unknown>;
+                usage = {
+                  input_tokens: Number(u.prompt_tokens ?? u.input_tokens ?? 0),
+                  output_tokens: Number(u.completion_tokens ?? u.output_tokens ?? 0),
+                  total_tokens: Number(u.total_tokens ?? 0),
                 };
-                toolCalls.set(index, state);
-                yield sseEvent(encoder, "response.output_item.added", {
-                  type: "response.output_item.added",
-                  output_index: outputText ? index + 1 : index,
-                  item: { type: "function_call", id: state.itemId, call_id: state.callId, name: state.name, arguments: "", status: "in_progress" },
-                });
-              } else if (typeof fn.name === "string" && fn.name) {
-                state.name += fn.name;
               }
-              if (typeof fn.arguments === "string" && fn.arguments) {
-                state.arguments += fn.arguments;
-                yield sseEvent(encoder, "response.function_call_arguments.delta", {
-                  type: "response.function_call_arguments.delta",
-                  item_id: state.itemId,
-                  output_index: outputText ? index + 1 : index,
-                  delta: fn.arguments,
+              const choices = Array.isArray(event.choices) ? event.choices : [];
+              const choice = isRecord(choices[0]) ? choices[0] : {};
+              const delta = isRecord(choice.delta) ? choice.delta : {};
+              const text = typeof delta.content === "string" ? delta.content : "";
+              // 上游以 HTTP 200 形式返回的审核拦截：content_filter。此时 usage 为 0，需标记为真实错误原因。
+              const finishReason = typeof choice.finish_reason === "string" ? choice.finish_reason : "";
+              if (finishReason === "content_filter" && !moderationInfo) {
+                const reason = outputText ? outputText.slice(0, 300) : "上游内容审核拦截 (content_filter)";
+                moderationInfo = { errorType: "content_filter", reason };
+              }
+              if (text) {
+                if (!messageAnnounced) {
+                  messageAnnounced = true;
+                  yield sseEvent(encoder, "response.output_item.added", {
+                    type: "response.output_item.added",
+                    output_index: 0,
+                    item: { type: "message", id: messageId, status: "in_progress", role: "assistant", content: [] },
+                  });
+                  yield sseEvent(encoder, "response.content_part.added", {
+                    type: "response.content_part.added",
+                    item_id: messageId,
+                    output_index: 0,
+                    content_index: 0,
+                    part: { type: "output_text", text: "", annotations: [] },
+                  });
+                }
+                outputText += text;
+                yield sseEvent(encoder, "response.output_text.delta", {
+                  type: "response.output_text.delta",
+                  item_id: messageId,
+                  output_index: 0,
+                  content_index: 0,
+                  delta: text,
                 });
               }
+              const deltas = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+              for (const rawToolCall of deltas) {
+                if (!isRecord(rawToolCall)) continue;
+                const index = typeof rawToolCall.index === "number" ? rawToolCall.index : toolCalls.size;
+                const fn = isRecord(rawToolCall.function) ? rawToolCall.function : {};
+                let state = toolCalls.get(index);
+                if (!state) {
+                  const callId = typeof rawToolCall.id === "string" ? rawToolCall.id : `call_${responseId}_${index}`;
+                  state = {
+                    index,
+                    itemId: `fc_${callId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
+                    callId,
+                    name: typeof fn.name === "string" ? fn.name : "",
+                    arguments: "",
+                  };
+                  toolCalls.set(index, state);
+                  yield sseEvent(encoder, "response.output_item.added", {
+                    type: "response.output_item.added",
+                    output_index: outputText ? index + 1 : index,
+                    item: { type: "function_call", id: state.itemId, call_id: state.callId, name: state.name, arguments: "", status: "in_progress" },
+                  });
+                } else if (typeof fn.name === "string" && fn.name) {
+                  state.name += fn.name;
+                }
+                if (typeof fn.arguments === "string" && fn.arguments) {
+                  state.arguments += fn.arguments;
+                  yield sseEvent(encoder, "response.function_call_arguments.delta", {
+                    type: "response.function_call_arguments.delta",
+                    item_id: state.itemId,
+                    output_index: outputText ? index + 1 : index,
+                    delta: fn.arguments,
+                  });
+                }
+              }
+            } catch {
+              // Ignore malformed upstream chunks; the stream remains valid for the client.
             }
-          } catch {
-            // Ignore malformed upstream chunks; the stream remains valid for the client.
           }
         }
-      }
-      if (failed) return;
-      for (const state of [...toolCalls.values()].sort((a, b) => a.index - b.index)) {
-        const outputIndex = outputText ? state.index + 1 : state.index;
-        yield sseEvent(encoder, "response.function_call_arguments.done", {
-          type: "response.function_call_arguments.done",
-          item_id: state.itemId,
-          output_index: outputIndex,
+        if (failed) return;
+        if (messageAnnounced) {
+          yield sseEvent(encoder, "response.output_text.done", {
+            type: "response.output_text.done",
+            item_id: messageId,
+            output_index: 0,
+            content_index: 0,
+            text: outputText,
+          });
+          yield sseEvent(encoder, "response.content_part.done", {
+            type: "response.content_part.done",
+            item_id: messageId,
+            output_index: 0,
+            content_index: 0,
+            part: { type: "output_text", text: outputText, annotations: [] },
+          });
+          yield sseEvent(encoder, "response.output_item.done", {
+            type: "response.output_item.done",
+            output_index: 0,
+            item: { type: "message", id: messageId, status: "completed", role: "assistant", content: [{ type: "output_text", text: outputText, annotations: [] }] },
+          });
+        }
+        for (const state of [...toolCalls.values()].sort((a, b) => a.index - b.index)) {
+          const outputIndex = outputText ? state.index + 1 : state.index;
+          yield sseEvent(encoder, "response.function_call_arguments.done", {
+            type: "response.function_call_arguments.done",
+            item_id: state.itemId,
+            output_index: outputIndex,
+            arguments: state.arguments,
+          });
+          yield sseEvent(encoder, "response.output_item.done", {
+            type: "response.output_item.done",
+            output_index: outputIndex,
+            item: { type: "function_call", id: state.itemId, call_id: state.callId, name: state.name, arguments: state.arguments, status: "completed" },
+          });
+        }
+        const output: Record<string, unknown>[] = [];
+        if (outputText) output.push({ type: "message", id: messageId, role: "assistant", status: "completed", content: [{ type: "output_text", text: outputText, annotations: [] }] });
+        output.push(...[...toolCalls.values()].sort((a, b) => a.index - b.index).map((state) => ({
+          type: "function_call",
+          id: state.itemId,
+          call_id: state.callId,
+          name: state.name,
           arguments: state.arguments,
+          status: "completed",
+        })));
+        yield sseEvent(encoder, "response.completed", {
+          type: "response.completed",
+          response: { ...baseResponse, status: "completed", output, output_text: outputText, ...(usage ? { usage } : {}) },
         });
-        yield sseEvent(encoder, "response.output_item.done", {
-          type: "response.output_item.done",
-          output_index: outputIndex,
-          item: { type: "function_call", id: state.itemId, call_id: state.callId, name: state.name, arguments: state.arguments, status: "completed" },
-        });
+      } finally {
+        finishModeration();
       }
-      const output: Record<string, unknown>[] = [];
-      if (outputText) output.push({ type: "message", id: messageId, role: "assistant", status: "completed", content: [{ type: "output_text", text: outputText, annotations: [] }] });
-      output.push(...[...toolCalls.values()].sort((a, b) => a.index - b.index).map((state) => ({
-        type: "function_call",
-        id: state.itemId,
-        call_id: state.callId,
-        name: state.name,
-        arguments: state.arguments,
-        status: "completed",
-      })));
-      yield sseEvent(encoder, "response.completed", {
-        type: "response.completed",
-        response: { id: responseId, object: "response", model, status: "completed", output, output_text: outputText },
-      });
     },
   };
+  return { stream, moderation };
 }
 
 function chatToolCalls(message: Record<string, unknown>): Array<Record<string, unknown>> {
@@ -620,6 +713,9 @@ function readStreamUsage(payload: Record<string, unknown>): Partial<AdapterUsage
 }
 
 function readCachedTokens(usage: Record<string, unknown>): number | null {
+  // GLM/codebuddy2openai 用 prompt_cache_hit_tokens 表示缓存命中
+  const hitTokens = usage.prompt_cache_hit_tokens;
+  if (typeof hitTokens === "number" && hitTokens > 0) return hitTokens;
   const direct = usage.cached_tokens;
   if (typeof direct === "number") return direct;
   for (const key of ["prompt_tokens_details", "input_tokens_details"]) {

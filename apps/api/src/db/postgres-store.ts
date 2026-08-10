@@ -341,8 +341,9 @@ export class PostgresStore implements GatewayStore {
       `INSERT INTO usage_events
        (request_id, channel_id, model_alias, upstream_model, client_name, request_kind, status_code,
        prompt_tokens, completion_tokens, latency_ms, error_type, retry_count, streamed,
-        endpoint, source_ip, gateway_key_name, cached_tokens, cost_usd, first_byte_latency_ms, reasoning_effort)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+        endpoint, source_ip, gateway_key_name, cached_tokens, cost_usd, first_byte_latency_ms, reasoning_effort,
+        error_detail)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
       [
         event.requestId,
         event.channelId,
@@ -364,6 +365,7 @@ export class PostgresStore implements GatewayStore {
         event.costUsd ?? null,
         event.firstByteLatencyMs ?? null,
         event.reasoningEffort ?? null,
+        event.errorDetail ?? null,
       ],
     );
   }
@@ -399,7 +401,7 @@ export class PostgresStore implements GatewayStore {
               pc.key_name, pc.key_last4,
               ue.model_alias, ue.upstream_model, ue.client_name, ue.source_ip, ue.gateway_key_name, ue.reasoning_effort, ue.request_kind, ue.endpoint,
               ue.status_code, ue.prompt_tokens, ue.completion_tokens, ue.cached_tokens, ue.cost_usd,
-              ue.latency_ms, ue.first_byte_latency_ms, ue.error_type, ue.retry_count, ue.streamed
+              ue.latency_ms, ue.first_byte_latency_ms, ue.error_type, ue.error_detail, ue.retry_count, ue.streamed
        FROM usage_events ue
        LEFT JOIN channels c ON c.id = ue.channel_id
        LEFT JOIN providers p ON p.id = c.provider_id
@@ -434,6 +436,7 @@ export class PostgresStore implements GatewayStore {
         latencyMs: Number(row.latency_ms),
         firstByteLatencyMs: row.first_byte_latency_ms === null ? null : Number(row.first_byte_latency_ms),
         errorType: row.error_type === null ? null : String(row.error_type),
+        errorDetail: row.error_detail === null ? null : String(row.error_detail),
         retryCount: Number(row.retry_count),
         streamed: Boolean(row.streamed),
       })),

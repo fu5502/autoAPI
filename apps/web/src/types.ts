@@ -135,6 +135,7 @@ export interface RequestLogEntry {
   latencyMs: number;
   firstByteLatencyMs: number | null;
   errorType: string | null;
+  errorDetail?: string | null;
   retryCount: number;
   streamed: boolean;
 }

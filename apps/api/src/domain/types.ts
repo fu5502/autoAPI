@@ -160,6 +160,7 @@ export interface UsageEventInput {
   completionTokens: number;
   latencyMs: number;
   errorType: string | null;
+  errorDetail?: string | null;
   retryCount: number;
   streamed: boolean;
   endpoint?: string | null;
@@ -195,6 +196,7 @@ export interface RequestLogEntry {
   latencyMs: number;
   firstByteLatencyMs: number | null;
   errorType: string | null;
+  errorDetail?: string | null;
   retryCount: number;
   streamed: boolean;
 }

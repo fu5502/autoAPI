@@ -861,12 +861,14 @@ function PoolRecentRequestTable({ items, channels }: { items: RequestLogEntry[];
         <tbody>
           {items.map((item) => {
             const success = item.statusCode < 400 || item.errorType === "client_closed_request";
+            const hasRealError = item.errorType !== null && item.errorType !== "client_closed_request";
+            const rowSuccess = !hasRealError && success;
             const date = new Date(item.createdAt);
             const clientLabel = item.clientName === "channel-probe" ? "渠道探测" : item.clientName === "unknown" ? "未知客户端" : item.clientName;
             const channelLabel = item.channelName ?? item.providerName ?? "无可用渠道";
             const channelUrl = item.channelId ? channelUrls.get(item.channelId) : undefined;
             return (
-              <tr className={success ? "" : "request-row-error"} key={item.id}>
+              <tr className={rowSuccess ? "" : "request-row-error"} key={item.id}>
                 <td data-label="时间" className="request-time" title={item.requestId}>{formatRequestTime(date)}</td>
                 <td data-label="来源"><span className="request-client">{clientLabel}</span></td>
                 <td data-label="渠道" title={channelLabel}>
@@ -874,9 +876,9 @@ function PoolRecentRequestTable({ items, channels }: { items: RequestLogEntry[];
                 </td>
                 <td data-label="模型" title={item.modelAlias}><strong className="request-model-name">{item.modelAlias}</strong></td>
                 <td data-label="端点" title={item.endpoint}><code className="request-endpoint">{item.endpoint}</code></td>
-                <td data-label="状态"><span className={`request-metric ${success ? "good" : "bad"}`}>{success ? "成功" : `HTTP ${item.statusCode}`}</span></td>
-                <td data-label="错误">{item.errorType && item.errorType !== "client_closed_request" ? <span className="request-error-type" title={formatErrorType(item.errorType)}>{formatErrorType(item.errorType)}</span> : <span className="request-error-none">—</span>}</td>
-                <td data-label="耗时"><span className={`request-metric ${success ? "good" : "bad"}`}>{formatDuration(item.latencyMs)}</span></td>
+                <td data-label="状态"><span className={`request-metric ${rowSuccess ? "good" : "bad"}`}>{rowSuccess ? "成功" : (item.statusCode >= 400 ? `HTTP ${item.statusCode}` : "已拦截")}</span></td>
+                <td data-label="错误">{item.errorType && item.errorType !== "client_closed_request" ? <span className="request-error-type" title={item.errorDetail ?? formatErrorType(item.errorType)}>{item.errorDetail ? item.errorDetail : formatErrorType(item.errorType)}</span> : <span className="request-error-none">—</span>}</td>
+                <td data-label="耗时"><span className={`request-metric ${rowSuccess ? "good" : "bad"}`}>{formatDuration(item.latencyMs)}</span></td>
               </tr>
             );
           })}
@@ -1145,10 +1147,12 @@ function RequestTable({ items, channels }: { items: RequestLogEntry[]; channels:
 
 function RequestRow({ item, channelUrl }: { item: RequestLogEntry; channelUrl: string | undefined }) {
   const success = item.statusCode < 400 || item.errorType === "client_closed_request";
+  const hasRealError = item.errorType !== null && item.errorType !== "client_closed_request";
+  const rowSuccess = !hasRealError && success;
   const date = new Date(item.createdAt);
   const clientLabel = item.clientName === "unknown" ? "未知客户端" : item.clientName === "channel-probe" ? "渠道探测" : item.clientName;
   const channelLabel = item.channelName ?? item.providerName ?? "无可用渠道";
-  return <tr className={success ? "" : "request-row-error"}>
+  return <tr className={rowSuccess ? "" : "request-row-error"}>
     <td data-label="时间" className="request-time">{formatRequestTime(date)}</td>
     <td data-label="客户端"><span className={`request-client request-client-${clientLabel.replace(/[^a-z0-9]/gi, "-").toLowerCase()}`} title={clientLabel}>{clientLabel}</span></td>
     <td data-label="来源 IP" title={item.sourceIp ?? "—"}><span className="request-source-ip">{item.sourceIp ?? "—"}</span></td>
@@ -1163,14 +1167,14 @@ function RequestRow({ item, channelUrl }: { item: RequestLogEntry; channelUrl: s
     </td>
     <td data-label="密钥" title={item.gatewayKeyName ?? item.keyName ?? "未记录"}><span className="request-key-name">{item.gatewayKeyName ?? item.keyName ?? "未记录"}</span></td>
     <td data-label="流式"><span className={item.streamed ? "request-pill stream" : "request-pill non-stream"}>{item.streamed ? "流式" : "非流式"}</span></td>
-    <td data-label="错误">{item.errorType && item.errorType !== "client_closed_request" ? <span className="request-error-type">{formatErrorType(item.errorType)}</span> : <span className="request-error-none">—</span>}</td>
+    <td data-label="错误">{item.errorType && item.errorType !== "client_closed_request" ? <span className="request-error-type" title={item.errorDetail ?? formatErrorType(item.errorType)}>{item.errorDetail ? item.errorDetail : formatErrorType(item.errorType)}</span> : <span className="request-error-none">—</span>}</td>
     <td data-label="请求模型" title={item.modelAlias}><strong className="request-model-name">{item.modelAlias}</strong></td>
     <td data-label="推理强度"><span className={`request-reasoning${item.reasoningEffort ? " configured" : ""}`} title={item.reasoningEffort ?? ""}>{formatReasoningEffort(item.reasoningEffort)}</span></td>
     <td data-label="端点" title={item.endpoint}><code className="request-endpoint">{item.endpoint}</code></td>
     <td data-label="输入" className="request-number">{formatTokens(item.promptTokens)}</td>
     <td data-label="输出" className="request-number">{formatTokens(item.completionTokens)}</td>
     <td data-label="缓存" className="request-number request-cache">{item.cachedTokens === null ? "—" : formatTokens(item.cachedTokens)}</td>
-    <td data-label="耗时"><span className={success ? "request-metric good" : "request-metric bad"}>{formatDuration(item.latencyMs)}</span></td>
+    <td data-label="耗时"><span className={rowSuccess ? "request-metric good" : "request-metric bad"}>{formatDuration(item.latencyMs)}</span></td>
     <td data-label="首字节"><span className="request-metric good">{item.firstByteLatencyMs === null ? "—" : formatDuration(item.firstByteLatencyMs)}</span></td>
   </tr>;
 }

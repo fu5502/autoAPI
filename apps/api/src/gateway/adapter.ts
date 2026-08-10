@@ -7,6 +7,15 @@ export interface AdapterUsage {
   cachedTokens: number | null;
 }
 
+/**
+ * 上游在 HTTP 200 下仍以"成功响应"形式返回的拒答/拦截信号（典型：content_filter 内容审核）。
+ * autoAPI 默认把这些当成普通成功记录（usage 为 0、errorType 空白），导致后台看不到真实原因。
+ */
+export interface ModerationInfo {
+  errorType: string;
+  reason: string;
+}
+
 export interface AdapterAttempt {
   result: UpstreamResult;
   promptTokens: number;
@@ -15,6 +24,7 @@ export interface AdapterAttempt {
   firstByteLatencyMs?: number | null;
   streamUsage?: Promise<AdapterUsage>;
   streamError?: Promise<UpstreamError | null>;
+  moderation?: Promise<ModerationInfo | null>;
 }
 
 export interface UpstreamAdapter {
