@@ -1051,8 +1051,7 @@ export class NewApiService {
         if (isAnyRouterSite(site.baseUrl)) {
           await this.openBalanceDashboard(page, site)
         } else {
-          await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
-          await this.openImportedStorage(page, site)
+          await this.openImportedSitePage(context, page, site)
           if (isFastAiTokenSite(site.baseUrl)) {
             const dashboardUrl = getDashboardUrl(site.baseUrl)
             if (dashboardUrl) await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
