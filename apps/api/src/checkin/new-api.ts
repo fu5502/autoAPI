@@ -1885,16 +1885,20 @@ export class NewApiService {
         try { await context.clearCookies({ domain: host }) } catch {
           // The profile may not expose cookie clearing in older Chrome builds.
         }
-        if (snapshot.cookies.length) await context.addCookies(snapshot.cookies)
-        const hostItems = snapshot.localStorageByHost[host] ?? {}
-        await page.addInitScript((items) => {
-          localStorage.clear()
-          sessionStorage.clear()
-          for (const [key, value] of Object.entries(items)) localStorage.setItem(key, value)
-        }, hostItems)
-        await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
-        await page.waitForTimeout(3_000)
-        let auth: RemoteAuth | null = null
+       if (snapshot.cookies.length) await context.addCookies(snapshot.cookies)
+       const hostItems = snapshot.localStorageByHost[host] ?? {}
+       await page.addInitScript((items) => {
+         localStorage.clear()
+         sessionStorage.clear()
+         for (const [key, value] of Object.entries(items)) localStorage.setItem(key, value)
+       }, hostItems)
+       // When using connectOverCDP, addCookies does not propagate to fetch
+       // requests immediately. Navigating to about:blank first, then to
+       // the site, forces Chrome to re-read its cookie jar.
+       await page.goto('about:blank')
+       await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+       await page.waitForTimeout(3_000)
+       let auth: RemoteAuth | null = null
         for (let attempt = 0; attempt < 2 && !auth; attempt += 1) {
           auth = await this.detectAuthentication(page, site.legacyUserId, 30_000)
           if (!auth) await page.waitForTimeout(1_500)
