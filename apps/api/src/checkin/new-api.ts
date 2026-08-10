@@ -1881,14 +1881,26 @@ export class NewApiService {
       timeoutMs: Math.max(30_000, this.siteOperationTimeoutMs()),
     }, async (context, page) => {
       try {
+        const host = new URL(site.baseUrl).hostname.toLowerCase().replace(/\.$/, '')
+        try { await context.clearCookies({ domain: host }) } catch {
+          // The profile may not expose cookie clearing in older Chrome builds.
+        }
         if (snapshot.cookies.length) await context.addCookies(snapshot.cookies)
-        await this.installImportedStorage(page, site, snapshot)
+        const hostItems = snapshot.localStorageByHost[host] ?? {}
+        await page.addInitScript((items) => {
+          localStorage.clear()
+          sessionStorage.clear()
+          for (const [key, value] of Object.entries(items)) localStorage.setItem(key, value)
+        }, hostItems)
         await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
-        await page.waitForTimeout(1_000)
-        const auth = await this.detectAuthentication(page, site.legacyUserId, 30_000)
+        await page.waitForTimeout(3_000)
+        let auth: RemoteAuth | null = null
+        for (let attempt = 0; attempt < 2 && !auth; attempt += 1) {
+          auth = await this.detectAuthentication(page, site.legacyUserId, 30_000)
+          if (!auth) await page.waitForTimeout(1_500)
+        }
         if (auth?.adapter === 'new-api-modern' && auth.accessToken) {
           try {
-            const host = new URL(site.baseUrl).hostname.toLowerCase().replace(/\.$/, '')
             this.authAssistant?.updateSnapshotLocalStorage(site.id, host, { auth_token: auth.accessToken })
           } catch {
             // A stale snapshot is not fatal; balance refresh can still retry.
