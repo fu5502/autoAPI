@@ -47,7 +47,7 @@ describe('autoAPI authorization assistant', () => {
       localStorage: { access_token: 'secret-storage' },
     }, claim.secret)
 
-    const status = service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
+    const status = await service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
 
     expect(status).toMatchObject({ status: 'received', cookieCount: 1, localStorageCount: 1 })
     expect(database.getSite(site.id)).toMatchObject({ name: '黑与白福利站', authStatus: 'valid', authSyncStatus: 'success' })
@@ -69,12 +69,12 @@ describe('autoAPI authorization assistant', () => {
       localStorage: { access_token: 'storage' },
     }, claim.secret)
 
-    service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
+    await service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
 
     expect(database.getSite(site.id)?.name).toBe('我的固定站点名')
   })
 
-  it('rejects a page from another origin and records the failure', () => {
+  it('rejects a page from another origin and records the failure', async () => {
     const { database, service } = makeService()
     const site = database.createSite('测试站点', 'https://example.com')
     const pairing = service.createPair(site)
@@ -84,7 +84,7 @@ describe('autoAPI authorization assistant', () => {
       cookies: [{ name: 'session', value: 'ignored', domain: '.evil.invalid', path: '/' }],
     }, claim.secret)
 
-    expect(() => service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })).toThrow('不是目标签到站点')
+    await expect(service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })).rejects.toThrow('不是目标签到站点')
     expect(database.listAuthSyncEvents(site.id)[0]).toMatchObject({ status: 'failed' })
   })
 
@@ -99,7 +99,7 @@ describe('autoAPI authorization assistant', () => {
       localStorage: { access_token: 'subdomain-storage' },
     }, claim.secret)
 
-    const status = service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
+    const status = await service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
     const snapshot = await service.getSnapshot(site.id)
 
     expect(status).toMatchObject({ status: 'received', cookieCount: 1, localStorageCount: 1 })
@@ -109,7 +109,7 @@ describe('autoAPI authorization assistant', () => {
     })
   })
 
-  it('rejects a wrong token and prevents replay after success', () => {
+  it('rejects a wrong token and prevents replay after success', async () => {
     const { database, service } = makeService()
     const site = database.createSite('测试站点', 'https://example.com')
     const pairing = service.createPair(site)
@@ -120,13 +120,13 @@ describe('autoAPI authorization assistant', () => {
     }, claim.secret)
     const input = { pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted }
 
-    expect(() => service.acceptUpload({ ...input, uploadToken: 'wrong-token' })).toThrow('Token 不正确')
-    service.acceptUpload(input)
-    expect(() => service.acceptUpload(input)).toThrow('授权任务已结束')
+    await expect(service.acceptUpload({ ...input, uploadToken: 'wrong-token' })).rejects.toThrow('Token 不正确')
+    await service.acceptUpload(input)
+    await expect(service.acceptUpload(input)).rejects.toThrow('授权任务已结束')
     expect(database.listAuthSyncEvents(site.id)).toHaveLength(1)
   })
 
-  it('rejects a token.dialoguedui snapshot without a real login session', () => {
+  it('rejects a token.dialoguedui snapshot without a real login session', async () => {
     const { database, service } = makeService()
     const site = database.createSite('小白Code', 'https://token.dialoguedui.com')
     const pairing = service.createPair(site)
@@ -137,12 +137,11 @@ describe('autoAPI authorization assistant', () => {
       localStorage: { theme: 'dark' },
     }, claim.secret)
 
-    expect(() => service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted }))
-      .toThrow('未检测到 token.dialoguedui.com 的有效登录状态')
+    await expect(service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })).rejects.toThrow('未检测到 token.dialoguedui.com 的有效登录状态')
     expect(database.getSite(site.id)).toMatchObject({ authStatus: 'unknown' })
   })
 
-  it('rejects a generic snapshot that only contains device cookies', () => {
+  it('rejects a generic snapshot that only contains device cookies', async () => {
     const { database, service } = makeService()
     const site = database.createSite('通用站点', 'https://example.com')
     const pairing = service.createPair(site)
@@ -153,12 +152,34 @@ describe('autoAPI authorization assistant', () => {
       localStorage: { theme: 'dark' },
     }, claim.secret)
 
-    expect(() => service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted }))
-      .toThrow('\u672a\u68c0\u6d4b\u5230\u6709\u6548\u767b\u5f55\u72b6\u6001')
+    await expect(service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })).rejects.toThrow('\u672a\u68c0\u6d4b\u5230\u6709\u6548\u767b\u5f55\u72b6\u6001')
     expect(database.getSite(site.id)).toMatchObject({ authStatus: 'unknown' })
   })
 
-  it('accepts a token.dialoguedui snapshot with an auth token', () => {
+  it('rejects an upload when live session verification fails', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const service = new AuthAssistantService(
+      database,
+      createSecretBox('auth-assistant-test-key'),
+      new EventBus(),
+      { verifyLogin: async () => false },
+    )
+    const site = database.createSite('测试站点', 'https://example.com')
+    const pairing = service.createPair(site)
+    const claim = service.claim(pairing.code)
+    const encrypted = encryptPayload({
+      siteOrigin: 'https://example.com',
+      cookies: [{ name: 'session', value: 'expired-session', domain: '.example.com', path: '/', secure: true }],
+      localStorage: { user: '{"id":42,"username":"stale"}' },
+    }, claim.secret)
+
+    await expect(service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted }))
+      .rejects.toThrow('\u5df2\u4e0a\u4f20\u767b\u5f55\u72b6\u6001\uff0c\u4f46\u7ad9\u70b9\u5b9e\u9645\u4f1a\u8bdd\u6821\u9a8c\u672a\u901a\u8fc7')
+    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'unknown' })
+  })
+
+  it('accepts a token.dialoguedui snapshot with an auth token', async () => {
     const { database, service } = makeService()
     const site = database.createSite('小白Code', 'https://token.dialoguedui.com')
     const pairing = service.createPair(site)
@@ -169,13 +190,13 @@ describe('autoAPI authorization assistant', () => {
       localStorage: { auth_token: 'opaque-token', auth_user: '{"id":42,"username":"demo"}' },
     }, claim.secret)
 
-    const status = service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
+    const status = await service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
 
     expect(status).toMatchObject({ status: 'received', localStorageCount: 2 })
     expect(database.getSite(site.id)).toMatchObject({ authStatus: 'valid' })
   })
 
-  it('rejects a chybenzun.top snapshot without a real login session', () => {
+  it('rejects a chybenzun.top snapshot without a real login session', async () => {
     const { database, service } = makeService()
     const site = database.createSite('CHY', 'https://chybenzun.top')
     const pairing = service.createPair(site)
@@ -186,12 +207,11 @@ describe('autoAPI authorization assistant', () => {
       localStorage: { aff: '123' },
     }, claim.secret)
 
-    expect(() => service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted }))
-      .toThrow('未检测到 chybenzun.top 的有效登录状态')
+    await expect(service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })).rejects.toThrow('未检测到 chybenzun.top 的有效登录状态')
     expect(database.getSite(site.id)).toMatchObject({ authStatus: 'unknown' })
   })
 
-  it('accepts a chybenzun.top snapshot with New API user state', () => {
+  it('accepts a chybenzun.top snapshot with New API user state', async () => {
     const { database, service } = makeService()
     const site = database.createSite('CHY', 'https://chybenzun.top')
     const pairing = service.createPair(site)
@@ -202,13 +222,13 @@ describe('autoAPI authorization assistant', () => {
       localStorage: { uid: '42', user: '{"id":42,"username":"demo"}' },
     }, claim.secret)
 
-    const status = service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
+    const status = await service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted })
 
     expect(status).toMatchObject({ status: 'received', localStorageCount: 2 })
     expect(database.getSite(site.id)).toMatchObject({ authStatus: 'valid' })
   })
 
-  it('records a failure reported by the assistant and invalidates the upload token', () => {
+  it('records a failure reported by the assistant and invalidates the upload token', async () => {
     const { database, service } = makeService()
     const site = database.createSite('测试站点', 'https://example.com')
     const pairing = service.createPair(site)
@@ -232,7 +252,7 @@ describe('autoAPI authorization assistant', () => {
     })).toThrow('授权任务已结束')
   })
 
-  it('checks the active hostname before consuming a one-time authorization code', () => {
+  it('checks the active hostname before consuming a one-time authorization code', async () => {
     const { database, service } = makeService()
     const site = database.createSite('测试站点', 'https://example.com')
     const pairing = service.createPair(site)
@@ -242,7 +262,7 @@ describe('autoAPI authorization assistant', () => {
     expect(() => service.claim(pairing.code, 'app.example.com')).toThrow('授权任务已结束')
   })
 
-  it('previews the target site without consuming the authorization code', () => {
+  it('previews the target site without consuming the authorization code', async () => {
     const { database, service } = makeService()
     const site = database.createSite('目标站点', 'https://elysir.h-e.top/dashboard')
     const pairing = service.createPair(site)
@@ -256,7 +276,7 @@ describe('autoAPI authorization assistant', () => {
     expect(service.claim(pairing.code, 'elysir.h-e.top')).toMatchObject({ pairId: pairing.pairId })
   })
 
-  it('marks in-flight authorization records as failed after a service restart', () => {
+  it('marks in-flight authorization records as failed after a service restart', async () => {
     const database = new AppDatabase(':memory:')
     databases.push(database)
     const site = database.createSite('测试站点', 'https://example.com')

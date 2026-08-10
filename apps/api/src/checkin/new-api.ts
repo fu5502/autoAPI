@@ -1845,6 +1845,29 @@ export class NewApiService {
     })
   }
 
+  async verifySnapshotLogin(site: Site, snapshot: BrowserAuthSnapshot): Promise<boolean> {
+    return this.browser.run({
+      interactive: false,
+      closeBrowserWhenDone: true,
+      timeoutMs: Math.max(30_000, this.siteOperationTimeoutMs()),
+    }, async (context, page) => {
+      try {
+        if (snapshot.cookies.length) await context.addCookies(snapshot.cookies)
+        await this.installImportedStorage(page, site, snapshot)
+        await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+        await page.waitForTimeout(1_000)
+        const auth = await this.detectAuthentication(page, site.legacyUserId, 30_000)
+        return Boolean(auth?.user && (
+          Number(auth.user.id ?? auth.legacyUserId) > 0
+          || Boolean(auth.user.username)
+          || Boolean(auth.user.display_name)
+        ))
+      } catch {
+        return false
+      }
+    })
+  }
+
   private async readNewApiBalanceWithoutRefresh(
     page: Page,
     site: Site,

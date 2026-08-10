@@ -12,6 +12,9 @@ const MAX_COOKIES = 1_000
 const MAX_STORAGE_ITEMS = 2_000
 const MAX_STORAGE_VALUE_LENGTH = 256 * 1024
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
+
+export type AuthSnapshotVerifier = (snapshot: BrowserAuthSnapshot, site: Site) => Promise<boolean>
+
 const AUTH_TOKEN_KEYS = new Set([
   'auth_token',
   'access_token',
@@ -108,11 +111,15 @@ export class AuthAssistantService {
     private readonly db: AppDatabase,
     private readonly secrets: SecretBox | null,
     private readonly events: EventBus,
+    options: { verifyLogin?: AuthSnapshotVerifier } = {},
   ) {
+    this.verifyLogin = options.verifyLogin ?? null
     // Pairings live in memory, so an interrupted process cannot complete them.
     // Mark the corresponding persisted records before exposing the new service.
     this.db.recoverPendingAuthSyncs()
   }
+
+  private readonly verifyLogin: AuthSnapshotVerifier | null
 
   createPair(site: Site): AuthAssistantPairingInfo {
     this.cleanup()
@@ -219,7 +226,7 @@ export class AuthAssistantService {
     }
   }
 
-  acceptUpload(input: AuthAssistantUploadInput): AuthAssistantPairingStatus {
+  async acceptUpload(input: AuthAssistantUploadInput): Promise<AuthAssistantPairingStatus> {
     this.cleanup()
     const pairing = this.pairings.get(input.pairId)
     if (!pairing) throw new Error('授权任务不存在或已过期')
@@ -232,6 +239,12 @@ export class AuthAssistantService {
       if (!site) throw new Error('签到站点不存在')
       const snapshot = normalizeSnapshot(payload, site.baseUrl, pairing.domain)
       assertAuthenticatedSnapshot(snapshot, site.baseUrl)
+      if (this.verifyLogin) {
+        const verified = await this.verifyLogin(snapshot, site)
+        if (!verified) {
+          throw new Error('\u5df2\u4e0a\u4f20\u767b\u5f55\u72b6\u6001\uff0c\u4f46\u7ad9\u70b9\u5b9e\u9645\u4f1a\u8bdd\u6821\u9a8c\u672a\u901a\u8fc7\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u540e\u91cd\u8bd5')
+        }
+      }
       const pageTitle = normalizePageTitle(payload.pageTitle)
       if (!snapshot.cookies.length && !Object.keys(snapshot.localStorageByHost).length) {
         throw new Error('当前页面没有读取到 Cookie 或 Local Storage，请先登录目标签到站点')

@@ -6,7 +6,7 @@ import { GatewayError } from "../gateway/errors.js";
 import { BrowserManager } from "./browser-manager.js";
 import { CheckinBalanceSync } from "./channel-balance.js";
 import { CheckinCoordinator } from "./coordinator.js";
-import { AuthAssistantService } from "./auth-assistant.js";
+import { AuthAssistantService, type AuthSnapshotVerifier } from "./auth-assistant.js";
 import { LocalExecutionError, LocalExecutionService } from "./local-execution.js";
 import { AppDatabase } from "./db.js";
 import { EventBus } from "./events.js";
@@ -137,12 +137,21 @@ export function createCheckinModule(
   const browser = new BrowserManager();
   const events = new EventBus();
   const progress = new RunProgressLog(events);
-  const authAssistant = new AuthAssistantService(db, options.secrets ?? null, events);
+  let verifyLogin: AuthSnapshotVerifier | null = null
+  const authAssistant = new AuthAssistantService(db, options.secrets ?? null, events, {
+    verifyLogin: async (snapshot, site) => verifyLogin?.(snapshot, site) ?? true,
+  });
   const newApi = new NewApiService(db, browser, events, {
     interactiveAuthorizationEnabled,
     authAssistant,
     progress,
   });
+  verifyLogin = async (snapshot, site) => {
+    if (['new-api-modern', 'new-api-legacy'].includes(site.adapter)) {
+      return newApi.verifySnapshotLogin(site, snapshot)
+    }
+    return true
+  };
   const siteIcons = new SiteIconService(db, fetch, browser);
   const telegram = new TelegramNotifier(db);
   const balanceSync = new CheckinBalanceSync(db, store);
@@ -276,7 +285,7 @@ export async function registerCheckinRoutes(
         ? request.headers["x-autoapi-assistant-token"].trim()
         : "";
       if (!headerToken) return reply.code(401).headers(originHeaders).send({ error: { message: "缺少授权助手上传 Token", type: "assistant_auth_error" } });
-      const status = module.authAssistant.acceptUpload({ ...body, uploadToken: headerToken });
+      const status = await module.authAssistant.acceptUpload({ ...body, uploadToken: headerToken });
       return reply.headers(originHeaders).send({ status });
     } catch (error) {
       const message = error instanceof Error ? error.message : "授权助手上传失败";
