@@ -170,6 +170,12 @@
 .checkin-module .management-empty-row:hover{ background: transparent !important; }
 
 .checkin-module .activity-section{ padding-bottom: 12px; }
+.checkin-module .activity-groups{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.checkin-module .activity-group{ min-width: 0; }
+.checkin-module .activity-group-heading{ display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0 6px; color: var(--muted); font-size: 10px; font-weight: 650; }
+.checkin-module .activity-group-heading strong{ color: var(--text); font-size: 11px; }
+.checkin-module .activity-group-heading span{ color: var(--subtle); font-size: 9px; }
+.checkin-module .activity-group-deletions{ grid-column: 1 / -1; }
 .checkin-module .activity-list{ border-top: 1px solid var(--border); }
 .checkin-module .activity-row{ min-height: 48px; display: grid; grid-template-columns: 25px minmax(0,1fr) auto 112px; align-items: center; gap: 10px; border-bottom: 1px solid #edf0ee; }
 .checkin-module .activity-row > div{ min-width: 0; display: flex; align-items: baseline; gap: 8px; }
@@ -428,6 +434,7 @@
   .checkin-module .summary-item strong{ font-size: 17px; }
   .checkin-module .summary-value-button strong{ font-size: 17px; }
   .checkin-module .activity-row{ grid-template-columns: 24px minmax(0,1fr) auto; padding: 7px 0; }
+  .checkin-module .activity-groups{ grid-template-columns: 1fr; }
   .checkin-module .activity-row time{ display: none; }
   .checkin-module .activity-row > div{ display: grid; gap: 3px; }
   .checkin-module .search-field{ width: 100%; }

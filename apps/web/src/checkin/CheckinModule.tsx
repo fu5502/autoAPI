@@ -701,7 +701,7 @@ function Dashboard({ state, onAdd, onRun, onRunRefresh, onLocalExecution, onAuth
       />
       <SummaryBand state={state} />
       <SitesView state={state} onRun={onRun} onLocalExecution={onLocalExecution} onAuthorize={onAuthorize} onImport={onImport} importedSiteIds={importedSiteIds} onSelect={onSelect} onRefresh={onRefresh} notify={notify} activeRunId={activeRunId} cancellingRunId={cancellingRunId} cancellingSiteId={cancellingSiteId} onCancelRun={onCancelRun} onCancelSite={onCancelSite} progressByRun={progressByRun} />
-      <RecentActivityWithDeletions results={state.recentResults} deletions={state.recentDeletions ?? []} sites={state.sites} />
+      <RecentActivityGroups results={state.recentResults} deletions={state.recentDeletions ?? []} sites={state.sites} />
     </div>
   )
 }
@@ -744,31 +744,57 @@ function AttentionModal({ sites, onClose }: { sites: Site[]; onClose: () => void
   </Modal>
 }
 
-function RecentActivityWithDeletions({ results, deletions, sites }: { results: CheckinResult[]; deletions: SiteDeletionLog[]; sites: Site[] }) {
+function RecentActivityGroups({ results, deletions, sites }: { results: CheckinResult[]; deletions: SiteDeletionLog[]; sites: Site[] }) {
   const siteById = useMemo(() => new Map(sites.map((site) => [site.id, site])), [sites])
-  const activities = useMemo(() => [
-    ...results.map((result) => ({ kind: 'checkin' as const, timestamp: result.completedAt, result })),
-    ...deletions.map((deletion) => ({ kind: 'deleted' as const, timestamp: deletion.deletedAt, deletion })),
-  ].sort((left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp)).slice(0, 8), [deletions, results])
+  const sortedResults = useMemo(
+    () => [...results].sort((left, right) => Date.parse(right.completedAt) - Date.parse(left.completedAt)),
+    [results],
+  )
+  const welfareResults = sortedResults.filter((result) => {
+    const site = siteById.get(result.siteId)
+    return !site || !isBalanceOnlySite(site)
+  }).slice(0, 10)
+  const relayResults = sortedResults.filter((result) => {
+    const site = siteById.get(result.siteId)
+    return Boolean(site && isBalanceOnlySite(site))
+  }).slice(0, 10)
   return (
     <section className="section-block activity-section">
-      <div className="section-heading"><div><h2>最近执行</h2><p>签到任务的逐站结果与站点变更</p></div></div>
-      {activities.length ? <div className="activity-list">{activities.map((activity) => activity.kind === 'deleted' ? (
-        <div className="activity-row" key={`deleted-${activity.deletion.id}`}>
-          <span className="activity-icon danger"><Trash2 size={14} /></span>
-          <div><strong>{activity.deletion.siteName}</strong><p>{activity.deletion.message}</p><small className="activity-site-url">{activity.deletion.baseUrl}</small></div>
-          <time>{formatDateTime(activity.deletion.deletedAt)}</time>
+      <div className="section-heading"><div><h2>最近执行</h2><p>公益站与中转站分别记录最近 10 条</p></div></div>
+      <div className="activity-groups">
+        <div className="activity-group">
+          <div className="activity-group-heading"><strong>公益站</strong><span>{welfareResults.length}/10</span></div>
+          <ActivityList results={welfareResults} siteById={siteById} />
         </div>
-      ) : (
-        <div className="activity-row" key={`checkin-${activity.result.id}`}>
-          <span className={`activity-icon ${statusTone(activity.result.status)}`}>{['success', 'already_checked'].includes(activity.result.status) ? <Check size={14} /> : activity.result.status === 'manual_required' ? <KeyRound size={14} /> : <CircleAlert size={14} />}</span>
-          <div><strong>{activity.result.siteName}</strong><p>{activity.result.message}</p></div>
-          {activity.result.rewardAmount !== null && <span className="activity-reward">{formatAmount(activity.result.rewardAmount, siteById.get(activity.result.siteId)?.currencySymbol ?? '$')}</span>}
-          <time>{formatDateTime(activity.result.completedAt)}</time>
+        <div className="activity-group">
+          <div className="activity-group-heading"><strong>中转站</strong><span>{relayResults.length}/10</span></div>
+          <ActivityList results={relayResults} siteById={siteById} />
         </div>
-      ))}</div> : <EmptyState title="暂无执行记录" description="完成首次签到后，结果会显示在这里。" />}
+      </div>
+      {deletions.length ? <div className="activity-group activity-group-deletions">
+        <div className="activity-group-heading"><strong>站点变更</strong><span>{deletions.length}</span></div>
+        <div className="activity-list">{deletions.map((deletion) => (
+          <div className="activity-row" key={`deleted-${deletion.id}`}>
+            <span className="activity-icon danger"><Trash2 size={14} /></span>
+            <div><strong>{deletion.siteName}</strong><p>{deletion.message}</p><small className="activity-site-url">{deletion.baseUrl}</small></div>
+            <time>{formatDateTime(deletion.deletedAt)}</time>
+          </div>
+        ))}</div>
+      </div> : null}
     </section>
   )
+}
+
+function ActivityList({ results, siteById }: { results: CheckinResult[]; siteById: Map<number, Site> }) {
+  if (!results.length) return <p className="empty-inline">暂无记录</p>
+  return <div className="activity-list">{results.map((result) => (
+    <div className="activity-row" key={result.id}>
+      <span className={`activity-icon ${statusTone(result.status)}`}>{['success', 'already_checked'].includes(result.status) ? <Check size={14} /> : result.status === 'manual_required' ? <KeyRound size={14} /> : <CircleAlert size={14} />}</span>
+      <div><strong>{result.siteName}</strong><p>{result.message}</p></div>
+      {result.rewardAmount !== null && <span className="activity-reward">{formatAmount(result.rewardAmount, siteById.get(result.siteId)?.currencySymbol ?? '$')}</span>}
+      <time>{formatDateTime(result.completedAt)}</time>
+    </div>
+  ))}</div>
 }
 
 function RecentActivity({ results, sites }: { results: CheckinResult[]; sites: Site[] }) {

@@ -142,6 +142,22 @@ describe('autoAPI authorization assistant', () => {
     expect(database.getSite(site.id)).toMatchObject({ authStatus: 'unknown' })
   })
 
+  it('rejects a generic snapshot that only contains device cookies', () => {
+    const { database, service } = makeService()
+    const site = database.createSite('通用站点', 'https://example.com')
+    const pairing = service.createPair(site)
+    const claim = service.claim(pairing.code)
+    const encrypted = encryptPayload({
+      siteOrigin: 'https://example.com',
+      cookies: [{ name: 'dddai_device_id', value: 'device-123', domain: '.example.com', path: '/', secure: true }],
+      localStorage: { theme: 'dark' },
+    }, claim.secret)
+
+    expect(() => service.acceptUpload({ pairId: claim.pairId, uploadToken: claim.uploadToken, ...encrypted }))
+      .toThrow('\u672a\u68c0\u6d4b\u5230\u6709\u6548\u767b\u5f55\u72b6\u6001')
+    expect(database.getSite(site.id)).toMatchObject({ authStatus: 'unknown' })
+  })
+
   it('accepts a token.dialoguedui snapshot with an auth token', () => {
     const { database, service } = makeService()
     const site = database.createSite('小白Code', 'https://token.dialoguedui.com')

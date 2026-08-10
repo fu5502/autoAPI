@@ -231,7 +231,7 @@ export class AuthAssistantService {
       const site = this.db.getSite(pairing.siteId)
       if (!site) throw new Error('签到站点不存在')
       const snapshot = normalizeSnapshot(payload, site.baseUrl, pairing.domain)
-      assertKnownHostAuthState(snapshot, site.baseUrl)
+      assertAuthenticatedSnapshot(snapshot, site.baseUrl)
       const pageTitle = normalizePageTitle(payload.pageTitle)
       if (!snapshot.cookies.length && !Object.keys(snapshot.localStorageByHost).length) {
         throw new Error('当前页面没有读取到 Cookie 或 Local Storage，请先登录目标签到站点')
@@ -559,6 +559,38 @@ function assertKnownHostAuthState(snapshot: BrowserAuthSnapshot, baseUrl: string
   if ((host === 'chybenzun.top' || host === 'www.chybenzun.top') && !hasNewApiAuthStorage(storageItems)) {
     throw new Error('未检测到 chybenzun.top 的有效登录状态，请完成登录后再同步')
   }
+}
+
+function assertAuthenticatedSnapshot(snapshot: BrowserAuthSnapshot, baseUrl: string): void {
+  assertKnownHostAuthState(snapshot, baseUrl)
+  const storageItems = Object.values(snapshot.localStorageByHost).flatMap((values) => Object.entries(values))
+  if (hasSub2ApiAuthStorage(storageItems) || hasNewApiAuthStorage(storageItems)) return
+  if (hasAuthCookie(snapshot.cookies)) return
+  throw new Error('\u672a\u68c0\u6d4b\u5230\u6709\u6548\u767b\u5f55\u72b6\u6001\uff0c\u8bf7\u5b8c\u6210\u767b\u5f55\u540e\u91cd\u8bd5')
+}
+
+function hasAuthCookie(cookies: BrowserCookie[]): boolean {
+  return cookies.some((cookie) => {
+    const normalized = cookie.name.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    return [
+      'session',
+      'sessions',
+      'sid',
+      'token',
+      'auth',
+      'jwt',
+      'access_token',
+      'accesstoken',
+      'refresh_token',
+      'refreshtoken',
+      'sub2api_token',
+      'login',
+      'user',
+      'userinfo',
+      'auth_user',
+      'account',
+    ].includes(normalized)
+  })
 }
 
 function hasSub2ApiAuthStorage(items: Array<[string, string]>): boolean {
