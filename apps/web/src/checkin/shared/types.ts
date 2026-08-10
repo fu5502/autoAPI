@@ -39,6 +39,7 @@ export interface Site {
   lastBalanceRaw: number | null
   lastBalanceAmount: number | null
   lastBalanceUpdatedAt?: string | null
+  lastBalanceRefreshSuccess?: boolean | null
   lastCheckedAt: string | null
   lastStatus: CheckinStatus
   checkinMode: CheckinMode

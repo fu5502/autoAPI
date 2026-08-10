@@ -56,6 +56,8 @@ export interface Site {
   lastBalanceAmount: number | null
   /** Time when the displayed balance was last refreshed successfully. */
   lastBalanceUpdatedAt?: string | null
+  /** Whether the latest balance refresh actually read a fresh value. */
+  lastBalanceRefreshSuccess?: boolean | null
   lastCheckedAt: string | null
   lastStatus: CheckinStatus
   checkinMode: CheckinMode

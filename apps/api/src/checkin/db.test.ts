@@ -178,6 +178,7 @@ describe('check-in site balance updates', () => {
       completedAt: previous,
     })
     const before = database.getSite(site.id)!
+    expect(before.lastBalanceRefreshSuccess).toBe(true)
 
     database.applyResult(site.id, {
       runId: secondRun.id,
@@ -199,6 +200,7 @@ describe('check-in site balance updates', () => {
     const after = database.getSite(site.id)!
     expect(after.lastBalanceUpdatedAt).toBe(before.lastBalanceUpdatedAt)
     expect(after.lastRewardAt).toBe(before.lastRewardAt)
+    expect(after.lastBalanceRefreshSuccess).toBe(false)
   })
 
   it('keeps the last check-in status when a balance refresh returns disabled', () => {

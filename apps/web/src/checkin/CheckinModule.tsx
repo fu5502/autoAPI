@@ -923,10 +923,10 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
           <td><span className="adapter-label">{siteAdapterLabel(site)}</span></td>
           <td><div className="site-auth-cell"><StatusBadge tone={statusTone(site.authStatus)}>{authLabel(site.authStatus)}</StatusBadge>{site.authSyncStatus === 'success' && site.authSyncedAt ? <small className="auth-sync-meta">已同步 {formatDateTime(site.authSyncedAt)}</small> : site.authSyncStatus === 'failed' ? <small className="auth-sync-meta danger-text" title={site.authSyncMessage ?? undefined}>同步失败</small> : null}</div></td>
           <td>{balanceOnly
-            ? <div className="balance-status-cell"><StatusBadge tone={balanceRefreshStatusTone(site)}>{balanceRefreshStatusLabel(site)}</StatusBadge><small className={balanceRefreshTimingClass(site.lastBalanceUpdatedAt)}>{balanceRefreshTimingLabel(site.lastBalanceUpdatedAt)}</small></div>
+          ? <div className="balance-status-cell"><StatusBadge tone={balanceRefreshStatusTone(site)}>{balanceRefreshStatusLabel(site)}</StatusBadge><small className={balanceRefreshTimingClass(site.lastBalanceUpdatedAt, site.lastBalanceRefreshSuccess !== false)}>{balanceRefreshTimingLabel(site.lastBalanceUpdatedAt)}</small></div>
             : <StatusBadge tone={siteCheckinTone(site)}>{siteCheckinLabel(site)}</StatusBadge>}</td>
           {!balanceOnly ? <td><button type="button" className={`reward-cell interactive ${rewardTimingTone(site.lastRewardAt)}`} title="点击立即签到" disabled={Boolean(activeRunId) || refreshingBalanceSiteId !== null} onClick={() => onRun([site.id])}>{activeRunId && site.lastStatus === 'running' ? <LoaderCircle size={13} className="spin" /> : null}<strong className={rewardTimingTone(site.lastRewardAt)}>{formatAmount(site.lastRewardAmount, site.currencySymbol)}</strong><small>{site.lastRewardAt ? rewardTimingLabel(site.lastRewardAt) : '--'}</small></button></td> : null}
-          <td><div className="site-balance-cell"><button type="button" className={`site-balance-button balance-value ${site.lastBalanceAmount === null ? 'empty' : isLowBalance(site.lastBalanceAmount) ? 'low' : ''}`} title={balanceOnly ? '刷新登录账号余额' : '仅刷新余额，不执行签到'} disabled={refreshingBalanceSiteId !== null} onClick={(event) => { event.stopPropagation(); void refreshBalance(site) }}>{refreshingBalanceSiteId === site.id ? <RefreshCw size={13} className="spin" /> : null}<span>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></button><small className={`balance-refresh-time ${balanceRefreshTimingClass(site.lastBalanceUpdatedAt)}`}>{formatBalanceRefreshTime(site.lastBalanceUpdatedAt)}</small></div></td>
+          <td><div className="site-balance-cell"><button type="button" className={`site-balance-button balance-value ${site.lastBalanceAmount === null ? 'empty' : isLowBalance(site.lastBalanceAmount) ? 'low' : ''}`} title={balanceOnly ? '刷新登录账号余额' : '仅刷新余额，不执行签到'} disabled={refreshingBalanceSiteId !== null} onClick={(event) => { event.stopPropagation(); void refreshBalance(site) }}>{refreshingBalanceSiteId === site.id ? <RefreshCw size={13} className="spin" /> : null}<span>{formatBalance(site.lastBalanceAmount, site.currencySymbol)}</span></button><small className={`balance-refresh-time ${balanceRefreshTimingClass(site.lastBalanceUpdatedAt, site.lastBalanceRefreshSuccess !== false)}`}>{formatBalanceRefreshTime(site.lastBalanceUpdatedAt)}</small></div></td>
           <td><StatusBadge tone={importedSiteIds.includes(site.id) ? 'success' : 'neutral'}>{importedSiteIds.includes(site.id) ? '是' : '否'}</StatusBadge></td>
           <td><div className="switch-control"><button className={`toggle ${site.enabled ? 'on' : ''}`} role="switch" aria-checked={site.enabled} aria-label={`${site.enabled ? '停用' : '启用'} ${site.name} ${balanceOnly ? '自动刷新余额' : '自动签到'}`} onClick={() => toggle(site)}><span /></button><small>{site.enabled ? (balanceOnly ? '自动刷新' : '自动签到') : '已关闭'}</small></div></td>
           <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title={balanceOnly ? '改为自动签到' : '改为仅刷新余额'} onClick={() => void switchMode(site)}><ArrowLeftRight size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton>{balanceOnly
@@ -1673,6 +1673,7 @@ function balanceRefreshStatusLabel(site: Site): string {
   if (site.lastStatus === 'cancelled') return '已终止'
   if (site.lastStatus === 'failed') return '刷新失败'
   if (site.lastStatus === 'manual_required') return site.authStatus === 'valid' ? '需浏览器验证' : '需重新授权'
+  if (site.lastBalanceRefreshSuccess === false) return '刷新未完成'
   if (site.lastBalanceUpdatedAt && rewardTimingTone(site.lastBalanceUpdatedAt) === 'today') return '余额已刷新'
   if (site.lastBalanceUpdatedAt) return '上次已刷新'
   return '待刷新'
@@ -1683,6 +1684,7 @@ function balanceRefreshStatusTone(site: Site): ReturnType<typeof statusTone> {
   if (site.lastStatus === 'cancelled') return 'neutral'
   if (site.lastStatus === 'failed') return 'danger'
   if (site.lastStatus === 'manual_required') return 'warning'
+  if (site.lastBalanceRefreshSuccess === false) return 'neutral'
   return site.lastBalanceUpdatedAt && rewardTimingTone(site.lastBalanceUpdatedAt) === 'today' ? 'success' : 'neutral'
 }
 
@@ -1690,7 +1692,8 @@ function balanceRefreshTimingLabel(value: string | null | undefined): string {
   return value ? `余额刷新于 ${rewardTimingLabel(value)}` : '暂无余额刷新记录'
 }
 
-function balanceRefreshTimingClass(value: string | null | undefined): string {
+function balanceRefreshTimingClass(value: string | null | undefined, success = true): string {
+  if (!success) return 'balance-refresh-unknown'
   const tone = rewardTimingTone(value)
   return tone === 'today' ? 'balance-refresh-today' : tone === 'previous' ? 'balance-refresh-previous' : 'balance-refresh-unknown'
 }

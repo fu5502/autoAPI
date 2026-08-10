@@ -87,6 +87,7 @@ function mapSite(row: Row): Site {
     lastBalanceRaw: nullableNumber(row.last_balance_raw),
     lastBalanceAmount: nullableNumber(row.last_balance_amount),
     lastBalanceUpdatedAt: row.last_balance_updated_at === null || row.last_balance_updated_at === undefined ? null : String(row.last_balance_updated_at),
+    lastBalanceRefreshSuccess: row.last_balance_refresh_success === null || row.last_balance_refresh_success === undefined ? null : bool(row.last_balance_refresh_success),
     lastCheckedAt: row.last_checked_at === null ? null : String(row.last_checked_at),
     lastStatus: String(row.last_status) as CheckinStatus,
     checkinMode: (row.checkin_mode === 'balance_only' ? 'balance_only' : 'checkin') as CheckinMode,
@@ -178,6 +179,7 @@ export class AppDatabase {
         last_balance_raw REAL,
         last_balance_amount REAL,
         last_balance_updated_at TEXT,
+        last_balance_refresh_success INTEGER,
         last_checked_at TEXT,
         last_status TEXT NOT NULL DEFAULT 'never',
         checkin_mode TEXT NOT NULL DEFAULT 'checkin' CHECK (checkin_mode IN ('checkin', 'balance_only')),
@@ -331,6 +333,7 @@ export class AppDatabase {
     }
     this.addColumnIfMissing('sites', 'last_reward_at', 'TEXT')
     this.addColumnIfMissing('sites', 'last_balance_updated_at', 'TEXT')
+    this.addColumnIfMissing('sites', 'last_balance_refresh_success', 'INTEGER')
     const checkinModeAdded = this.addColumnIfMissing(
       'sites',
       'checkin_mode',
@@ -349,6 +352,20 @@ export class AppDatabase {
       UPDATE sites
       SET last_balance_updated_at = last_checked_at
       WHERE last_balance_updated_at IS NULL AND last_balance_amount IS NOT NULL
+    `)
+    this.db.exec(`
+      UPDATE sites
+      SET last_balance_refresh_success = (
+        SELECT CASE
+          WHEN r.status IN ('success', 'already_checked')
+            OR r.message LIKE '%余额已刷新%'
+            OR r.message LIKE '%余额刷新成功%'
+          THEN 1 ELSE 0 END
+        FROM checkin_results r
+        WHERE r.site_id = sites.id
+        ORDER BY r.id DESC LIMIT 1
+      )
+      WHERE EXISTS (SELECT 1 FROM checkin_results r WHERE r.site_id = sites.id)
     `)
   }
 
@@ -669,11 +686,15 @@ export class AppDatabase {
       || (input.lastBalanceAmount !== undefined && input.lastBalanceAmount !== null)
       ? nowIso()
       : site.lastBalanceUpdatedAt ?? null
+    const balanceRefreshSuccess = (input.lastBalanceRaw !== undefined && input.lastBalanceRaw !== null)
+      || (input.lastBalanceAmount !== undefined && input.lastBalanceAmount !== null)
     this.db.prepare(`
       UPDATE sites SET
         adapter = ?, auth_status = ?, base_url = ?, username = ?, legacy_user_id = ?, name = ?,
         currency_symbol = ?, quota_per_unit = ?, display_scale = ?, favicon_url = ?, favicon_custom = ?,
-        last_balance_raw = ?, last_balance_amount = ?, last_balance_updated_at = ?, last_error = ?, updated_at = ?
+        last_balance_raw = ?, last_balance_amount = ?, last_balance_updated_at = ?,
+        last_balance_refresh_success = CASE WHEN ? THEN 1 ELSE last_balance_refresh_success END,
+        last_error = ?, updated_at = ?
       WHERE id = ?
     `).run(
       input.adapter,
@@ -690,6 +711,7 @@ export class AppDatabase {
       input.lastBalanceRaw !== undefined ? input.lastBalanceRaw : site.lastBalanceRaw,
       input.lastBalanceAmount !== undefined ? input.lastBalanceAmount : site.lastBalanceAmount,
       balanceUpdatedAt,
+      Number(balanceRefreshSuccess),
       input.lastError ?? null,
       nowIso(),
       id,
@@ -747,6 +769,7 @@ export class AppDatabase {
         last_balance_raw = COALESCE(?, last_balance_raw),
         last_balance_amount = COALESCE(?, last_balance_amount),
         last_balance_updated_at = CASE WHEN ? THEN ? ELSE last_balance_updated_at END,
+        last_balance_refresh_success = ?,
         last_checked_at = ?, last_status = CASE WHEN ? AND last_status <> 'running' THEN last_status ELSE ? END,
         last_reward_amount = COALESCE(?, last_reward_amount),
         last_reward_at = CASE
@@ -761,6 +784,7 @@ export class AppDatabase {
       result.balanceAfterAmount,
       Number(balanceUpdated),
       balanceUpdated ? result.completedAt : null,
+      Number(balanceUpdated),
       result.completedAt,
       Number(options.preserveLastStatus ?? false),
       result.status,
