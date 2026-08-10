@@ -1007,6 +1007,24 @@ export class NewApiService {
         const modernAccessToken = observeModernAccessToken(page, site.baseUrl, this.getCachedModernAccessToken(site.id))
         await this.applyImportedCookies(context, site)
         this.logProgress(runId, site, '已恢复登录状态，正在读取余额')
+        const noPageBalance = ['new-api-modern', 'new-api-legacy'].includes(site.adapter)
+          ? await this.tryReadNewApiBalanceWithoutPage(context, site, requestTimeoutMs)
+          : { kind: 'skip' as const }
+        if (noPageBalance.kind === 'success') {
+          this.persistNewApiBalance(site, noPageBalance.read, noPageBalance.money)
+          return this.makeResult(site, runId, startedAt, 'disabled', '自动签到已关闭，余额已刷新', {
+            beforeRaw: site.lastBalanceRaw,
+            afterRaw: noPageBalance.read.balance,
+            money: noPageBalance.money,
+            loginVerified: true,
+          })
+        }
+        if (noPageBalance.kind === 'auth_failed') {
+          return this.authenticationRequiredResult(site, runId, startedAt, {
+            money: noPageBalance.money,
+            beforeRaw: site.lastBalanceRaw,
+          })
+        }
         if (isTrueSotaSite(site.baseUrl)) {
           await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
           await this.openImportedStorage(page, site)
@@ -1887,6 +1905,64 @@ export class NewApiService {
     })
   }
 
+  private async tryReadNewApiBalanceWithoutPage(
+    context: BrowserContext,
+    site: Site,
+    timeoutMs: number,
+  ): Promise<
+    | { kind: 'success'; read: NewApiBalanceRead; money: ReturnType<typeof deriveMoneySettings> }
+    | { kind: 'auth_failed'; money: ReturnType<typeof deriveMoneySettings> }
+    | { kind: 'skip' }
+  > {
+    if (!(context as { request?: { fetch?: unknown } }).request?.fetch) return { kind: 'skip' }
+    const statusResponse = await contextRequest<RemoteStatus>(context, site.baseUrl, '/api/status', 'GET', {}, timeoutMs)
+    if (!statusResponse.success || statusResponse.data?.checkin_enabled !== false) return { kind: 'skip' }
+    const money = deriveMoneySettings(statusResponse.data)
+    const snapshot = await this.authAssistant?.getSnapshot(site.id) ?? null
+    const token = snapshot ? readSnapshotAccessToken(snapshot) : null
+
+    const readWithToken = async (accessToken: string): Promise<NewApiBalanceRead | null> => {
+      const self = await contextRequest<unknown>(
+        context,
+        site.baseUrl,
+        '/api/user/self',
+        'GET',
+        { Authorization: `Bearer ${accessToken}` },
+        timeoutMs,
+      )
+      this.noteAuthenticationResponse(self)
+      const user = self.success ? normalizeNewApiUser(self.data) : null
+      const balance = user ? newApiUserBalance(user) : null
+      return balance === null || !user ? null : { auth: { adapter: 'new-api-modern', accessToken, user }, balance }
+    }
+
+    if (token) {
+      const read = await readWithToken(token)
+      if (read) return { kind: 'success', read, money }
+    }
+
+    const refresh = await contextRequest<{ access_token?: string }>(
+      context,
+      site.baseUrl,
+      '/api/user/auth/refresh',
+      'POST',
+      {},
+      timeoutMs,
+    )
+    if (refresh.success && typeof refresh.data?.access_token === 'string' && refresh.data.access_token.trim()) {
+      const refreshedToken = refresh.data.access_token.trim().replace(/^Bearer\s+/i, '')
+      try {
+        const host = new URL(site.baseUrl).hostname.toLowerCase().replace(/\.$/, '')
+        this.authAssistant?.updateSnapshotLocalStorage(site.id, host, { auth_token: refreshedToken })
+      } catch {
+        // Keep the token in memory for this read even if the snapshot is stale.
+      }
+      const read = await readWithToken(refreshedToken)
+      if (read) return { kind: 'success', read, money }
+    }
+    return { kind: 'auth_failed', money }
+  }
+
   private async readNewApiBalanceWithoutRefresh(
     page: Page,
     site: Site,
@@ -2717,6 +2793,36 @@ async function readNewApiAccessToken(page: Page): Promise<string | null> {
     return null
   }).catch(() => null)
   return typeof token === 'string' && token ? token : null
+}
+
+function readSnapshotAccessToken(snapshot: BrowserAuthSnapshot): string | null {
+  const storageItems = Object.values(snapshot.localStorageByHost).flatMap((values) => Object.entries(values))
+  for (const [key, value] of storageItems) {
+    const normalized = key.toLowerCase()
+    if (['auth_token', 'access_token', 'accesstoken', 'token'].includes(normalized)) {
+      const direct = value.trim()
+      if (direct && !/^(?:null|undefined|false|0|-1|guest|anonymous|public)$/i.test(direct)) {
+        return direct.replace(/^Bearer\s+/i, '')
+      }
+    }
+  }
+  for (const [key, value] of storageItems) {
+    if (key.toLowerCase() !== 'user' || value.length > 100_000) continue
+    try {
+      const parsed = JSON.parse(value)
+      const candidates = [parsed, parsed?.user, parsed?.state?.user, parsed?.data, parsed?.data?.user]
+      for (const candidate of candidates) {
+        if (!candidate || typeof candidate !== 'object') continue
+        for (const field of ['token', 'access_token', 'accessToken']) {
+          const tokenValue = candidate[field]
+          if (typeof tokenValue === 'string' && tokenValue.trim()) return tokenValue.trim().replace(/^Bearer\s+/i, '')
+        }
+      }
+    } catch {
+      // Ignore unrelated user storage.
+    }
+  }
+  return null
 }
 
 async function readNewApiLegacyUserId(page: Page): Promise<number | null> {
