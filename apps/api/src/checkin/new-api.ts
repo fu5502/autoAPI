@@ -1899,14 +1899,28 @@ export class NewApiService {
           auth = await this.detectAuthentication(page, site.legacyUserId, 30_000)
           if (!auth) await page.waitForTimeout(1_500)
         }
-        if (auth?.adapter === 'new-api-modern' && auth.accessToken) {
+       if (auth?.adapter === 'new-api-modern' && auth.accessToken) {
+         try {
+           this.authAssistant?.updateSnapshotLocalStorage(site.id, host, { auth_token: auth.accessToken })
+         } catch {
+           // A stale snapshot is not fatal; balance refresh can still retry.
+         }
+       }
+        // detectAuthentication may have rotated the session cookie via
+        // /api/user/auth/refresh. Capture the current cookies from the
+        // browser context and persist them back into the snapshot so that
+        // the next balance refresh uses the fresh session.
+        if (auth?.user) {
           try {
-            this.authAssistant?.updateSnapshotLocalStorage(site.id, host, { auth_token: auth.accessToken })
+            const currentCookies = await context.cookies(site.baseUrl)
+            if (currentCookies.length) {
+              this.authAssistant?.updateSnapshotCookies(site.id, currentCookies)
+            }
           } catch {
-            // A stale snapshot is not fatal; balance refresh can still retry.
+            // Cookie capture is best-effort; the token was already saved.
           }
         }
-        return Boolean(auth?.user && (
+       return Boolean(auth?.user && (
           Number(auth.user.id ?? auth.legacyUserId) > 0
           || Boolean(auth.user.username)
           || Boolean(auth.user.display_name)

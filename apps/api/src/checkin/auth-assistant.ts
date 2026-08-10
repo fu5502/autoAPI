@@ -358,11 +358,40 @@ export class AuthAssistantService {
       this.db.saveSiteAuthSnapshot(siteId, this.secrets.encrypt(serialized))
       return true
     } catch {
+     return false
+   }
+ }
+
+  updateSnapshotCookies(siteId: number, cookies: BrowserCookie[]): boolean {
+    if (!this.secrets || !cookies.length) return false
+    const stored = this.db.getSiteAuthSnapshot(siteId)
+    if (!stored) return false
+    try {
+      const snapshot = JSON.parse(this.secrets.decrypt(stored.encrypted)) as BrowserAuthSnapshot
+      if (!snapshot || !Array.isArray(snapshot.cookies)) return false
+      const seen = new Map(snapshot.cookies.map((c) => [`${c.domain}\u0000${c.path}\u0000${c.name}`, c]))
+      let changed = false
+      for (const cookie of cookies.slice(0, MAX_COOKIES)) {
+        const identity = `${cookie.domain}\u0000${cookie.path}\u0000${cookie.name}`
+        const existing = seen.get(identity)
+        if (!existing || existing.value !== cookie.value) {
+          seen.set(identity, cookie)
+          changed = true
+        }
+      }
+      if (!changed) return false
+      snapshot.cookies = [...seen.values()]
+      snapshot.updatedAt = nowIso()
+      const serialized = JSON.stringify(snapshot)
+      if (Buffer.byteLength(serialized, 'utf8') > MAX_SNAPSHOT_BYTES) return false
+      this.db.saveSiteAuthSnapshot(siteId, this.secrets.encrypt(serialized))
+      return true
+    } catch {
       return false
     }
   }
 
-  close(): void {
+ close(): void {
     for (const pairing of this.pairings.values()) {
       if (['waiting', 'claimed'].includes(pairing.status)) {
         this.db.completeAuthSync(pairing.authEventId, 'cancelled', '服务已关闭，授权任务已取消', 0, 0)
