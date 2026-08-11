@@ -304,7 +304,12 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
       let outputText = "";
       let failed = false;
       let messageAnnounced = false;
+      let reasoningText = "";
+      let reasoningAnnounced = false;
+      const reasoningId = `rs_${responseId}`;
       let usage: { input_tokens: number; output_tokens: number; total_tokens: number } | null = null;
+      const msgIndex = () => reasoningAnnounced ? 1 : 0;
+      const tcIndex = (idx: number) => (reasoningAnnounced ? 1 : 0) + (outputText ? idx + 1 : idx);
       const baseResponse = { id: responseId, object: "response" as const, created_at: createdAt, model };
       try {
         yield sseEvent(encoder, "response.created", {
@@ -322,7 +327,11 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
           for (const block of blocks) {
             const eventName = block.split(/\r?\n/).find((item) => item.startsWith("event:"))?.slice(6).trim();
             const line = block.split("\n").find((item) => item.startsWith("data:"));
-            if (!line) continue;
+            if (!line) {
+              // 透传 keep-alive 注释（如 ": keep-alive"），防止客户端 idle timeout
+              yield encoder.encode(": keep-alive\n\n");
+              continue;
+            }
             const raw = line.slice(5).trim();
             if (raw === "[DONE]") continue;
             try {
@@ -354,6 +363,32 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
               const choices = Array.isArray(event.choices) ? event.choices : [];
               const choice = isRecord(choices[0]) ? choices[0] : {};
               const delta = isRecord(choice.delta) ? choice.delta : {};
+              const reasoning = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
+              if (reasoning) {
+                if (!reasoningAnnounced) {
+                  reasoningAnnounced = true;
+                  yield sseEvent(encoder, "response.output_item.added", {
+                    type: "response.output_item.added",
+                    output_index: 0,
+                    item: { type: "reasoning", id: reasoningId, summary: [] },
+                  });
+                  yield sseEvent(encoder, "response.reasoning_summary_part.added", {
+                    type: "response.reasoning_summary_part.added",
+                    item_id: reasoningId,
+                    output_index: 0,
+                    summary_index: 0,
+                    part: { type: "summary_text", text: "" },
+                  });
+                }
+                reasoningText += reasoning;
+                yield sseEvent(encoder, "response.reasoning_summary_text.delta", {
+                  type: "response.reasoning_summary_text.delta",
+                  item_id: reasoningId,
+                  output_index: 0,
+                  summary_index: 0,
+                  delta: reasoning,
+                });
+              }
               const text = typeof delta.content === "string" ? delta.content : "";
               // 上游以 HTTP 200 形式返回的审核拦截：content_filter。此时 usage 为 0，需标记为真实错误原因。
               const finishReason = typeof choice.finish_reason === "string" ? choice.finish_reason : "";
@@ -366,13 +401,13 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
                   messageAnnounced = true;
                   yield sseEvent(encoder, "response.output_item.added", {
                     type: "response.output_item.added",
-                    output_index: 0,
+                    output_index: msgIndex(),
                     item: { type: "message", id: messageId, status: "in_progress", role: "assistant", content: [] },
                   });
                   yield sseEvent(encoder, "response.content_part.added", {
                     type: "response.content_part.added",
                     item_id: messageId,
-                    output_index: 0,
+                    output_index: msgIndex(),
                     content_index: 0,
                     part: { type: "output_text", text: "", annotations: [] },
                   });
@@ -381,7 +416,7 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
                 yield sseEvent(encoder, "response.output_text.delta", {
                   type: "response.output_text.delta",
                   item_id: messageId,
-                  output_index: 0,
+                  output_index: msgIndex(),
                   content_index: 0,
                   delta: text,
                 });
@@ -404,7 +439,7 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
                   toolCalls.set(index, state);
                   yield sseEvent(encoder, "response.output_item.added", {
                     type: "response.output_item.added",
-                    output_index: outputText ? index + 1 : index,
+                    output_index: tcIndex(index),
                     item: { type: "function_call", id: state.itemId, call_id: state.callId, name: state.name, arguments: "", status: "in_progress" },
                   });
                 } else if (typeof fn.name === "string" && fn.name) {
@@ -415,7 +450,7 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
                   yield sseEvent(encoder, "response.function_call_arguments.delta", {
                     type: "response.function_call_arguments.delta",
                     item_id: state.itemId,
-                    output_index: outputText ? index + 1 : index,
+                    output_index: tcIndex(index),
                     delta: fn.arguments,
                   });
                 }
@@ -426,29 +461,50 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
           }
         }
         if (failed) return;
+        if (reasoningAnnounced) {
+          yield sseEvent(encoder, "response.reasoning_summary_text.done", {
+            type: "response.reasoning_summary_text.done",
+            item_id: reasoningId,
+            output_index: 0,
+            summary_index: 0,
+            text: reasoningText,
+          });
+          yield sseEvent(encoder, "response.reasoning_summary_part.done", {
+            type: "response.reasoning_summary_part.done",
+            item_id: reasoningId,
+            output_index: 0,
+            summary_index: 0,
+            part: { type: "summary_text", text: reasoningText },
+          });
+          yield sseEvent(encoder, "response.output_item.done", {
+            type: "response.output_item.done",
+            output_index: 0,
+            item: { type: "reasoning", id: reasoningId, summary: [{ type: "summary_text", text: reasoningText }] },
+          });
+        }
         if (messageAnnounced) {
           yield sseEvent(encoder, "response.output_text.done", {
             type: "response.output_text.done",
             item_id: messageId,
-            output_index: 0,
+            output_index: msgIndex(),
             content_index: 0,
             text: outputText,
           });
           yield sseEvent(encoder, "response.content_part.done", {
             type: "response.content_part.done",
             item_id: messageId,
-            output_index: 0,
+            output_index: msgIndex(),
             content_index: 0,
             part: { type: "output_text", text: outputText, annotations: [] },
           });
           yield sseEvent(encoder, "response.output_item.done", {
             type: "response.output_item.done",
-            output_index: 0,
+            output_index: msgIndex(),
             item: { type: "message", id: messageId, status: "completed", role: "assistant", content: [{ type: "output_text", text: outputText, annotations: [] }] },
           });
         }
         for (const state of [...toolCalls.values()].sort((a, b) => a.index - b.index)) {
-          const outputIndex = outputText ? state.index + 1 : state.index;
+          const outputIndex = tcIndex(state.index);
           yield sseEvent(encoder, "response.function_call_arguments.done", {
             type: "response.function_call_arguments.done",
             item_id: state.itemId,
@@ -462,6 +518,7 @@ function chatStreamToResponses(source: AsyncIterable<Uint8Array>, model: string)
           });
         }
         const output: Record<string, unknown>[] = [];
+        if (reasoningAnnounced) output.push({ type: "reasoning", id: reasoningId, summary: [{ type: "summary_text", text: reasoningText }] });
         if (outputText) output.push({ type: "message", id: messageId, role: "assistant", status: "completed", content: [{ type: "output_text", text: outputText, annotations: [] }] });
         output.push(...[...toolCalls.values()].sort((a, b) => a.index - b.index).map((state) => ({
           type: "function_call",
