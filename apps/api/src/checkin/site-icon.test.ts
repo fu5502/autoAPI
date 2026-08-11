@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { BrowserContext, Page } from 'playwright-core'
 import type { BrowserManager } from './browser-manager.js'
 import type { AppDatabase } from './db.js'
-import { getIconPageUrl, resolveSiteIcon, SiteIconService } from './site-icon.js'
+import { getIconPageUrl, isAllowedIconUrl, parseImageDataUrl, resolveSiteIcon, SiteIconService } from './site-icon.js'
 
 function response(body: BodyInit | null, contentType: string, status = 200): Response {
   return new Response(body, { status, headers: { 'content-type': contentType } })
@@ -150,6 +150,18 @@ describe('site icon resolution', () => {
     await expect(service.getCustomIconAsset('https://user:password@assets.example/brand.png', 'https://relay.example/v1')).resolves.toBeNull()
     expect(fetcherMock).toHaveBeenCalledTimes(1)
     expect(String(fetcherMock.mock.calls[0]?.[0])).toBe('https://assets.example/brand.png')
+  })
+
+  it('parses URL-encoded and base64 SVG data URLs as custom icons', () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" fill="red"/></svg>'
+    const encodedSvg = `data:image/svg+xml,${encodeURIComponent(svg)}`
+    const base64Svg = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`
+
+    expect(parseImageDataUrl(encodedSvg)).toMatchObject({ contentType: 'image/svg+xml' })
+    expect(Buffer.from(parseImageDataUrl(encodedSvg)!.body).toString('utf8')).toBe(svg)
+    expect(parseImageDataUrl(base64Svg)).toMatchObject({ contentType: 'image/svg+xml' })
+    expect(isAllowedIconUrl(encodedSvg)).toBe(true)
+    expect(isAllowedIconUrl(base64Svg)).toBe(true)
   })
 
   it('closes Chromium after the browser fallback loads an icon', async () => {

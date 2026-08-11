@@ -16,7 +16,8 @@ const htmlLimitBytes = 2 * 1024 * 1024
 const iconLimitBytes = 2 * 1024 * 1024
 const dataIconLimitBytes = 512 * 1024
 const remoteIconUrlMaxLength = 2_000
-const dataIconUrlPattern = /^data:(image\/(?:png|jpeg|gif|webp|avif|x-icon|vnd\.microsoft\.icon))(?:;charset=[^;,]+)?;base64,([a-z0-9+/]*={0,2})$/i
+const dataIconUrlPattern = /^data:(image\/(?:png|jpeg|gif|webp|avif|x-icon|vnd\.microsoft\.icon|svg\+xml))(?:;charset=[^;,]+)?;base64,([a-z0-9+/]*={0,2})$/i
+const encodedSvgIconUrlPattern = /^data:image\/svg\+xml(?:;charset=[^;,]+)?,(.+)$/i
 export const siteIconUrlMaxLength = Math.ceil(dataIconLimitBytes / 3) * 4 + 128
 const persistentIconMaxAgeMs = 30 * 24 * 60 * 60 * 1000
 const verifiedSiteIcons = new Map([
@@ -289,19 +290,33 @@ export interface IconAsset {
   contentType: string
 }
 
-/** Decode the supported raster image form without sending user data to a remote URL. */
+/** Decode the supported data-URL image form without sending user data to a remote URL. */
 export function parseImageDataUrl(value: string): IconAsset | null {
-  const match = dataIconUrlPattern.exec(value.trim())
-  if (!match) return null
-  const contentType = match[1]
-  const encoded = match[2]
-  if (!contentType || !encoded || encoded.length % 4 === 1) return null
-  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
-  const estimatedSize = Math.floor(encoded.length * 3 / 4) - padding
-  if (estimatedSize <= 0 || estimatedSize > dataIconLimitBytes) return null
-  const body = Buffer.from(encoded, 'base64')
-  if (body.byteLength !== estimatedSize || !isSafeIconAsset(contentType, body.byteLength)) return null
-  return { body, contentType: contentType.toLowerCase() }
+  const trimmed = value.trim()
+  const match = dataIconUrlPattern.exec(trimmed)
+  if (match) {
+    const contentType = match[1]
+    const encoded = match[2]
+    if (!contentType || !encoded || encoded.length % 4 === 1) return null
+    const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
+    const estimatedSize = Math.floor(encoded.length * 3 / 4) - padding
+    if (estimatedSize <= 0 || estimatedSize > dataIconLimitBytes) return null
+    const body = Buffer.from(encoded, 'base64')
+    if (body.byteLength !== estimatedSize || !isSafeIconAsset(contentType, body.byteLength)) return null
+    return { body, contentType: contentType.toLowerCase() }
+  }
+
+  const svgMatch = encodedSvgIconUrlPattern.exec(trimmed)
+  if (!svgMatch || !svgMatch[1]) return null
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(svgMatch[1])
+  } catch {
+    return null
+  }
+  const body = Buffer.from(decoded, 'utf8')
+  if (body.byteLength <= 0 || body.byteLength > dataIconLimitBytes || !isSafeIconAsset('image/svg+xml', body.byteLength)) return null
+  return { body, contentType: 'image/svg+xml' }
 }
 
 export function isAllowedIconUrl(value: string): boolean {

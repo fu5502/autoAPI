@@ -5,6 +5,7 @@ import { getAdminToken } from "../api";
 import { HealthMeter } from "./HealthMeter";
 import { StatusDot } from "./StatusDot";
 import { isLowBalance } from "../checkin/format";
+import { channelIconVersion } from "../icon-cache";
 
 const protocolLabels: Record<string, string> = {
   auto: "自动识别",
@@ -298,7 +299,8 @@ function formatCountdown(valueMs: number) {
 
 function ChannelSiteIcon({ channel }: { channel: Channel }) {
   const site = channel.checkinSite;
-  const iconUrl = `/admin/channels/${encodeURIComponent(channel.id)}/favicon`;
+  const iconVersion = channelIconVersion(channel);
+  const iconUrl = `/admin/channels/${encodeURIComponent(channel.id)}/favicon?v=${encodeURIComponent(iconVersion)}`;
   const [iconSrc, setIconSrc] = useState<string | null>(null);
   const [iconUnavailable, setIconUnavailable] = useState(false);
 
@@ -309,7 +311,7 @@ function ChannelSiteIcon({ channel }: { channel: Channel }) {
     setIconSrc(null);
     setIconUnavailable(false);
 
-    void fetch(iconUrl, { cache: "force-cache", headers: { Authorization: `Bearer ${getAdminToken()}` }, signal: controller.signal })
+    void fetch(iconUrl, { cache: "no-store", headers: { Authorization: `Bearer ${getAdminToken()}` }, signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error("Site icon is unavailable");
         return response.blob();
@@ -330,7 +332,7 @@ function ChannelSiteIcon({ channel }: { channel: Channel }) {
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [channel.baseUrl, channel.faviconUrl, iconUrl]);
+  }, [iconUrl]);
 
   const label = site?.name ?? channel.name;
   const fallback = iconUnavailable || !iconSrc;

@@ -119,4 +119,75 @@ describe('admin channel icon proxy', () => {
     expect(siteIcons.getIconAsset).not.toHaveBeenCalled()
     expect(siteIcons.getExternalIconAsset).not.toHaveBeenCalled()
   })
+
+  it('accepts an SVG data URL as a custom channel icon', async () => {
+    const channel = {
+      id: '00000000-0000-4000-8000-000000000004',
+      providerId: '00000000-0000-4000-8000-000000000002',
+      providerName: 'Relay',
+      name: 'Relay channel',
+      baseUrl: 'https://relay.example/v1',
+      faviconUrl: null,
+      protocol: 'openai',
+      keyCiphertext: 'ciphertext',
+      keyName: 'API Key',
+      keyLast4: '1234',
+      status: 'healthy',
+      enabled: true,
+      priority: 0,
+      weight: 100,
+      minBalance: null,
+      balance: null,
+      balanceCurrency: null,
+      balanceStatus: 'unknown',
+      consecutiveFailures: 0,
+      cooldownUntil: null,
+      isolationReason: null,
+      lastCheckedAt: null,
+      lastLatencyMs: null,
+      recentRequestCount: 0,
+      recentErrorRate: 0,
+      models: [],
+      tags: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+    } as Channel
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#0EC8A9"/></svg>'
+    const faviconUrl = `data:image/svg+xml,${encodeURIComponent(svg)}`
+    const agent = {
+      updateChannel: vi.fn(async (_id: string, input: Partial<Channel>) => ({ ...channel, ...input })),
+    } as unknown as OpsAgent
+    const app = Fastify({ logger: false })
+    resources.push(app)
+
+    await registerAdminRoutes(app, {
+      store: { getChannel: vi.fn(async () => channel) } as unknown as GatewayStore,
+      agent,
+      router: {} as GatewayRouter,
+      adminAuth: { isValidToken: () => true } as unknown as AdminAuthService,
+      gatewayBaseUrl: 'http://localhost:8080/v1',
+      version: 'test',
+    })
+
+    const result = await app.inject({
+      method: 'PUT',
+      url: `/admin/channels/${channel.id}`,
+      headers: { authorization: 'Bearer test-admin-token' },
+      payload: {
+        name: 'Relay channel',
+        baseUrl: 'https://relay.example/v1',
+        faviconUrl,
+        apiKey: '',
+        protocol: 'openai',
+        models: [],
+        priority: 0,
+        weight: 100,
+        minBalance: null,
+        tags: [],
+        enabled: true,
+      },
+    })
+
+    expect(result.statusCode).toBe(200)
+    expect(agent.updateChannel).toHaveBeenCalledWith(channel.id, expect.objectContaining({ faviconUrl }))
+  })
 })

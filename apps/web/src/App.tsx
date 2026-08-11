@@ -920,7 +920,7 @@ function ChannelSiteIcon({ channelId, channelName, className }: { channelId: str
     };
 
     void fetch(iconUrl, {
-      cache: "force-cache",
+      cache: "no-store",
       headers: { Authorization: `Bearer ${getAdminToken()}` },
       signal: controller.signal,
     })

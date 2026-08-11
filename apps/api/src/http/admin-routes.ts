@@ -9,14 +9,17 @@ import { GatewayError } from "../gateway/errors.js";
 import { generateGatewayKey, hashGatewayKey } from "../security/gateway-key.js";
 import { AdminAuthService } from "../security/admin-auth.js";
 import type { AppDatabase } from "../checkin/db.js";
-import type { SiteIconService } from "../checkin/site-icon.js";
+import { isAllowedIconUrl, siteIconUrlMaxLength, type SiteIconService } from "../checkin/site-icon.js";
 import type { Channel } from "../domain/types.js";
 import { matchesCheckinSite } from "../checkin/channel-balance.js";
 import type { CheckinCoordinator } from "../checkin/coordinator.js";
 import { fetchBalance } from "../gateway/balance.js";
 import type { SecretBox } from "../security/secret-box.js";
 
-const faviconUrlSchema = z.string().trim().max(2_000).url().refine(isSafeFaviconUrl, "图标地址必须使用不带账号密码的 HTTP(S) 地址");
+const faviconUrlSchema = z.string().trim().max(siteIconUrlMaxLength).nullish().superRefine((value, context) => {
+  if (!value) return;
+  if (!isAllowedIconUrl(value)) context.addIssue({ code: "custom", message: "图标地址必须是安全的 HTTP(S) 地址或 Data URL" });
+}).transform((value) => value ?? null);
 
 const importSchema = z.object({
   name: z.string().trim().min(1).max(120),
@@ -24,7 +27,7 @@ const importSchema = z.object({
   keyName: z.string().trim().min(1).max(120).optional(),
   website: z.string().url().optional(),
   baseUrl: z.string().url(),
-  faviconUrl: faviconUrlSchema.nullish(),
+  faviconUrl: faviconUrlSchema,
   apiKey: z.string().trim().min(6),
   protocol: z.enum(["auto", "openai", "claude", "gemini", "new-api", "sub2api"]).default("auto"),
   models: z.array(z.string().trim().min(1)).max(500).default([]),
@@ -52,7 +55,7 @@ const channelModelProbeSchema = z.object({
 const channelUpdateSchema = z.object({
   name: z.string().trim().min(1).max(120),
   baseUrl: z.string().url(),
-  faviconUrl: faviconUrlSchema.nullish(),
+  faviconUrl: faviconUrlSchema,
   keyName: z.string().trim().min(1).max(120).optional(),
   apiKey: z.string().trim().min(6).optional().or(z.literal("")),
   protocol: z.enum(["auto", "openai", "claude", "gemini", "new-api", "sub2api"]),
@@ -855,15 +858,6 @@ function getBalanceStatus(balance: number | null, minBalance: number | null): Ch
 
 function balanceRefreshSucceeded(result: { balanceAfterAmount: number | null; message: string }): boolean {
   return result.balanceAfterAmount !== null && /余额已刷新|余额刷新成功|balance.*refresh/i.test(result.message);
-}
-
-function isSafeFaviconUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password;
-  } catch {
-    return false;
-  }
 }
 
 function sanitizeGatewayKey(key: { keyHash: string; name: string; id: string; keyLast4: string; enabled: boolean; createdAt: string; lastUsedAt: string | null }) {
