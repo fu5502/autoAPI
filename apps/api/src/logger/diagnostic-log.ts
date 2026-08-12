@@ -134,9 +134,9 @@ export class DiagnosticLogger {
   }
 
   async init(): Promise<void> {
-    this.dirReady = mkdir(this.logDir, { recursive: true }).then(() => undefined);
+    this.dirReady = mkdir(this.logDir, { recursive: true }).then(() => undefined).catch(() => undefined);
     await this.dirReady;
-    await this.cleanup();
+    await this.cleanup().catch(() => 0);
   }
 
   /**
@@ -254,7 +254,7 @@ export class DiagnosticLogger {
   }
 
   private async readLogs<T>(kind: "gateway" | "system"): Promise<T[]> {
-    const files = (await readdir(this.logDir)).filter((name) => name.startsWith(`${kind}-`) && name.endsWith(".jsonl"));
+    const files = (await readdir(this.logDir).catch(() => [])).filter((name) => name.startsWith(`${kind}-`) && name.endsWith(".jsonl"));
     const rows: T[] = [];
     for (const file of files.sort()) {
       try {

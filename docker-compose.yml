@@ -38,6 +38,7 @@ services:
       PORT: 8080
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       REDIS_URL: redis://redis:6379
+      DATA_DIR: /data
       TZ: ${TZ:-Asia/Shanghai}
       DISPLAY: ${DISPLAY:-:99}
       XDG_RUNTIME_DIR: /tmp/autoapi-runtime
