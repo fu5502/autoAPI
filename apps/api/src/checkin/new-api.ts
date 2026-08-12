@@ -792,19 +792,37 @@ export class NewApiService {
                 const money = auth.adapter === 'local-api'
                   ? { currencySymbol: 'P', quotaPerUnit: 1, displayScale: 1 }
                   : deriveMoneySettings(status.data)
-                const balanceOnly = (auth.adapter === 'new-api-modern' || auth.adapter === 'new-api-legacy')
-                  && (site.checkinMode === 'balance_only' || status.data?.checkin_enabled === false)
+                const isNewApi = auth.adapter === 'new-api-modern' || auth.adapter === 'new-api-legacy'
                 let authToPersist = auth
                 let balanceRaw = numberOrNull(auth.user.quota)
-                if (balanceOnly) {
+                if (isNewApi) {
+                  // All new-api sites must prove that the session can read a
+                  // real balance before authorization is considered successful.
                   const balanceRead = await this.tryReadNewApiBalanceWithoutPage(context, site, 30_000, page, auth.accessToken, effectiveBaseUrl)
-                  if (balanceRead.kind !== 'success') {
-                    state.message = '已检测到登录，正在等待余额读取成功'
+                  if (balanceRead.kind === 'success') {
+                    balanceRaw = balanceRead.read.balance
+                    authToPersist = balanceRead.read.auth
+                  } else if (balanceRead.kind === 'auth_failed') {
+                    state.message = '登录状态已失效，请重新登录'
                     await page.waitForTimeout(4_000)
                     continue
+                  } else {
+                    // 'skip' — checkin is enabled so tryReadNewApiBalanceWithoutPage
+                    // did not attempt. Verify balance from the user info already
+                    // obtained via detectAuthentication; fall back to an explicit
+                    // /api/user/self call.
+                    if (newApiUserBalance(auth.user) === null) {
+                      const self = await pageRequest<unknown>(page, '/api/user/self', 'GET', buildAuthHeaders(auth), 30_000)
+                      const user = self.success ? normalizeNewApiUser(self.data) : null
+                      if (!user || newApiUserBalance(user) === null) {
+                        state.message = '已检测到登录，正在等待余额读取成功'
+                        await page.waitForTimeout(4_000)
+                        continue
+                      }
+                      authToPersist = { ...auth, user }
+                      balanceRaw = newApiUserBalance(user)
+                    }
                   }
-                  balanceRaw = balanceRead.read.balance
-                  authToPersist = balanceRead.read.auth
                 }
                 if (authToPersist.adapter === 'new-api-modern' && authToPersist.accessToken) {
                   const host = new URL(effectiveBaseUrl).hostname.toLowerCase().replace(/\.$/, '')
@@ -924,7 +942,7 @@ export class NewApiService {
             beforeRaw: site.lastBalanceRaw,
             ...(balanceRead ? { afterRaw: balanceRead.balance } : {}),
             money,
-            loginVerified: balanceRead !== null || this.loginRemainsValid(site),
+            loginVerified: balanceRead !== null,
           })
         }
 
@@ -955,7 +973,7 @@ export class NewApiService {
               beforeRaw,
               afterRaw: beforeRaw,
               money,
-              loginVerified: true,
+              loginVerified: beforeRaw !== null,
             })
           }
           const message = checkinStatus.message || '无法读取签到状态'
@@ -964,11 +982,11 @@ export class NewApiService {
             return this.makeResult(site, runId, startedAt, 'manual_required', message, {
               beforeRaw,
               money,
-              loginVerified: !definitiveFailure,
+              loginVerified: !definitiveFailure && beforeRaw !== null,
             })
           }
-          if (message.includes('未启用')) return this.makeResult(site, runId, startedAt, 'disabled', message, { beforeRaw, afterRaw: beforeRaw, money, loginVerified: true })
-          return this.makeResult(site, runId, startedAt, 'failed', message, { beforeRaw, money, loginVerified: true })
+          if (message.includes('未启用')) return this.makeResult(site, runId, startedAt, 'disabled', message, { beforeRaw, afterRaw: beforeRaw, money, loginVerified: beforeRaw !== null })
+          return this.makeResult(site, runId, startedAt, 'failed', message, { beforeRaw, money, loginVerified: beforeRaw !== null })
         }
 
         const todayRecord = findTodayRecord(checkinStatus.data?.stats?.records)
@@ -986,11 +1004,11 @@ export class NewApiService {
         // 只是签到那一步需要人工完成。标记 loginVerified 让登录列保持“登录有效”，
         // 只有签到列显示“需人工处理”。
         if (remoteStatus?.turnstile_check) {
-          return this.makeResult(site, runId, startedAt, 'manual_required', '站点启用了人机验证，请打开授权窗口手动完成', { beforeRaw, money, loginVerified: true })
+          return this.makeResult(site, runId, startedAt, 'manual_required', '站点启用了人机验证，请打开授权窗口手动完成', { beforeRaw, money, loginVerified: beforeRaw !== null })
         }
 
         if (checkinStatus.data?.captcha_enabled) {
-          return this.makeResult(site, runId, startedAt, 'manual_required', '该站点签到需要输入验证码，请在“站点管理”中点击“重新授权/签到”手动完成', { beforeRaw, money, loginVerified: true })
+          return this.makeResult(site, runId, startedAt, 'manual_required', '该站点签到需要输入验证码，请在“站点管理”中点击“重新授权/签到”手动完成', { beforeRaw, money, loginVerified: beforeRaw !== null })
         }
 
         const checkinHeaders = buildCheckinHeaders(auth, checkinStatus.data?.checkin_nonce)
@@ -1004,7 +1022,7 @@ export class NewApiService {
           return this.makeResult(site, runId, startedAt, isManualMessage(message) || definitiveFailure ? 'manual_required' : 'failed', message, {
             beforeRaw,
             money,
-            loginVerified: !definitiveFailure,
+            loginVerified: !definitiveFailure && beforeRaw !== null,
           })
         }
 
@@ -1074,7 +1092,7 @@ export class NewApiService {
           }
           const balance = await this.readHybgzsWelfareBalance(page, requestTimeoutMs)
           if (balance === null) {
-            return this.makeResult(site, runId, startedAt, 'failed', '无法读取黑与白福利站余额', { money: hybgzsWelfareMoney, loginVerified: true })
+            return this.makeResult(site, runId, startedAt, 'failed', '无法读取黑与白福利站余额', { money: hybgzsWelfareMoney, loginVerified: false })
           }
           return this.makeResult(site, runId, startedAt, 'disabled', '自动签到已关闭，余额已刷新', {
             beforeRaw: site.lastBalanceRaw,
@@ -1151,7 +1169,7 @@ export class NewApiService {
           }
           const balance = numberOrNull(auth.user.balance)
           if (balance === null) {
-            return this.makeResult(site, runId, startedAt, 'failed', '无法读取 Sub2API 余额', { money, loginVerified: true })
+            return this.makeResult(site, runId, startedAt, 'failed', '无法读取 Sub2API 余额', { money, loginVerified: false })
           }
           this.db.updateSiteAuth(site.id, {
             adapter: 'sub2api',
@@ -1219,7 +1237,7 @@ export class NewApiService {
         const balance = newApiUserBalance(auth.user)
         const money = deriveMoneySettings(statusResponse.data)
         if (balance === null) {
-          return this.makeResult(site, runId, startedAt, 'failed', '无法读取站点余额', { money, loginVerified: true })
+          return this.makeResult(site, runId, startedAt, 'failed', '无法读取站点余额', { money, loginVerified: false })
         }
         this.persistNewApiBalance(site, { auth, balance }, money)
         return this.makeResult(site, runId, startedAt, 'disabled', '自动签到已关闭，余额已刷新', {
@@ -1540,7 +1558,7 @@ export class NewApiService {
       return this.makeResult(site, runId, startedAt, definitiveFailure || isManualMessage(message) ? 'manual_required' : 'failed', message, {
         beforeRaw,
         money: hybgzsWelfareMoney,
-        loginVerified: !definitiveFailure,
+        loginVerified: !definitiveFailure && beforeRaw !== null,
       })
     }
     if (config.data?.hasCheckedInToday) {
@@ -1561,18 +1579,18 @@ export class NewApiService {
       return this.makeResult(site, runId, startedAt, definitiveFailure || isManualMessage(message) ? 'manual_required' : 'failed', message, {
         beforeRaw,
         money: hybgzsWelfareMoney,
-        loginVerified: !definitiveFailure,
+        loginVerified: !definitiveFailure && beforeRaw !== null,
       })
     }
     if (status.data?.enabled === false) {
-      return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw, afterRaw: beforeRaw, money: hybgzsWelfareMoney, loginVerified: true })
+      return this.makeResult(site, runId, startedAt, 'disabled', '签到功能未启用', { beforeRaw, afterRaw: beforeRaw, money: hybgzsWelfareMoney, loginVerified: beforeRaw !== null })
     }
     const signInButton = page.getByRole('button', { name: /立即签到/ })
     if (await signInButton.count() === 0) {
       return this.makeResult(site, runId, startedAt, 'failed', '签到页面未找到“立即签到”按钮', {
         beforeRaw,
         money: hybgzsWelfareMoney,
-        loginVerified: true,
+        loginVerified: beforeRaw !== null,
       })
     }
 
@@ -1598,7 +1616,7 @@ export class NewApiService {
         })
       }
       if (pageState.errorMessage) {
-        const loginVerified = !isLoginRelatedMessage(pageState.errorMessage)
+        const loginVerified = !isLoginRelatedMessage(pageState.errorMessage) && beforeRaw !== null
         return this.makeResult(site, runId, startedAt, isManualMessage(pageState.errorMessage) ? 'manual_required' : 'failed', pageState.errorMessage, {
           beforeRaw,
           money: hybgzsWelfareMoney,
@@ -1622,7 +1640,7 @@ export class NewApiService {
       pageState.challengeVisible
         ? '登录有效；请在打开的签到页面完成 CAP 人机验证，验证后会自动签到'
         : '点击“立即签到”后未收到签到结果，请打开签到页面检查',
-      { beforeRaw, money: hybgzsWelfareMoney, loginVerified: true },
+      { beforeRaw, money: hybgzsWelfareMoney, loginVerified: beforeRaw !== null },
     )
   }
 
@@ -1755,7 +1773,7 @@ export class NewApiService {
       return this.makeResult(site, runId, startedAt, definitiveFailure ? 'manual_required' : 'failed', message, {
         beforeRaw: site.lastBalanceRaw,
         money,
-        loginVerified: !definitiveFailure,
+        loginVerified: false,
       })
     }
 
@@ -1817,7 +1835,7 @@ export class NewApiService {
       return this.makeResult(site, runId, startedAt, 'failed', '无法读取 YiAPI 余额', {
         beforeRaw: site.lastBalanceRaw,
         money: yiApiMoney,
-        loginVerified: true,
+        loginVerified: false,
       })
     }
 
@@ -1862,7 +1880,7 @@ export class NewApiService {
       return this.makeResult(site, runId, startedAt, 'failed', '无法读取 TrueSOTA 余额', {
         beforeRaw,
         money: trueSotaMoney,
-        loginVerified: true,
+        loginVerified: false,
       })
     }
 
@@ -1935,18 +1953,26 @@ export class NewApiService {
         }
         if (!auth) return false
 
-        // Balance-only sites must prove that the imported session can read a
+        // All new-api sites must prove that the imported session can read a
         // real balance before authorization is considered successful.
         const newApiAuth = auth.adapter === 'new-api-modern' || auth.adapter === 'new-api-legacy'
-        let balanceOnly = newApiAuth && site.checkinMode === 'balance_only'
-        if (newApiAuth && !balanceOnly) {
-          const status = await this.getRemoteStatus(page)
-          balanceOnly = status.data?.checkin_enabled === false
-        }
-        if (balanceOnly) {
+        if (newApiAuth) {
           const balanceRead = await this.tryReadNewApiBalanceWithoutPage(context, site, 30_000, page, auth.accessToken)
-          if (balanceRead.kind !== 'success') return false
-          auth = balanceRead.read.auth
+          if (balanceRead.kind === 'success') {
+            auth = balanceRead.read.auth
+          } else if (balanceRead.kind === 'auth_failed') {
+            return false
+          } else {
+            // 'skip' — checkin is enabled so tryReadNewApiBalanceWithoutPage did not
+            // attempt. Verify balance from the user info already obtained via
+            // detectAuthentication; fall back to an explicit /api/user/self call.
+            if (newApiUserBalance(auth.user) === null) {
+              const self = await pageRequest<unknown>(page, '/api/user/self', 'GET', buildAuthHeaders(auth), 30_000)
+              const user = self.success ? normalizeNewApiUser(self.data) : null
+              if (!user || newApiUserBalance(user) === null) return false
+              auth = { ...auth, user }
+            }
+          }
         }
 
         if (auth.adapter === 'new-api-modern' && auth.accessToken) {

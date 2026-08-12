@@ -419,15 +419,16 @@ export class MemoryStore implements GatewayStore {
 
   async listGatewayKeys(): Promise<GatewayKeySummary[]> {
     return [...this.gatewayKeys.values()]
-      .map(({ keyHash: _keyHash, ...summary }) => summary)
+      .map(({ keyHash: _keyHash, keyCiphertext: _keyCiphertext, ...summary }) => summary)
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   }
 
-  async createGatewayKey(name: string, keyHash: string, keyLast4: string): Promise<GatewayKey> {
+  async createGatewayKey(name: string, keyHash: string, keyLast4: string, keyCiphertext: string): Promise<GatewayKey> {
     const key: GatewayKey = {
       id: randomUUID(),
       name,
       keyHash,
+      keyCiphertext,
       keyLast4,
       enabled: true,
       createdAt: new Date().toISOString(),
@@ -435,6 +436,10 @@ export class MemoryStore implements GatewayStore {
     };
     this.gatewayKeys.set(key.id, key);
     return key;
+  }
+
+  async revealGatewayKey(id: string): Promise<string | null> {
+    return this.gatewayKeys.get(id)?.keyCiphertext ?? null;
   }
 
   async deleteGatewayKey(id: string): Promise<boolean> {
@@ -449,7 +454,7 @@ export class MemoryStore implements GatewayStore {
     const key = [...this.gatewayKeys.values()].find((item) => item.enabled && item.keyHash === keyHash);
     if (!key) return null;
     key.lastUsedAt = new Date().toISOString();
-    const { keyHash: _keyHash, ...summary } = key;
+    const { keyHash: _keyHash, keyCiphertext: _keyCiphertext, ...summary } = key;
     return summary;
   }
 

@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS gateway_keys (
   last_used_at timestamptz
 );
 
+ALTER TABLE gateway_keys ADD COLUMN IF NOT EXISTS key_ciphertext text;
+
 CREATE INDEX IF NOT EXISTS idx_gateway_keys_active ON gateway_keys (key_hash) WHERE enabled = true;
 
 CREATE TABLE IF NOT EXISTS providers (

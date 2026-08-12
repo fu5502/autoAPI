@@ -1,4 +1,4 @@
-import type { AdminLoginRecord, Channel, CreatedGatewayKey, GatewayKeySummary, GatewayStatus, ModelDiscoveryResult, PlaygroundResponse, PlaygroundSession, Pool, ProbeResponse, RequestLogPage, Usage } from "./types";
+import type { AdminLoginRecord, Channel, CreatedGatewayKey, GatewayKeySummary, GatewayLogEntry, GatewayStatus, LogPage, ModelDiscoveryResult, PlaygroundResponse, PlaygroundSession, Pool, ProbeResponse, RequestLogPage, SystemLogEntry, Usage } from "./types";
 
 const tokenKey = "autoapi-admin-session";
 
@@ -106,6 +106,7 @@ function translateApiError(message: string | undefined, status: number) {
     "Channel not found after probe": "探测完成后找不到该渠道。",
     "Provider import failed": "渠道导入失败。",
     "Gateway key not found": "访问密钥不存在。",
+    "Gateway key ciphertext is missing": "此密钥创建于较早版本，无法查看明文，请删除后重新创建。",
     "At least one gateway key must remain": "至少保留一个可用访问密钥。",
     "Gateway key already exists": "该访问密钥已经存在。",
     "Selected model is not configured for this channel": "该模型未配置在所选渠道中。",
@@ -134,6 +135,7 @@ export const api = {
     return result;
   }),
   gatewayKeys: () => adminFetch<GatewayKeySummary[]>("/gateway-keys"),
+  revealGatewayKey: (id: string) => adminFetch<{ key: string }>(`/gateway-keys/${id}/reveal`),
   createGatewayKey: (body: { name: string; key?: string }) => adminFetch<CreatedGatewayKey>("/gateway-keys", {
     method: "POST",
     body: JSON.stringify(body),
@@ -164,6 +166,28 @@ export const api = {
     if (params.localOnly) query.set("localOnly", "true");
     return adminFetch<RequestLogPage>(`/requests?${query.toString()}`);
   },
+  gatewayLogs: (params: { limit: number; offset: number; model?: string; channel?: string; statusCode?: string; errorType?: string }) => {
+    const query = new URLSearchParams({ limit: String(params.limit), offset: String(params.offset) });
+    for (const [key, value] of Object.entries(params)) {
+      if (key === "limit" || key === "offset" || typeof value !== "string" || !value) continue;
+      query.set(key, value);
+    }
+    return adminFetch<LogPage<GatewayLogEntry>>(`/gateway-logs?${query.toString()}`);
+  },
+  systemLogs: (params: { limit: number; offset: number; level?: string; source?: string }) => {
+    const query = new URLSearchParams({ limit: String(params.limit), offset: String(params.offset) });
+    for (const [key, value] of Object.entries(params)) {
+      if (key === "limit" || key === "offset" || typeof value !== "string" || !value) continue;
+      query.set(key, value);
+    }
+    return adminFetch<LogPage<SystemLogEntry>>(`/system-logs?${query.toString()}`);
+  },
+  logSettings: () => adminFetch<{ retentionDays: number }>("/logs/settings"),
+  updateLogSettings: (retentionDays: number) => adminFetch<{ retentionDays: number }>("/logs/settings", {
+    method: "POST",
+    body: JSON.stringify({ retentionDays }),
+  }),
+  clearAllLogs: () => adminFetch<{ removed: number }>("/logs/clear-all", { method: "POST", body: JSON.stringify({}) }),
   playgroundChat: (body: Record<string, unknown>, onDelta?: (delta: string) => void) => body.stream === true
     ? adminStream<PlaygroundResponse>("/playground/chat", body, onDelta)
     : adminFetch<PlaygroundResponse>("/playground/chat", {

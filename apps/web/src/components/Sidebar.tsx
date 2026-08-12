@@ -1,18 +1,16 @@
-import { Activity, BadgeCheck, Boxes, Cable, ClipboardList, FlaskConical, Gauge, Network, ShieldCheck } from "lucide-react";
+import { BadgeCheck, Boxes, ClipboardList, FlaskConical, Gauge, Github, Network, ShieldCheck } from "lucide-react";
 import type { View } from "../types";
 
 const nav = [
-  { id: "overview" as const, label: "概览", icon: Gauge },
-  { id: "channels" as const, label: "渠道", icon: Cable },
-  { id: "pools" as const, label: "模型池", icon: Boxes },
-  { id: "usage" as const, label: "用量", icon: Activity },
-  { id: "requests" as const, label: "调用请求", icon: ClipboardList },
+  { id: "overview" as const, label: "概览/用量", icon: Gauge },
+  { id: "channels" as const, label: "渠道/模型池", icon: Boxes },
+  { id: "requests" as const, label: "日志中心", icon: ClipboardList },
   { id: "playground" as const, label: "模型测试", icon: FlaskConical },
   { id: "checkin" as const, label: "公益站签到", icon: BadgeCheck },
-  { id: "security" as const, label: "安全设置", icon: ShieldCheck },
+  { id: "security" as const, label: "控制面板", icon: ShieldCheck },
 ];
 
-export function Sidebar({ view, onChange }: { view: View; onChange: (view: View) => void }) {
+export function Sidebar({ view, onChange, version }: { view: View; onChange: (view: View) => void; version: string }) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -28,8 +26,10 @@ export function Sidebar({ view, onChange }: { view: View; onChange: (view: View)
         ))}
       </nav>
       <div className="sidebar-foot">
-        <span className="live-dot" />
-        控制面板在线
+        <a className="sidebar-version" href="https://github.com/fu5502/autoAPI" target="_blank" rel="noreferrer" title="autoAPI GitHub 项目地址">
+          <Github size={14} />
+          <span>v{version}</span>
+        </a>
       </div>
     </aside>
   );

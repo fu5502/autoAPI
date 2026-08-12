@@ -1,9 +1,10 @@
 import type { GatewayStore } from "../domain/store.js";
 import type { GatewayRequest, RoutingCandidate, UpstreamResult } from "../domain/types.js";
+import type { DiagnosticLogger, RetryTraceEntry } from "../logger/diagnostic-log.js";
 import type { RuntimeState } from "../runtime/runtime-state.js";
 import type { SecretBox } from "../security/secret-box.js";
 import type { AdapterAttempt, AdapterRegistry } from "./adapter.js";
-import { GatewayError, toUpstreamError } from "./errors.js";
+import { GatewayError, toUpstreamError, type UpstreamError } from "./errors.js";
 import { eligibleCandidates, orderCandidates } from "./selector.js";
 import { finalizeStream } from "./streaming.js";
 
@@ -24,6 +25,7 @@ export interface GatewayRouterOptions {
   runtime: RuntimeState;
   timeoutMs: number;
   failureThreshold: number;
+  diagnostic?: DiagnosticLogger;
 }
 
 export class GatewayRouter {
@@ -44,6 +46,7 @@ export class GatewayRouter {
     const firstAttempt = attempts[0] ?? null;
     let lastError: ReturnType<typeof toUpstreamError> | null = null;
     let attemptedChannels = 0;
+    const retryTrace: RetryTraceEntry[] = [];
     for (let index = 0; index < attempts.length; index += 1) {
       const candidate = await this.getCurrentEligibleCandidate(attempts[index]!, request);
       if (!candidate) continue;
@@ -73,13 +76,20 @@ export class GatewayRouter {
               rememberRoute,
               true,
               consumedToEnd,
+              retryTrace,
             )),
           };
         }
-        await this.recordSuccess(request, candidate.channel.id, candidate.upstreamModel, retryCount, attempt, startedAt, rememberRoute);
+        await this.recordSuccess(request, candidate.channel.id, candidate.upstreamModel, retryCount, attempt, startedAt, rememberRoute, retryTrace);
         return attempt.result;
       } catch (error) {
         lastError = toUpstreamError(error);
+        retryTrace.push({
+          channelName: candidate.channel.name,
+          statusCode: lastError.statusCode,
+          errorType: lastError.errorType,
+          latencyMs: Date.now() - startedAt,
+        });
         if (lastError.retryable) {
           await Promise.all([
             this.options.store.recordChannelFailure(
@@ -98,6 +108,9 @@ export class GatewayRouter {
           lastError.statusCode,
           lastError.errorType,
           startedAt,
+          undefined,
+          lastError,
+          retryTrace,
         );
         if (!lastError.retryable) {
           throw new GatewayError(lastError.message, lastError.statusCode, lastError.errorType, lastError);
@@ -114,10 +127,14 @@ export class GatewayRouter {
           503,
           "channel_unavailable",
           startedAt,
+          undefined,
+          undefined,
+          retryTrace,
         );
       }
       throw new GatewayError(`No eligible channel for model ${request.model}`, 503, "no_eligible_channel");
     }
+    await this.emitGatewayLog(request, lastError?.statusCode ?? 502, null, null, retryTrace, startedAt, lastError?.errorType ?? "all_channels_failed", lastError, 0, 0);
     throw new GatewayError(
       lastError?.message ?? "All upstream channels failed",
       lastError?.statusCode ?? 502,
@@ -316,6 +333,8 @@ export class GatewayRouter {
     errorType: string,
     startedAt: number,
     attempt?: AdapterAttempt,
+    upstreamError?: UpstreamError | null,
+    retryTrace?: RetryTraceEntry[],
   ): Promise<void> {
     const usage = attempt ? await this.readAttemptUsage(attempt) : { promptTokens: 0, completionTokens: 0, cachedTokens: null };
     await this.options.store.recordUsage({
@@ -339,6 +358,18 @@ export class GatewayRouter {
       cachedTokens: usage.cachedTokens,
       firstByteLatencyMs: attempt?.firstByteLatencyMs ?? null,
     });
+    await this.emitGatewayLog(
+      request,
+      statusCode,
+      channelId,
+      upstreamModel,
+      retryTrace ?? [],
+      startedAt,
+      errorType,
+      upstreamError ?? null,
+      usage.promptTokens,
+      usage.completionTokens,
+    );
   }
 
   private async recordStreamResult(
@@ -351,10 +382,11 @@ export class GatewayRouter {
     rememberRoute: boolean,
     penalizeRouting: boolean,
     consumedToEnd: boolean,
+    retryTrace?: RetryTraceEntry[],
   ): Promise<void> {
     const streamError = attempt.streamError ? await attempt.streamError : null;
     if (!streamError && consumedToEnd) {
-      await this.recordSuccess(request, channelId, upstreamModel, retryCount, attempt, startedAt, rememberRoute);
+      await this.recordSuccess(request, channelId, upstreamModel, retryCount, attempt, startedAt, rememberRoute, retryTrace);
       return;
     }
     if (!streamError) {
@@ -367,6 +399,8 @@ export class GatewayRouter {
         "client_closed_request",
         startedAt,
         attempt,
+        null,
+        retryTrace,
       );
       return;
     }
@@ -384,6 +418,8 @@ export class GatewayRouter {
       "upstream_stream_interrupted",
       startedAt,
       attempt,
+      streamError,
+      retryTrace,
     );
   }
 
@@ -395,6 +431,7 @@ export class GatewayRouter {
     attempt: AdapterAttempt,
     startedAt: number,
     rememberRoute: boolean,
+    retryTrace?: RetryTraceEntry[],
   ): Promise<void> {
     const { promptTokens, completionTokens, cachedTokens } = await this.readAttemptUsage(attempt);
     const moderationInfo = attempt.moderation ? await attempt.moderation : null;
@@ -422,6 +459,64 @@ export class GatewayRouter {
       reasoningEffort: request.reasoningEffort ?? null,
       cachedTokens,
       firstByteLatencyMs: attempt.firstByteLatencyMs ?? null,
+    });
+    await this.emitGatewayLog(
+      request,
+      attempt.result.status,
+      channelId,
+      upstreamModel,
+      retryTrace ?? [],
+      startedAt,
+      moderationInfo ? moderationInfo.errorType : null,
+      null,
+      promptTokens,
+      completionTokens,
+    );
+  }
+
+  private async emitGatewayLog(
+    request: GatewayRequest,
+    statusCode: number,
+    channelId: string | null,
+    upstreamModel: string | null,
+    retryTrace: RetryTraceEntry[],
+    startedAt: number,
+    errorType: string | null,
+    upstreamError: UpstreamError | null,
+    promptTokens: number,
+    completionTokens: number,
+  ): Promise<void> {
+    const diagnostic = this.options.diagnostic;
+    if (!diagnostic) return;
+    const channelName = channelId ? (await this.options.store.getChannel(channelId).catch(() => null))?.name ?? null : null;
+    let upstreamBody: string | null = null;
+    if (upstreamError?.responseBody) {
+      try {
+        upstreamBody = new TextDecoder().decode(upstreamError.responseBody);
+      } catch {
+        upstreamBody = null;
+      }
+    }
+    void diagnostic.logGateway({
+      requestId: request.requestId,
+      kind: request.kind,
+      model: request.model,
+      channelId,
+      channelName,
+      upstreamModel,
+      statusCode,
+      errorType,
+      errorDetail: null,
+      upstreamBody,
+      requestBody: statusCode >= 400 ? JSON.stringify(request.body) : null,
+      retryCount: retryTrace.length,
+      retryTrace,
+      latencyMs: Date.now() - startedAt,
+      streamed: request.stream,
+      clientName: request.clientName,
+      endpoint: request.endpoint ?? null,
+      promptTokens,
+      completionTokens,
     });
   }
 

@@ -18,6 +18,7 @@ import { OpenAiAdapter } from "./gateway/adapters/openai-adapter.js";
 import { GatewayRouter } from "./gateway/router.js";
 import { registerAdminRoutes } from "./http/admin-routes.js";
 import { gatewayErrorHandler, registerProxyRoutes } from "./http/proxy-routes.js";
+import { DiagnosticLogger } from "./logger/diagnostic-log.js";
 import { MemoryRuntimeState, RedisRuntimeState, type RuntimeState } from "./runtime/runtime-state.js";
 import { createSecretBox } from "./security/secret-box.js";
 import { hashGatewayKey } from "./security/gateway-key.js";
@@ -33,6 +34,7 @@ export interface BuildAppOptions {
   startAgent?: boolean;
   startCheckin?: boolean;
   version?: string;
+  diagnostic?: DiagnosticLogger;
 }
 
 export async function buildApp(options: BuildAppOptions = {}) {
@@ -51,7 +53,8 @@ export async function buildApp(options: BuildAppOptions = {}) {
     trustProxy: config.trustProxy,
   });
   registerCompressedJsonParser(app);
-  app.setErrorHandler(gatewayErrorHandler);
+  const diagnostic = options.diagnostic ?? (config.nodeEnv === "test" ? undefined : new DiagnosticLogger(config.dataDir, config.logRetentionDays));
+  app.setErrorHandler(gatewayErrorHandler(diagnostic));
   await app.register(cors, {
     origin: config.nodeEnv === "production"
       ? (origin, callback) => {
@@ -79,7 +82,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
       : await PersistentMemoryStore.fromFile(dataFile, legacyDataFile)
     : await connectProductionStore(config.databaseUrl));
   if ((await store.listGatewayKeys()).length === 0) {
-    await store.createGatewayKey("环境变量密钥", hashGatewayKey(config.gatewayApiKey), config.gatewayApiKey.slice(-4));
+    await store.createGatewayKey("环境变量密钥", hashGatewayKey(config.gatewayApiKey), config.gatewayApiKey.slice(-4), secrets.encrypt(config.gatewayApiKey));
   }
   const adminAuth = new AdminAuthService(store, config.adminToken);
   await adminAuth.ensureAccount(config.adminUsername, config.adminPassword);
@@ -99,6 +102,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     runtime,
     timeoutMs: config.upstreamTimeoutMs,
     failureThreshold: config.failureThreshold,
+    ...(diagnostic ? { diagnostic } : {}),
   });
   const agent = new OpsAgent({
     store,
@@ -107,11 +111,22 @@ export async function buildApp(options: BuildAppOptions = {}) {
     timeoutMs: config.upstreamTimeoutMs,
     failureThreshold: config.failureThreshold,
     intervalMs: config.healthCheckIntervalMs,
+    ...(diagnostic ? { diagnostic } : {}),
   });
 
   if (checkin) void checkin.balanceSync.syncAll().catch(() => undefined);
 
   app.get("/healthz", async () => ({ status: "ok", mode: config.appMode, version, timestamp: new Date().toISOString() }));
+  if (diagnostic) {
+    diagnostic.startAutoCleanup(config.logCleanupIntervalMs);
+    void diagnostic.init().then(() => diagnostic.logSystem("info", "system", "服务启动", {
+      version,
+      mode: config.appMode,
+      nodeEnv: config.nodeEnv,
+      dataDir: config.dataDir,
+      logRetentionDays: config.logRetentionDays,
+    })).catch(() => undefined);
+  }
   await registerAdminRoutes(app, {
     store,
     agent,
@@ -125,6 +140,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     checkinDb: checkin?.db,
     siteIcons: checkin?.siteIcons,
     checkin: checkin ? { db: checkin.db, coordinator: checkin.coordinator } : undefined,
+    diagnostic,
   });
   if (checkin) {
     await registerCheckinRoutes(app, checkin, async (request, reply) => {
@@ -149,6 +165,10 @@ export async function buildApp(options: BuildAppOptions = {}) {
   }
 
   app.addHook("onClose", async () => {
+    diagnostic?.stopAutoCleanup();
+    if (diagnostic) {
+      void diagnostic.logSystem("info", "system", "服务关闭", { version }).catch(() => undefined);
+    }
     agent.stop();
     browserProxy?.close();
     await Promise.all([store.close(), runtime.close(), checkin?.close()]);

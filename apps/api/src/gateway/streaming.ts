@@ -87,7 +87,7 @@ export function mapSseStream(
       let failed = false;
       for await (const chunk of source) {
         buffer += decoder.decode(chunk, { stream: true });
-        const blocks = buffer.split("\n\n");
+        const blocks = buffer.split(/\r?\n\r?\n/);
         buffer = blocks.pop() ?? "";
         for (const block of blocks) {
           if (block.split(/\r?\n/).some((line) => line.trim() === "event: error")) {
@@ -95,7 +95,7 @@ export function mapSseStream(
             yield encoder.encode(`${block}\n\n`);
             continue;
           }
-          const dataLine = block.split("\n").find((line) => line.startsWith("data:"));
+          const dataLine = block.split(/\r?\n/).find((line) => line.startsWith("data:"));
           if (!dataLine) continue;
           const raw = dataLine.slice(5).trim();
           if (raw === "[DONE]") continue;

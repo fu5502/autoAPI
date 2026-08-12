@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Channel, GatewayRequest, ProbeResult } from "../../domain/types.js";
 import type { AdapterAttempt, AdapterUsage, UpstreamAdapter } from "../adapter.js";
+import { GatewayError } from "../errors.js";
 import { fetchUpstream, parseJson, responseHeaders } from "../http.js";
 import { errorMessage, optionalBalance, probeJson } from "../probe-utils.js";
 import { mapSseStream, observeSseUsage } from "../streaming.js";
@@ -35,11 +36,13 @@ export class GeminiAdapter implements UpstreamAdapter {
     const path = `/v1beta/models/${encodeURIComponent(normalizeGeminiModel(upstreamModel))}:${method}`;
     const { response, body, firstByteLatencyMs, streamError } = await fetchUpstream(
       apiUrl(channel.baseUrl, path),
-      { method: "POST", headers: geminiHeaders(apiKey), body: JSON.stringify(toGeminiBody(request.body)) },
+      { method: "POST", headers: { ...geminiHeaders(apiKey), ...(request.stream ? { accept: "text/event-stream" } : {}) }, body: JSON.stringify(toGeminiBody(request.body)) },
       timeoutMs,
       request.stream,
     );
-    if (!(body instanceof Uint8Array)) {
+    const contentType = response.headers.get("content-type") ?? "";
+    const isSse = contentType.includes("text/event-stream") || contentType.includes("text/plain");
+    if (!(body instanceof Uint8Array) && isSse) {
       const observed = observeSseUsage(body, readStreamUsage);
       return {
         result: {
@@ -57,10 +60,16 @@ export class GeminiAdapter implements UpstreamAdapter {
         ...(streamError ? { streamError } : {}),
       };
     }
-    const gemini = parseJson(body);
-    const normalized = new TextEncoder().encode(JSON.stringify(toOpenAiResponse(gemini, request.model)));
-    const usage = gemini.usageMetadata && typeof gemini.usageMetadata === "object"
-      ? (gemini.usageMetadata as Record<string, unknown>)
+    // Non-streaming path: either not requested, or upstream returned JSON instead of SSE
+    const rawBody = body instanceof Uint8Array ? body : await readAllBytes(body);
+    const gemini = parseJson(rawBody);
+    // Handle JSON array responses from streamGenerateContent without alt=sse
+    const geminiObj = Array.isArray(gemini) ? (gemini[0] as Record<string, unknown>) ?? gemini : gemini;
+    const blockReason = geminiBlockReason(geminiObj);
+    if (blockReason) throw new GatewayError(`Gemini API 拒绝生成：${blockReason}`, 502, "upstream_blocked");
+    const normalized = new TextEncoder().encode(JSON.stringify(toOpenAiResponse(geminiObj, request.model)));
+    const usage = geminiObj.usageMetadata && typeof geminiObj.usageMetadata === "object"
+      ? (geminiObj.usageMetadata as Record<string, unknown>)
       : {};
     return {
       result: {
@@ -249,6 +258,21 @@ function normalizeGeminiModel(model: string): string {
   return model.replace(/^models\//, "");
 }
 
+async function readAllBytes(source: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of source) chunks.push(chunk);
+  if (chunks.length === 0) return new Uint8Array();
+  if (chunks.length === 1) return chunks[0]!;
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
 function geminiHeaders(apiKey: string): Record<string, string> {
   return { "x-goog-api-key": apiKey, "content-type": "application/json", accept: "application/json" };
 }
@@ -290,6 +314,23 @@ function candidateText(payload: Record<string, unknown>): string {
   return parts.flatMap((part) => (part && typeof part === "object" && "text" in part && typeof part.text === "string" ? [part.text] : [])).join("");
 }
 
+function geminiBlockReason(payload: Record<string, unknown>): string | null {
+  const promptFeedback = payload.promptFeedback;
+  if (promptFeedback && typeof promptFeedback === "object" && "blockReason" in promptFeedback && typeof promptFeedback.blockReason === "string") {
+    return `提示被拦截（${promptFeedback.blockReason}）`;
+  }
+  const candidate = Array.isArray(payload.candidates) ? payload.candidates[0] : null;
+  if (candidate && typeof candidate === "object") {
+    const finishReason = (candidate as Record<string, unknown>).finishReason;
+    if (typeof finishReason === "string" && finishReason !== "STOP" && finishReason !== "MAX_TOKENS") {
+      if (!("content" in candidate) || !candidate.content) {
+        return `生成被中断（${finishReason}）`;
+      }
+    }
+  }
+  return null;
+}
+
 function toOpenAiResponse(payload: Record<string, unknown>, model: string) {
   return {
     id: `chatcmpl-${randomUUID()}`,
@@ -307,12 +348,17 @@ function toOpenAiResponse(payload: Record<string, unknown>, model: string) {
 
 function toOpenAiChunk(event: unknown, model: string) {
   if (!event || typeof event !== "object") return null;
+  const payload = event as Record<string, unknown>;
+  const text = candidateText(payload);
+  const blockReason = geminiBlockReason(payload);
+  const content = text || (blockReason ? `[${blockReason}]` : "");
+  if (!content) return null;
   return {
     id: `chatcmpl-${randomUUID()}`,
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
     model,
-    choices: [{ index: 0, delta: { content: candidateText(event as Record<string, unknown>) }, finish_reason: null }],
+    choices: [{ index: 0, delta: { content }, finish_reason: null }],
   };
 }
 

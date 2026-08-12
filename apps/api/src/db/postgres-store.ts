@@ -911,14 +911,23 @@ export class PostgresStore implements GatewayStore {
     }));
   }
 
-  async createGatewayKey(name: string, keyHash: string, keyLast4: string): Promise<GatewayKey> {
+  async createGatewayKey(name: string, keyHash: string, keyLast4: string, keyCiphertext: string): Promise<GatewayKey> {
     const result = await this.pool.query(
-      `INSERT INTO gateway_keys (name, key_hash, key_last4)
-       VALUES ($1, $2, $3)
-       RETURNING id, name, key_hash, key_last4, enabled, created_at, last_used_at`,
-      [name, keyHash, keyLast4],
+      `INSERT INTO gateway_keys (name, key_hash, key_last4, key_ciphertext)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, name, key_hash, key_last4, key_ciphertext, enabled, created_at, last_used_at`,
+      [name, keyHash, keyLast4, keyCiphertext],
     );
     return mapGatewayKey(result.rows[0]!);
+  }
+
+  async revealGatewayKey(id: string): Promise<string | null> {
+    const result = await this.pool.query(
+      "SELECT key_ciphertext FROM gateway_keys WHERE id = $1",
+      [id],
+    );
+    const row = result.rows[0];
+    return row ? String(row.key_ciphertext ?? "") : null;
   }
 
   async deleteGatewayKey(id: string): Promise<boolean> {
@@ -1139,6 +1148,7 @@ function mapGatewayKey(row: QueryResultRow): GatewayKey {
     id: String(row.id),
     name: String(row.name),
     keyHash: String(row.key_hash),
+    keyCiphertext: String(row.key_ciphertext ?? ""),
     keyLast4: String(row.key_last4),
     enabled: Boolean(row.enabled),
     createdAt: new Date(row.created_at).toISOString(),

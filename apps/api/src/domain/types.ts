@@ -8,6 +8,7 @@ export interface GatewayKey {
   id: string;
   name: string;
   keyHash: string;
+  keyCiphertext: string;
   keyLast4: string;
   enabled: boolean;
   createdAt: string;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Bot, Check, Clipboard, Copy, Eraser, Eye, EyeOff, FlaskConical, History, LoaderCircle, Pencil, RefreshCw, RotateCcw, Send, Settings2, Trash2, User, UserRoundPlus } from "lucide-react";
+import { Bot, Check, Clipboard, Copy, Eye, EyeOff, FlaskConical, History, LoaderCircle, Pencil, RefreshCw, RotateCcw, Send, Trash2, User, UserRoundPlus } from "lucide-react";
 import { api } from "../api";
 import type { Channel, PlaygroundSession } from "../types";
 
@@ -39,20 +39,20 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
   const [sessionId, setSessionId] = useState<string>(() => createClientId());
   const [messages, setMessages] = useState<PlaygroundMessage[]>([]);
   const [input, setInput] = useState("");
-  const [temperature, setTemperature] = useState(0.7);
-  const [topP, setTopP] = useState(1);
-  const [maxTokens, setMaxTokens] = useState(1024);
-  const [frequencyPenalty, setFrequencyPenalty] = useState(0);
-  const [presencePenalty, setPresencePenalty] = useState(0);
-  const [stream, setStream] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const activeRequestIdRef = useRef<string | null>(null);
   const sessions = useQuery({ queryKey: ["playground-sessions"], queryFn: api.playgroundSessions });
+  // 模型配置面板已移除，请求参数使用固定默认值。
+  const temperature = 0.7;
+  const topP = 1;
+  const maxTokens = 1024;
+  const frequencyPenalty = 0;
+  const presencePenalty = 0;
+  const stream = true;
 
   const selectedChannel = channels.find((channel) => channel.id === channelId) ?? (channelId ? null : channels[0] ?? null);
   const selectedModels = selectedChannel?.models ?? [];
-  const chatMessages = messages.filter((message) => message.role !== "system");
 
   const send = useMutation({
     mutationFn: (variables: { content: string; history: PlaygroundMessage[]; model: string; channelId: string; stream: boolean; requestId: string; assistantMessageId: string; requestSessionId: string }) => {
@@ -185,12 +185,6 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
     setSessionId(session.id);
     setChannelId(session.channelId ?? "");
     setModel(session.model);
-    setTemperature(session.temperature ?? 0.7);
-    setTopP(session.topP ?? 1);
-    setMaxTokens(session.maxTokens ?? 1024);
-    setFrequencyPenalty(session.frequencyPenalty ?? 0);
-    setPresencePenalty(session.presencePenalty ?? 0);
-    setStream(session.stream ?? true);
     setMessages(session.messages.map((message, index) => ({
       id: `${session.id}-${index}`,
       role: message.role,
@@ -250,18 +244,6 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
   return (
     <div className="playground-layout">
       <aside className="playground-config surface">
-        <div className="playground-config-head"><span className="playground-icon"><Settings2 size={17} /></span><div><h2>模型配置</h2><span>选择渠道和参数</span></div></div>
-        <div className="playground-config-body">
-          <div className="playground-status"><span className={`status-dot status-${selectedChannel?.status ?? "disabled"}`} /><span>{selectedChannel ? `${selectedChannel.name} · ${selectedChannel.status === "healthy" ? "健康" : selectedChannel.status === "pending" ? "待检测" : "可测试"}` : "请先添加渠道"}</span></div>
-          <label className="playground-stream-toggle"><input type="checkbox" checked={stream} onChange={(event) => setStream(event.target.checked)} /><span><strong>流式</strong><small>实时接收回复</small></span></label>
-          <div className="playground-divider" />
-          <ParameterSlider label="随机性与创造性" description="控制输出的随机性和创造性" value={temperature} min={0} max={2} step={0.1} onChange={setTemperature} />
-          <ParameterSlider label="核采样" description="控制词汇选择的多样性" value={topP} min={0} max={1} step={0.05} onChange={setTopP} />
-          <ParameterSlider label="频率惩罚" description="减少重复词汇的出现" value={frequencyPenalty} min={-2} max={2} step={0.1} onChange={setFrequencyPenalty} />
-          <ParameterSlider label="存在惩罚" description="减少已经出现过的词汇再次出现" value={presencePenalty} min={-2} max={2} step={0.1} onChange={setPresencePenalty} />
-          <div className="field"><label htmlFor="playground-max-tokens">最大输出令牌数</label><span className="field-hint">限制单次回复的最长长度</span><input id="playground-max-tokens" type="number" min="1" max="32000" step="1" value={maxTokens} onChange={(event) => setMaxTokens(Math.max(1, Number(event.target.value) || 1))} /></div>
-        </div>
-        <div className="playground-config-foot"><button className="button secondary" onClick={clearConversation} disabled={!messages.length}><Eraser size={15} /> 清空会话</button><span>{chatMessages.length} 条消息</span></div>
         <div className="playground-history">
           <div className="playground-history-head"><span><History size={14} /> 测试记录</span><small>{sessions.data?.length ?? 0}</small></div>
           {sessions.isLoading ? <div className="playground-history-empty">正在加载记录…</div> : null}
@@ -312,10 +294,6 @@ export function Playground({ channels, onUpdated }: { channels: Channel[]; onUpd
       </section>
     </div>
   );
-}
-
-function ParameterSlider({ label, description, value, min, max, step, onChange }: { label: string; description: string; value: number; min: number; max: number; step: number; onChange: (value: number) => void }) {
-  return <div className="playground-slider"><div><div className="playground-slider-label"><label htmlFor={`playground-${label}`}>{label}</label><span>{description}</span></div><output>{value}</output></div><input id={`playground-${label}`} type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} /></div>;
 }
 
 function MessageBubble({ message, copied, showDebug, onCopy, onDelete, onEdit, onRegenerate, onQuote }: { message: PlaygroundMessage; copied: boolean; showDebug: boolean; onCopy: () => void; onDelete: () => void; onEdit: () => void; onRegenerate: () => void; onQuote: () => void }) {

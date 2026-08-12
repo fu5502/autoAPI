@@ -972,3 +972,81 @@ describe("admin channel management", () => {
     expect(await store.getChannel(disabledChannel.id)).toMatchObject({ balance: 12, enabled: false, status: "disabled" });
   });
 });
+
+describe("admin diagnostic log APIs", () => {
+  it("exposes sanitized gateway and system logs from JSONL files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "autoapi-admin-diag-"));
+    try {
+      const config = loadConfig({
+        NODE_ENV: "test",
+        APP_MODE: "demo",
+        ADMIN_TOKEN: "admin-diag-test",
+        GATEWAY_API_KEY: "gateway-diag-test",
+        CREDENTIAL_ENCRYPTION_KEY: "diag-encryption-test",
+      });
+      const { DiagnosticLogger } = await import("../logger/diagnostic-log.js");
+      const diagnostic = new DiagnosticLogger(dir);
+      await diagnostic.init();
+      await diagnostic.logGateway({
+        requestId: "req-diag-1", kind: "responses", model: "mimo-v2.5", channelId: "ch-1", channelName: "opencode go",
+        upstreamModel: "mimo-v2.5", statusCode: 400, errorType: "upstream_rejected", errorDetail: null,
+        upstreamBody: '{"error":{"message":"Provider returned error"}}',
+        requestBody: '{"model":"mimo-v2.5","apiKey":"sk-secret-123456"}',
+        retryCount: 1, retryTrace: [{ channelName: "opencode go", statusCode: 400, errorType: "upstream_rejected", latencyMs: 5 }],
+        latencyMs: 12, streamed: true, clientName: "codex", endpoint: "/responses", promptTokens: 3, completionTokens: 0,
+      });
+      await diagnostic.logSystem("error", "gateway", "未处理请求错误", { path: "/v1/responses" });
+
+      const app = await buildApp({ config, runtime: new MemoryRuntimeState(), startAgent: false, diagnostic });
+      resources.push(app.app);
+      const headers = { authorization: "Bearer admin-diag-test" };
+
+      const gateway = await app.app.inject({ method: "GET", url: "/admin/gateway-logs", headers });
+      expect(gateway.statusCode).toBe(200);
+      const page = gateway.json();
+      expect(page.total).toBe(1);
+      expect(page.items[0]).toMatchObject({ requestId: "req-diag-1", statusCode: 400, channelName: "opencode go" });
+      expect(page.items[0].upstreamBody).toContain("Provider returned error");
+      expect(JSON.stringify(page.items[0])).not.toContain("sk-secret-123456");
+
+      const filtered = await app.app.inject({ method: "GET", url: "/admin/gateway-logs?model=mimo-v2.5&errorType=upstream_rejected", headers });
+      expect(filtered.json().total).toBe(1);
+      const empty = await app.app.inject({ method: "GET", url: "/admin/gateway-logs?model=gpt-5.6-luna", headers });
+      expect(empty.json().total).toBe(0);
+
+      const system = await app.app.inject({ method: "GET", url: "/admin/system-logs?level=error&source=gateway", headers });
+      expect(system.statusCode).toBe(200);
+      expect(system.json().items[0]).toMatchObject({ level: "error", source: "gateway" });
+
+      const settings = await app.app.inject({ method: "GET", url: "/admin/logs/settings", headers });
+      expect(settings.json()).toEqual({ retentionDays: 7 });
+      const updated = await app.app.inject({ method: "POST", url: "/admin/logs/settings", headers, payload: { retentionDays: 3 } });
+      expect(updated.json()).toEqual({ retentionDays: 3 });
+      const cleanup = await app.app.inject({ method: "POST", url: "/admin/logs/cleanup", headers, payload: {} });
+      expect(cleanup.statusCode).toBe(200);
+      expect(cleanup.json().removed).toBe(0);
+      const cleared = await app.app.inject({ method: "POST", url: "/admin/logs/clear-all", headers, payload: {} });
+      expect(cleared.statusCode).toBe(200);
+      expect(cleared.json().removed).toBe(2);
+      const afterClear = await app.app.inject({ method: "GET", url: "/admin/gateway-logs", headers });
+      expect(afterClear.json().total).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 404 for log endpoints when diagnostics are disabled", async () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-diag-disabled",
+      GATEWAY_API_KEY: "gateway-diag-disabled",
+      CREDENTIAL_ENCRYPTION_KEY: "diag-disabled-encryption-test",
+    });
+    const app = await buildApp({ config, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(app.app);
+    const headers = { authorization: "Bearer admin-diag-disabled" };
+    expect((await app.app.inject({ method: "GET", url: "/admin/gateway-logs", headers })).statusCode).toBe(404);
+    expect((await app.app.inject({ method: "GET", url: "/admin/system-logs", headers })).statusCode).toBe(404);
+  });
+});

@@ -43,6 +43,7 @@ describe("memory state production preparation", () => {
       id: "104698c6-475a-44dc-99ed-68995fd96b0e",
       name: "环境变量密钥",
       keyHash: hashGatewayKey("change-me-gateway"),
+      keyCiphertext: createSecretBox(sourceKey).encrypt("change-me-gateway"),
       keyLast4: "eway",
       enabled: true,
       createdAt: "2026-08-06T00:00:00.000Z",
@@ -80,6 +81,7 @@ describe("memory state production preparation", () => {
       keyHash: hashGatewayKey(gatewayApiKey),
       keyLast4: "-key",
     });
+    expect(createSecretBox(targetKey).decrypt(result.state.gatewayKeys[0]!.keyCiphertext)).toBe(gatewayApiKey);
     expect(result.state.usage[0]!.channelId).toBeNull();
     expect(result.changes).toEqual({
       credentialsReencrypted: 1,

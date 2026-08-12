@@ -1,8 +1,9 @@
-import { Fragment, lazy, Suspense, useEffect, useState, type FormEvent } from "react";
+import { Fragment, lazy, Suspense, useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Check, ChevronLeft, ChevronRight, CirclePlus, Clock3, Coins, Copy, GitBranch, Gauge, Github, KeyRound, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun, Trash2, WalletCards, type LucideIcon } from "lucide-react";
+import { Activity, Check, ChevronDown, ChevronLeft, ChevronRight, CirclePlus, Clock3, Coins, Copy, GitBranch, Gauge, Github, KeyRound, LayoutGrid, LogOut, Moon, RefreshCw, Route, Search, ShieldAlert, Sun, Trash2, WalletCards, type LucideIcon } from "lucide-react";
 import { ApiError, api, clearAdminSession, getAdminToken, hasAdminSession } from "./api";
 import { ChannelTable } from "./components/ChannelTable";
+import { ChangePasswordDialog } from "./components/ChangePasswordDialog";
 import { ChannelEditor } from "./components/ChannelEditor";
 import { HealthMeter } from "./components/HealthMeter";
 import { MetricStrip } from "./components/MetricStrip";
@@ -13,8 +14,9 @@ import { ProbeResultDialog } from "./components/ProbeResultDialog";
 import { GatewayKeyDialog } from "./components/GatewayKeyDialog";
 import { Sidebar } from "./components/Sidebar";
 import { StatusDot } from "./components/StatusDot";
-import type { AdminLoginRecord, Channel, GatewayStatus, Pool, ProbeResponse, RequestLogEntry, RequestLogPage, Usage, View } from "./types";
-import CheckinModule, { CheckinTabs, type CheckinView } from "./checkin/CheckinModule";
+import type { AdminLoginRecord, Channel, GatewayLogEntry, GatewayStatus, LogPage, Pool, ProbeResponse, RequestLogEntry, RequestLogPage, SystemLogEntry, Usage, View } from "./types";
+import { api as apiCheckin } from "./checkin/api";
+import CheckinModule, { CheckinTabs, SettingsView, type CheckinView, type SettingsNotify } from "./checkin/CheckinModule";
 
 const UsageChart = lazy(() => import("./components/UsageChart"));
 
@@ -24,6 +26,7 @@ type HealthScope = "all" | "available" | "abnormal" | "no-data";
 type HealthSort = "available" | "requests";
 type HealthTone = "available" | "degraded" | "abnormal" | "no-data";
 type ColorTheme = "light" | "dark";
+type BgStyle = "grid" | "plain" | "dots" | "gradient";
 
 type DeletedChannelRecord = {
   id: string;
@@ -48,15 +51,28 @@ type OperationLogEntry = {
 };
 
 const colorThemeStorageKey = "autoapi-color-theme";
+const bgStyleStorageKey = "autoapi-bg-style";
 const activeViewStorageKey = "autoapi-active-view";
 const activeCheckinViewStorageKey = "autoapi-active-checkin-view";
 const operationLogStorageKey = "autoapi-operation-log";
 
-const appViews: View[] = ["overview", "channels", "pools", "usage", "requests", "playground", "checkin", "security"];
-const checkinViews: CheckinView[] = ["dashboard", "history", "settings"];
+const appViews: View[] = ["overview", "channels", "requests", "playground", "checkin", "security"];
+const checkinViews: CheckinView[] = ["dashboard", "history"];
 
 function initialColorTheme(): ColorTheme {
   return localStorage.getItem(colorThemeStorageKey) === "dark" ? "dark" : "light";
+}
+
+const bgStyleOptions: { value: BgStyle; label: string }[] = [
+  { value: "grid", label: "网格" },
+  { value: "plain", label: "纯色" },
+  { value: "dots", label: "点阵" },
+  { value: "gradient", label: "渐变" },
+];
+
+function initialBgStyle(): BgStyle {
+  const saved = localStorage.getItem(bgStyleStorageKey);
+  return saved && bgStyleOptions.some((opt) => opt.value === saved) ? saved as BgStyle : "grid";
 }
 
 function initialView(): View {
@@ -102,6 +118,9 @@ export default function App() {
   const queryClient = useQueryClient();
   const [authenticated, setAuthenticated] = useState(() => hasAdminSession());
   const [colorTheme, setColorTheme] = useState<ColorTheme>(initialColorTheme);
+  const [bgStyle, setBgStyle] = useState<BgStyle>(initialBgStyle);
+  const [bgStyleOpen, setBgStyleOpen] = useState(false);
+  const bgStyleRef = useRef<HTMLDivElement>(null);
   const [adminUsername, setAdminUsername] = useState("管理员");
   const [view, setView] = useState<View>(initialView);
   const [checkinView, setCheckinView] = useState<CheckinView>(initialCheckinView);
@@ -110,6 +129,9 @@ export default function App() {
   const [aliasOpen, setAliasOpen] = useState(false);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
   const [gatewayKeysOpen, setGatewayKeysOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
   const [baseUrlCopied, setBaseUrlCopied] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
@@ -117,6 +139,10 @@ export default function App() {
   const [probeResult, setProbeResult] = useState<ProbeResponse | null>(null);
   const [requestFilters, setRequestFilters] = useState<RequestFilters>({ window: "24h", limit: 20, offset: 0, client: "", channel: "", model: "", sourceIp: "" });
   const [requestRefreshInterval, setRequestRefreshInterval] = useState<number | false>(5_000);
+  const [logRefreshInterval, setLogRefreshInterval] = useState<number | false>(10_000);
+  const [gatewayLogFilters, setGatewayLogFilters] = useState<GatewayLogFilters>({ limit: 50, offset: 0, model: "", channel: "", statusCode: "", errorType: "" });
+  const [systemLogFilters, setSystemLogFilters] = useState<SystemLogFilters>({ limit: 50, offset: 0, level: "", source: "" });
+  const [logRetentionDays, setLogRetentionDays] = useState<number | null>(null);
   const [operationLog, setOperationLog] = useState<OperationLogEntry[]>(initialOperationLog);
 
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, enabled: authenticated, refetchInterval: 30_000 });
@@ -129,6 +155,25 @@ export default function App() {
     enabled: authenticated && view === "requests",
     refetchInterval: requestRefreshInterval,
     refetchIntervalInBackground: false,
+  });
+  const gatewayLogs = useQuery({
+    queryKey: ["gatewayLogs", gatewayLogFilters],
+    queryFn: () => api.gatewayLogs(gatewayLogFilters),
+    enabled: authenticated && view === "requests",
+    refetchInterval: logRefreshInterval,
+    refetchIntervalInBackground: false,
+  });
+  const systemLogs = useQuery({
+    queryKey: ["systemLogs", systemLogFilters],
+    queryFn: () => api.systemLogs(systemLogFilters),
+    enabled: authenticated && view === "requests",
+    refetchInterval: logRefreshInterval,
+    refetchIntervalInBackground: false,
+  });
+  const logSettings = useQuery({
+    queryKey: ["logSettings"],
+    queryFn: api.logSettings,
+    enabled: authenticated && view === "requests",
   });
   const probe = useMutation({
     mutationFn: api.probe,
@@ -218,12 +263,38 @@ export default function App() {
     onSuccess: () => refreshAll(queryClient),
     onError: (error) => setActionError(error instanceof Error ? error.message : "渠道排序保存失败，请重试。"),
   });
+  const updateLogRetention = useMutation({
+    mutationFn: (retentionDays: number) => api.updateLogSettings(retentionDays),
+    onSuccess: (result) => {
+      setActionError(null);
+      setLogRetentionDays(result.retentionDays);
+      setActionNotice(`日志保留天数已设为 ${result.retentionDays} 天`);
+      void queryClient.invalidateQueries({ queryKey: ["logSettings"] });
+    },
+    onError: (error) => {
+      setActionNotice(null);
+      setActionError(error instanceof Error ? error.message : "日志保留天数更新失败，请重试。");
+    },
+  });
+  const clearAllLogs = useMutation({
+    mutationFn: () => api.clearAllLogs(),
+    onSuccess: (result) => {
+      setActionError(null);
+      setActionNotice(`已清空全部日志（删除 ${result.removed} 个文件）`);
+      void gatewayLogs.refetch();
+      void systemLogs.refetch();
+    },
+    onError: (error) => {
+      setActionNotice(null);
+      setActionError(error instanceof Error ? error.message : "清空日志失败，请重试。");
+    },
+  });
 
-  const authError = [status.error, channels.error, pools.error, usage.error, ...(view === "requests" ? [requests.error] : [])].find(
+  const authError = [status.error, channels.error, pools.error, usage.error, ...(view === "requests" ? [requests.error, gatewayLogs.error, systemLogs.error].filter(Boolean) : [])].find(
     (error) => error instanceof ApiError && error.status === 401,
   );
-  const loading = status.isLoading || channels.isLoading || pools.isLoading || usage.isLoading || (view === "requests" && requests.isLoading);
-  const failed = status.error ?? channels.error ?? pools.error ?? usage.error ?? (view === "requests" ? requests.error : null);
+  const loading = status.isLoading || channels.isLoading || pools.isLoading || usage.isLoading || (view === "requests" && (requests.isLoading || gatewayLogs.isLoading || systemLogs.isLoading));
+  const failed = status.error ?? channels.error ?? pools.error ?? usage.error ?? (view === "requests" ? (requests.error ?? gatewayLogs.error ?? systemLogs.error) : null);
   const showLogin = !authenticated;
 
   useEffect(() => {
@@ -256,6 +327,20 @@ export default function App() {
   }, [colorTheme]);
 
   useEffect(() => {
+    document.documentElement.dataset.bgStyle = colorTheme === "light" ? bgStyle : "dark";
+    localStorage.setItem(bgStyleStorageKey, bgStyle);
+  }, [bgStyle, colorTheme]);
+
+  useEffect(() => {
+    if (!bgStyleOpen) return;
+    const handler = (event: MouseEvent) => {
+      if (bgStyleRef.current && !bgStyleRef.current.contains(event.target as Node)) setBgStyleOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [bgStyleOpen]);
+
+  useEffect(() => {
     localStorage.setItem(activeViewStorageKey, view);
   }, [view]);
 
@@ -266,6 +351,15 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(operationLogStorageKey, JSON.stringify(operationLog));
   }, [operationLog]);
+
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    function handleOutside(event: MouseEvent) {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) setUserMenuOpen(false);
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [userMenuOpen]);
 
   if (showLogin) return <LoginPage onAuthenticated={authenticatedSuccessfully} />;
 
@@ -386,7 +480,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar view={view} onChange={setView} />
+      <Sidebar view={view} onChange={setView} version={status.data?.version ?? "加载中…"} />
       <main className="workspace">
         <header className={`topbar${view === "checkin" ? " topbar-checkin" : ""}`}>
           <div className="topbar-heading">
@@ -403,11 +497,33 @@ export default function App() {
               <code className="mono">{status.data?.gatewayBaseUrl ?? "加载中…"}</code>
               <button className="icon-button" title={baseUrlCopied ? "已复制" : "复制 Base URL"} aria-label={baseUrlCopied ? "已复制" : "复制 Base URL"} onClick={() => void copyBaseUrl()} disabled={!status.data?.gatewayBaseUrl}>{baseUrlCopied ? <Check size={15} /> : <Copy size={15} />}</button>
             </div>
-            <a className="icon-button github-link" href="https://github.com/fu5502/autoAPI" target="_blank" rel="noreferrer" title="GitHub 项目地址" aria-label="GitHub 项目地址"><Github size={16} /></a>
             <button className="icon-button theme-toggle" title={colorTheme === "light" ? "切换至深色模式" : "切换至浅色模式"} aria-label={colorTheme === "light" ? "切换至深色模式" : "切换至浅色模式"} onClick={() => setColorTheme((theme) => theme === "light" ? "dark" : "light")}>{colorTheme === "light" ? <Moon size={16} /> : <Sun size={16} />}</button>
+            {colorTheme === "light" ? (
+              <div className="bg-style-picker" ref={bgStyleRef}>
+                <button className="icon-button" title="背景风格" aria-label="背景风格" onClick={() => setBgStyleOpen((open) => !open)}><LayoutGrid size={16} /></button>
+                {bgStyleOpen ? (
+                  <div className="bg-style-panel" role="menu">
+                    {bgStyleOptions.map((opt) => (
+                      <button key={opt.value} role="menuitemradio" aria-checked={bgStyle === opt.value} className={bgStyle === opt.value ? "active" : ""} onClick={() => { setBgStyle(opt.value); setBgStyleOpen(false); }}>
+                        <span className={`bg-style-preview bg-style-${opt.value}`} />
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <button className="button secondary key-button" onClick={() => setGatewayKeysOpen(true)}><KeyRound size={15} /> 访问密钥</button>
-            <button className="button secondary security-button" onClick={() => setView("security")}><ShieldAlert size={15} /> {adminUsername}</button>
-            <span className="runtime-version" title="后端运行版本">{status.data?.version ?? "加载中…"}</span>
+            <div className="user-menu" ref={userMenuRef} onMouseEnter={() => setUserMenuOpen(true)} onMouseLeave={() => setUserMenuOpen(false)}>
+              <button className="button secondary security-button" onClick={() => setUserMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={userMenuOpen}><ShieldAlert size={15} /> {adminUsername} <ChevronDown size={12} className={userMenuOpen ? "user-menu-chevron open" : "user-menu-chevron"} /></button>
+              {userMenuOpen ? (
+                <div className="user-menu-panel" role="menu">
+                  <button role="menuitem" onClick={() => { setUserMenuOpen(false); setChangePasswordOpen(true); }}><KeyRound size={14} /> 修改密码</button>
+                  <button role="menuitem" onClick={() => { setUserMenuOpen(false); logout(); }}><LogOut size={14} /> 退出登录</button>
+                </div>
+              ) : null}
+            </div>
+            <a className="github-version-link" href="https://github.com/fu5502/autoAPI" target="_blank" rel="noreferrer" title="autoAPI GitHub 项目地址" aria-label="autoAPI GitHub 项目地址"><Github size={14} /><span className="runtime-version">{status.data?.version ?? "加载中…"}</span></a>
           </div>
         </header>
         {actionError ? <div className="action-error" role="alert">{actionError}</div> : null}
@@ -418,18 +534,17 @@ export default function App() {
         {view !== "checkin" && failed && !authError ? <ErrorState error={failed} onRetry={refreshed} /> : null}
         {view !== "checkin" && !loading && !failed && status.data && channels.data && pools.data && usage.data ? (
           <>
-            {view === "overview" ? <Overview status={status.data} channels={channels.data} pools={pools.data} usage={usage.data} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={handleSyncBalance} probingId={probe.variables ?? null} onProbe={requestProbe} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} onProtocolChange={changeProtocol} protocolChangingId={updateProtocol.isPending ? updateProtocol.variables?.channel.id ?? null : null} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={handleReorder} operations={operationLog} /> : null}
-            {view === "channels" ? <ChannelsView channels={channels.data} deletedChannelRecords={deletedChannelRecords} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={handleSyncBalance} onRefreshBalances={handleRefreshBalances} probingId={probe.variables ?? null} onProbe={requestProbe} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} onProtocolChange={changeProtocol} protocolChangingId={updateProtocol.isPending ? updateProtocol.variables?.channel.id ?? null : null} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={handleReorder} onAddChannel={() => { appendOperationLog("渠道配置", "打开添加渠道", "info"); setProviderOpen(true); }} operations={operationLog} /> : null}
-            {view === "pools" ? <PoolsView pools={pools.data} channels={channels.data ?? []} onAddRoute={() => { appendOperationLog("路由配置", "打开模型路由配置", "info"); setAliasOpen(true); }} operations={operationLog} /> : null}
-            {view === "usage" ? <UsageView usage={usage.data} window={usageWindow} onWindowChange={setUsageWindow} /> : null}
-            {view === "requests" ? <RequestsView page={requests.data} channels={channels.data ?? []} filters={requestFilters} refreshInterval={requestRefreshInterval} onRefreshIntervalChange={setRequestRefreshInterval} onFilterChange={(next) => setRequestFilters({ ...next, offset: 0 })} onRefresh={() => void requests.refetch()} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} /> : null}
+            {view === "overview" ? <OverviewUsageView status={status.data} pools={pools.data} usage={usage.data} usageWindow={usageWindow} onUsageWindowChange={setUsageWindow} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={handleSyncBalance} probingId={probe.variables ?? null} onProbe={requestProbe} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} onProtocolChange={changeProtocol} protocolChangingId={updateProtocol.isPending ? updateProtocol.variables?.channel.id ?? null : null} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={handleReorder} /> : null}
+            {view === "channels" ? <ChannelsPoolsView channels={channels.data} pools={pools.data} deletedChannelRecords={deletedChannelRecords} syncingBalanceId={syncBalance.isPending ? syncBalance.variables ?? null : null} balanceRefreshPending={refreshBalances.isPending} onSyncBalance={handleSyncBalance} onRefreshBalances={handleRefreshBalances} probingId={probe.variables ?? null} onProbe={requestProbe} onEdit={setEditingChannel} onDelete={requestDelete} onToggle={toggle} onProtocolChange={changeProtocol} protocolChangingId={updateProtocol.isPending ? updateProtocol.variables?.channel.id ?? null : null} togglingId={toggleChannel.variables?.id ?? null} deletingId={removeChannel.isPending ? removeChannel.variables?.id ?? null : null} onReorder={handleReorder} onAddChannel={() => { appendOperationLog("渠道配置", "打开添加渠道", "info"); setProviderOpen(true); }} onAddRoute={() => { appendOperationLog("路由配置", "打开模型路由配置", "info"); setAliasOpen(true); }} operations={operationLog} /> : null}
+            {view === "requests" ? <RequestsLogsView page={requests.data} channels={channels.data ?? []} filters={requestFilters} refreshInterval={requestRefreshInterval} onRefreshIntervalChange={setRequestRefreshInterval} onFilterChange={(next) => setRequestFilters({ ...next, offset: 0 })} onPageChange={(offset) => setRequestFilters((current) => ({ ...current, offset }))} gatewayPage={gatewayLogs.data} systemPage={systemLogs.data} gatewayFilters={gatewayLogFilters} systemFilters={systemLogFilters} logRefreshInterval={logRefreshInterval} onLogRefreshIntervalChange={setLogRefreshInterval} retentionDays={logSettings.data?.retentionDays ?? null} savingRetention={updateLogRetention.isPending} onRetentionChange={(days) => updateLogRetention.mutate(days)} clearing={clearAllLogs.isPending} onClearAll={() => clearAllLogs.mutate()} onGatewayFilterChange={(next) => setGatewayLogFilters({ ...next, offset: 0 })} onSystemFilterChange={(next) => setSystemLogFilters({ ...next, offset: 0 })} onGatewayPageChange={(offset) => setGatewayLogFilters((current) => ({ ...current, offset }))} onSystemPageChange={(offset) => setSystemLogFilters((current) => ({ ...current, offset }))} /> : null}
             {view === "playground" ? <Playground channels={channels.data} onUpdated={refreshed} /> : null}
-            {view === "security" ? <SecurityView username={adminUsername} onLogout={logout} /> : null}
+            {view === "security" ? <SecurityView /> : null}
           </>
         ) : null}
       </main>
       <ProviderDrawer open={providerOpen} onClose={() => setProviderOpen(false)} onCreated={() => { appendOperationLog("渠道配置", "渠道已添加", "success"); refreshed(); }} />
       <GatewayKeyDialog open={gatewayKeysOpen} onClose={() => setGatewayKeysOpen(false)} />
+      <ChangePasswordDialog open={changePasswordOpen} username={adminUsername} onClose={() => setChangePasswordOpen(false)} />
       <ChannelEditor channel={editingChannel} onClose={() => setEditingChannel(null)} onSaved={() => { appendOperationLog("渠道配置", editingChannel ? `已保存 ${editingChannel.name}` : "渠道已保存", "success"); refreshed(); }} />
       <ProbeResultDialog result={probeResult} onClose={() => setProbeResult(null)} />
       <ModelAliasDialog open={aliasOpen} channels={channels.data ?? []} onClose={() => setAliasOpen(false)} onCreated={() => { appendOperationLog("路由配置", "模型路由已保存", "success"); refreshed(); }} />
@@ -477,30 +592,12 @@ function getGatewayIndicator(status: GatewayStatus | undefined, isLoading: boole
   return { tone: "healthy", label: "网关正常", description: "网关服务和全部渠道运行正常" };
 }
 
-function Overview({
-  status,
-  channels,
-  pools,
-  usage,
-  syncingBalanceId,
-  balanceRefreshPending,
-  onSyncBalance,
-  probingId,
-  onProbe,
-  onEdit,
-  onDelete,
-  onToggle,
-  onProtocolChange,
-  protocolChangingId,
-  togglingId,
-  deletingId,
-  onReorder,
-  operations,
-}: {
+function OverviewUsageView({ status, pools, usage, usageWindow, onUsageWindowChange, syncingBalanceId, balanceRefreshPending, onSyncBalance, probingId, onProbe, onEdit, onDelete, onToggle, onProtocolChange, protocolChangingId, togglingId, deletingId, onReorder }: {
   status: NonNullable<ReturnType<typeof api.status> extends Promise<infer T> ? T : never>;
-  channels: Channel[];
   pools: Pool[];
   usage: Usage;
+  usageWindow: Usage["window"];
+  onUsageWindowChange: (window: Usage["window"]) => void;
   syncingBalanceId: number | null;
   balanceRefreshPending: boolean;
   onSyncBalance: (siteId: number) => void;
@@ -514,7 +611,53 @@ function Overview({
   togglingId: string | null;
   deletingId: string | null;
   onReorder: (channelIds: string[]) => Promise<void>;
-  operations: OperationLogEntry[];
+}) {
+  const [tab, setTab] = useState<"overview" | "usage">("overview");
+  return (
+    <>
+      <div className="logs-tabs">
+        <button className={tab === "overview" ? "logs-tab active" : "logs-tab"} onClick={() => setTab("overview")}>概览</button>
+        <button className={tab === "usage" ? "logs-tab active" : "logs-tab"} onClick={() => setTab("usage")}>用量</button>
+      </div>
+      {tab === "overview"
+        ? <Overview status={status} pools={pools} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onProtocolChange={onProtocolChange} protocolChangingId={protocolChangingId} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
+        : <UsageView usage={usage} window={usageWindow} onWindowChange={onUsageWindowChange} />}
+    </>
+  );
+}
+
+function Overview({
+  status,
+  pools,
+  syncingBalanceId,
+  balanceRefreshPending,
+  onSyncBalance,
+  probingId,
+  onProbe,
+  onEdit,
+  onDelete,
+  onToggle,
+  onProtocolChange,
+  protocolChangingId,
+  togglingId,
+  deletingId,
+  onReorder,
+}: {
+  status: NonNullable<ReturnType<typeof api.status> extends Promise<infer T> ? T : never>;
+  pools: Pool[];
+  syncingBalanceId: number | null;
+  balanceRefreshPending: boolean;
+  onSyncBalance: (siteId: number) => void;
+  probingId: string | null;
+  onProbe: (id: string) => void;
+  onEdit: (channel: Channel) => void;
+  onDelete: (channel: Channel) => void;
+  onToggle: (channel: Channel, enabled?: boolean) => void;
+  onProtocolChange: (channel: Channel, protocol: string) => void;
+  protocolChangingId: string | null;
+  togglingId: string | null;
+  deletingId: string | null;
+  onReorder: (channelIds: string[]) => Promise<void>;
 }) {
   const [healthWindow, setHealthWindow] = useState<HealthWindow>("6h");
   const [healthGroup, setHealthGroup] = useState<HealthGroup>("default");
@@ -527,12 +670,6 @@ function Overview({
   return (
     <div className="view-stack">
       <MetricStrip status={status} />
-      <div className="overview-grid">
-        <section className="surface traffic-surface">
-          <SectionHead title="请求趋势" meta={`错误率 ${formatPercent(usage.errorRate)}`} />
-          <Suspense fallback={<div className="chart-frame skeleton" />}><UsageChart usage={usage} /></Suspense>
-        </section>
-      </div>
       <section className="surface pool-health">
         <div className="pool-health-toolbar">
           <div className="pool-health-heading">
@@ -582,11 +719,6 @@ function Overview({
         </div>
         {pools.length > 0 ? <PoolHealthLegend /> : null}
       </section>
-      <section className="surface">
-        <SectionHead title="渠道运行情况" meta={`${channels.filter((channel) => channel.status === "isolated").length} 个已隔离`} />
-        <ChannelTable channels={channels} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onProtocolChange={onProtocolChange} protocolChangingId={protocolChangingId} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} />
-      </section>
-      <OperationLogSection items={operations} />
     </div>
   );
 }
@@ -646,6 +778,42 @@ function PoolHealthLegend() {
       <span><i className="legend-swatch hour-abnormal" /> 异常 &lt;80%</span>
       <span><i className="legend-swatch hour-no_request" /> 无请求</span>
     </div>
+  );
+}
+
+function ChannelsPoolsView({ channels, pools, deletedChannelRecords, syncingBalanceId, balanceRefreshPending, onSyncBalance, onRefreshBalances, probingId, onProbe, onEdit, onDelete, onToggle, onProtocolChange, protocolChangingId, togglingId, deletingId, onReorder, onAddChannel, onAddRoute, operations }: {
+  channels: Channel[];
+  pools: Pool[];
+  deletedChannelRecords: DeletedChannelRecord[];
+  syncingBalanceId: number | null;
+  balanceRefreshPending: boolean;
+  onSyncBalance: (siteId: number) => void;
+  onRefreshBalances: () => void;
+  probingId: string | null;
+  onProbe: (id: string) => void;
+  onEdit: (channel: Channel) => void;
+  onDelete: (channel: Channel) => void;
+  onToggle: (channel: Channel, enabled?: boolean) => void;
+  onProtocolChange: (channel: Channel, protocol: string) => void;
+  protocolChangingId: string | null;
+  togglingId: string | null;
+  deletingId: string | null;
+  onReorder: (channelIds: string[]) => Promise<void>;
+  onAddChannel: () => void;
+  onAddRoute: () => void;
+  operations: OperationLogEntry[];
+}) {
+  const [tab, setTab] = useState<"channels" | "pools">("channels");
+  return (
+    <>
+      <div className="logs-tabs">
+        <button className={tab === "channels" ? "logs-tab active" : "logs-tab"} onClick={() => setTab("channels")}>渠道</button>
+        <button className={tab === "pools" ? "logs-tab active" : "logs-tab"} onClick={() => setTab("pools")}>模型池</button>
+      </div>
+      {tab === "channels"
+        ? <ChannelsView channels={channels} deletedChannelRecords={deletedChannelRecords} syncingBalanceId={syncingBalanceId} balanceRefreshPending={balanceRefreshPending} onSyncBalance={onSyncBalance} onRefreshBalances={onRefreshBalances} probingId={probingId} onProbe={onProbe} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onProtocolChange={onProtocolChange} protocolChangingId={protocolChangingId} togglingId={togglingId} deletingId={deletingId} onReorder={onReorder} onAddChannel={onAddChannel} operations={operations} />
+        : <PoolsView pools={pools} channels={channels} onAddRoute={onAddRoute} operations={operations} />}
+    </>
   );
 }
 
@@ -717,7 +885,6 @@ function PoolsView({ pools, channels, onAddRoute, operations }: { pools: Pool[];
               {pools.length === 0 ? <tr><td className="empty-table-cell" colSpan={6}>暂无模型池。添加渠道并选择模型后，模型会进入池。</td></tr> : pools.map((pool) => {
                 const expanded = expandedAliases.has(pool.alias);
                 const routes = sortPoolRoutesByLastRequest(pool.routes);
-                const hasMultipleChannels = routes.length > 1;
                 return (
                 <Fragment key={pool.alias}>
                   <tr className={`pool-table-row ${expanded ? "expanded" : ""}`.trim()}>
@@ -742,9 +909,9 @@ function PoolsView({ pools, channels, onAddRoute, operations }: { pools: Pool[];
                     <td>{pool.averageLatencyMs1h} ms</td>
                     <td>
                       <div className="pool-route-cell">
-                        <button className="pool-expand-button" type="button" onClick={() => toggleExpanded(pool.alias)} aria-expanded={expanded} disabled={!hasMultipleChannels}>
-                          <span className="pool-expand-icon" aria-hidden="true">{hasMultipleChannels ? (expanded ? "−" : "+") : "·"}</span>
-                          <span>{hasMultipleChannels ? (expanded ? `收起 ${routes.length} 个渠道` : `${routes.length} 个渠道`) : "1 个渠道"}</span>
+                        <button className="pool-expand-button" type="button" onClick={() => toggleExpanded(pool.alias)} aria-expanded={expanded}>
+                          <span className="pool-expand-icon" aria-hidden="true">{expanded ? "−" : "+"}</span>
+                          <span>{expanded ? `收起 ${routes.length} 个渠道` : `${routes.length} 个渠道`}</span>
                         </button>
                       </div>
                     </td>
@@ -1083,13 +1250,278 @@ function getUsagePeriodLabel(window: Usage["window"]) {
 
 type RequestFilters = { window: Usage["window"]; limit: number; offset: number; client: string; channel: string; model: string; sourceIp: string };
 
-function RequestsView({ page, channels, filters, refreshInterval, onRefreshIntervalChange, onFilterChange, onRefresh, onPageChange }: { page: RequestLogPage | undefined; channels: Channel[]; filters: RequestFilters; refreshInterval: number | false; onRefreshIntervalChange: (interval: number | false) => void; onFilterChange: (filters: RequestFilters) => void; onRefresh: () => void; onPageChange: (offset: number) => void }) {
+type GatewayLogFilters = { limit: number; offset: number; model: string; channel: string; statusCode: string; errorType: string };
+type SystemLogFilters = { limit: number; offset: number; level: string; source: string };
+
+function LogsView({ tab, gatewayPage, systemPage, gatewayFilters, systemFilters, refreshInterval, onRefreshIntervalChange, retentionDays, savingRetention, onRetentionChange, clearing, onClearAll, onGatewayFilterChange, onSystemFilterChange, onGatewayPageChange, onSystemPageChange }: {
+  tab: "gateway" | "system";
+  gatewayPage: LogPage<GatewayLogEntry> | undefined;
+  systemPage: LogPage<SystemLogEntry> | undefined;
+  gatewayFilters: GatewayLogFilters;
+  systemFilters: SystemLogFilters;
+  refreshInterval: number | false;
+  onRefreshIntervalChange: (interval: number | false) => void;
+  retentionDays: number | null;
+  savingRetention: boolean;
+  onRetentionChange: (days: number) => void;
+  clearing: boolean;
+  onClearAll: () => void;
+  onGatewayFilterChange: (filters: GatewayLogFilters) => void;
+  onSystemFilterChange: (filters: SystemLogFilters) => void;
+  onGatewayPageChange: (offset: number) => void;
+  onSystemPageChange: (offset: number) => void;
+}) {
+  const autoRefreshOn = refreshInterval !== false;
+  const [copied, setCopied] = useState(false);
+  const currentItems = tab === "gateway" ? (gatewayPage?.items ?? []) : (systemPage?.items ?? []);
+  const formatLine = tab === "gateway" ? formatGatewayLine : formatSystemLine;
+  async function copyAll() {
+    try {
+      await navigator.clipboard.writeText(currentItems.map((item) => formatLine(item as never)).join("\n"));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  }
+  return (
+    <div className="view-stack logs-view">
+      <section className="surface logs-surface">
+        <div className="logs-toolbar">
+          <label className="logs-retention">日志保留
+            <select aria-label="日志保留天数" value={retentionDays ?? 7} disabled={savingRetention} onChange={(event) => onRetentionChange(Number(event.target.value))}>
+              {[1, 3, 7, 14, 30, 60, 90].map((days) => <option value={days} key={days}>{days} 天</option>)}
+            </select>
+          </label>
+          <span className="logs-toolbar-hint">超过保留天数的日志文件会在启动和每小时自动清理</span>
+          <span className="logs-toolbar-actions">
+            <span className="auto-refresh-label">自动刷新</span>
+            <label className="toggle-switch" title={autoRefreshOn ? "点击关闭自动刷新" : "点击开启自动刷新"}>
+              <input type="checkbox" checked={autoRefreshOn} aria-label="自动刷新日志" onChange={(event) => onRefreshIntervalChange(event.target.checked ? 10_000 : false)} />
+              <span className="toggle-slider" />
+            </label>
+            <button className="button secondary small-button" type="button" onClick={() => void copyAll()}>{copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "已复制" : "复制全部"}</button>
+            <button className="button danger-outline small-button" type="button" disabled={clearing} onClick={onClearAll}><Trash2 size={13} /> 清空全部</button>
+          </span>
+        </div>
+        {tab === "gateway" ? <GatewayLogTable page={gatewayPage} filters={gatewayFilters} onFilterChange={onGatewayFilterChange} onPageChange={onGatewayPageChange} /> : <SystemLogTable page={systemPage} filters={systemFilters} onFilterChange={onSystemFilterChange} onPageChange={onSystemPageChange} />}
+      </section>
+    </div>
+  );
+}
+
+function LogsSearchInput({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) {
+  return (
+    <div className="logs-search">
+      <Search size={14} className="logs-search-icon" />
+      <input className="logs-search-input" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} aria-label={placeholder} />
+      {value ? <button className="logs-search-clear" type="button" aria-label="清除" onClick={() => onChange("")}><span aria-hidden="true">×</span></button> : null}
+    </div>
+  );
+}
+
+function LogsChip({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+  return <button type="button" className={active ? "logs-chip active" : "logs-chip"} onClick={onClick}>{label}</button>;
+}
+
+function formatGatewayLine(item: GatewayLogEntry): string {
+  const time = new Date(item.ts).toLocaleTimeString("zh-CN", { hour12: false });
+  const status = item.statusCode;
+  const error = item.errorType ? ` ${formatErrorType(item.errorType)}` : "";
+  const retry = item.retryCount > 0 ? ` retry×${item.retryCount}` : "";
+  const stream = item.streamed ? "stream" : "sync";
+  const tokens = `in=${formatTokens(item.promptTokens)} out=${formatTokens(item.completionTokens)}`;
+  return `[${time}] [${status}] [${item.model}] [${item.channelName ?? "—"}]${error} [${stream}] [${tokens}] [${formatDuration(item.latencyMs)}]${retry} ${item.clientName}`;
+}
+
+function formatSystemLine(item: SystemLogEntry): string {
+  const time = new Date(item.ts).toLocaleTimeString("zh-CN", { hour12: false });
+  const level = item.level.toUpperCase().padEnd(5);
+  const detail = item.detail ? ` ${JSON.stringify(item.detail)}` : "";
+  return `[${time}] [${level}] [${item.source}] ${item.message}${detail}`;
+}
+
+function GatewayLogTable({ page, filters, onFilterChange, onPageChange }: { page: LogPage<GatewayLogEntry> | undefined; filters: GatewayLogFilters; onFilterChange: (filters: GatewayLogFilters) => void; onPageChange: (offset: number) => void }) {
+  const items = page?.items ?? [];
+  const total = page?.total ?? 0;
+  const from = total === 0 ? 0 : filters.offset + 1;
+  const to = Math.min(filters.offset + items.length, total);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  function update<K extends keyof GatewayLogFilters>(key: K, value: GatewayLogFilters[K]) {
+    onFilterChange({ ...filters, [key]: value, offset: 0 });
+  }
+  return (
+    <div className="logs-body">
+      <div className="logs-filters">
+        <LogsSearchInput value={filters.model} onChange={(value) => update("model", value)} placeholder="按模型筛选" />
+        <LogsSearchInput value={filters.channel} onChange={(value) => update("channel", value)} placeholder="按渠道筛选" />
+        <LogsSearchInput value={filters.errorType} onChange={(value) => update("errorType", value)} placeholder="错误类型" />
+        <span className="logs-filter-stats">{total ? `共 ${total} 条 · 显示 ${from}-${to}` : "暂无日志"}</span>
+      </div>
+      {items.length === 0
+        ? <div className="logs-empty"><Search size={24} /><strong>暂无网关日志</strong><span>网关请求经过后会记录在这里（含上游错误体与重试轨迹）。</span></div>
+        : (
+          <div className="logs-stream-wrap">
+            <div className="logs-stream">
+              {items.map((item) => {
+                const hasError = item.errorType !== null;
+                const isExpanded = expanded === item.requestId;
+                return (
+                  <Fragment key={item.requestId}>
+                    <div className={hasError ? "logs-line logs-line-error" : "logs-line"} onClick={() => setExpanded(isExpanded ? null : item.requestId)} title="点击展开详情">
+                      <span className="logs-line-caret">{isExpanded ? "▾" : "▸"}</span>
+                      <span className="logs-line-text">{formatGatewayLine(item)}</span>
+                    </div>
+                    {isExpanded ? <div className="logs-line-detail"><LogDetail entry={item} /></div> : null}
+                  </Fragment>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      <footer className="logs-footer">
+        <span>{page?.hasMore ? "还有更多日志" : total ? "已到列表末尾" : "调整筛选条件后重试"}</span>
+        <div><button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={filters.offset <= 0} onClick={() => onPageChange(Math.max(0, filters.offset - filters.limit))}><ChevronLeft size={16} /></button><button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={!page?.hasMore} onClick={() => onPageChange(filters.offset + filters.limit)}><ChevronRight size={16} /></button></div>
+      </footer>
+    </div>
+  );
+}
+
+function LogDetail({ entry }: { entry: GatewayLogEntry }) {
+  return (
+    <div className="log-detail">
+      <div className="log-detail-grid">
+        <div><strong>请求 ID</strong><code>{entry.requestId}</code></div>
+        <div><strong>类型</strong><span>{entry.kind}</span></div>
+        <div><strong>上游模型</strong><span>{entry.upstreamModel ?? "—"}</span></div>
+        <div><strong>端点</strong><code>{entry.endpoint ?? "—"}</code></div>
+      </div>
+      {entry.retryTrace.length > 0 ? (
+        <div className="log-detail-block">
+          <strong>重试轨迹</strong>
+          {entry.retryTrace.map((trace, index) => (
+            <div className="log-detail-line" key={`${entry.requestId}-${index}`}>{`#${index + 1} ${trace.channelName ?? "未知渠道"} → ${trace.statusCode} ${trace.errorType ?? ""} (${formatDuration(trace.latencyMs)})`}</div>
+          ))}
+        </div>
+      ) : null}
+      {entry.requestBody ? (
+        <div className="log-detail-block">
+          <strong>请求载荷（脱敏）</strong>
+          <pre className="log-detail-pre">{entry.requestBody}</pre>
+        </div>
+      ) : null}
+      {entry.upstreamBody ? (
+        <div className="log-detail-block">
+          <strong>上游错误响应</strong>
+          <pre className="log-detail-pre">{entry.upstreamBody}</pre>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SystemLogTable({ page, filters, onFilterChange, onPageChange }: { page: LogPage<SystemLogEntry> | undefined; filters: SystemLogFilters; onFilterChange: (filters: SystemLogFilters) => void; onPageChange: (offset: number) => void }) {
+  const items = page?.items ?? [];
+  const total = page?.total ?? 0;
+  const from = total === 0 ? 0 : filters.offset + 1;
+  const to = Math.min(filters.offset + items.length, total);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  function update<K extends keyof SystemLogFilters>(key: K, value: SystemLogFilters[K]) {
+    onFilterChange({ ...filters, [key]: value, offset: 0 });
+  }
+  return (
+    <div className="logs-body">
+      <div className="logs-filters">
+        <div className="logs-chip-group">
+          <span className="logs-chip-label">级别</span>
+          <LogsChip active={filters.level === ""} label="全部" onClick={() => update("level", "")} />
+          <LogsChip active={filters.level === "info"} label="info" onClick={() => update("level", "info")} />
+          <LogsChip active={filters.level === "warn"} label="warn" onClick={() => update("level", "warn")} />
+          <LogsChip active={filters.level === "error"} label="error" onClick={() => update("level", "error")} />
+        </div>
+        <LogsSearchInput value={filters.source} onChange={(value) => update("source", value)} placeholder="按来源筛选，如 probe / gateway" />
+        <span className="logs-filter-stats">{total ? `共 ${total} 条 · 显示 ${from}-${to}` : "暂无日志"}</span>
+      </div>
+      {items.length === 0
+        ? <div className="logs-empty"><Search size={24} /><strong>暂无系统日志</strong><span>启动、健康检查、签到等系统事件会记录在这里。</span></div>
+        : (
+          <div className="logs-stream-wrap">
+            <div className="logs-stream">
+              {items.map((item) => {
+                const key = `${item.ts}-${item.source}-${item.message}`;
+                const isExpanded = expanded === key;
+                return (
+                  <Fragment key={key}>
+                    <div className={`logs-line logs-line-${item.level}`} onClick={() => setExpanded(isExpanded ? null : key)} title="点击展开详情">
+                      <span className="logs-line-caret">{isExpanded ? "▾" : "▸"}</span>
+                      <span className="logs-line-text">{formatSystemLine(item)}</span>
+                    </div>
+                    {isExpanded && item.detail ? <div className="logs-line-detail"><pre className="log-detail-pre">{JSON.stringify(item.detail, null, 2)}</pre></div> : null}
+                  </Fragment>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      <footer className="logs-footer">
+        <span>{page?.hasMore ? "还有更多日志" : total ? "已到列表末尾" : "调整筛选条件后重试"}</span>
+        <div><button className="icon-button" type="button" title="上一页" aria-label="上一页" disabled={filters.offset <= 0} onClick={() => onPageChange(Math.max(0, filters.offset - filters.limit))}><ChevronLeft size={16} /></button><button className="icon-button" type="button" title="下一页" aria-label="下一页" disabled={!page?.hasMore} onClick={() => onPageChange(filters.offset + filters.limit)}><ChevronRight size={16} /></button></div>
+      </footer>
+    </div>
+  );
+}
+
+function RequestsLogsView({ page, channels, filters, refreshInterval, onRefreshIntervalChange, onFilterChange, onPageChange, gatewayPage, systemPage, gatewayFilters, systemFilters, logRefreshInterval, onLogRefreshIntervalChange, retentionDays, savingRetention, onRetentionChange, clearing, onClearAll, onGatewayFilterChange, onSystemFilterChange, onGatewayPageChange, onSystemPageChange }: {
+  page: RequestLogPage | undefined;
+  channels: Channel[];
+  filters: RequestFilters;
+  refreshInterval: number | false;
+  onRefreshIntervalChange: (interval: number | false) => void;
+  onFilterChange: (filters: RequestFilters) => void;
+  onPageChange: (offset: number) => void;
+  gatewayPage: LogPage<GatewayLogEntry> | undefined;
+  systemPage: LogPage<SystemLogEntry> | undefined;
+  gatewayFilters: GatewayLogFilters;
+  systemFilters: SystemLogFilters;
+  logRefreshInterval: number | false;
+  onLogRefreshIntervalChange: (interval: number | false) => void;
+  retentionDays: number | null;
+  savingRetention: boolean;
+  onRetentionChange: (days: number) => void;
+  clearing: boolean;
+  onClearAll: () => void;
+  onGatewayFilterChange: (filters: GatewayLogFilters) => void;
+  onSystemFilterChange: (filters: SystemLogFilters) => void;
+  onGatewayPageChange: (offset: number) => void;
+  onSystemPageChange: (offset: number) => void;
+}) {
+  const [tab, setTab] = useState<"requests" | "gateway" | "system" | "login">("requests");
+  const loginHistory = useQuery({ queryKey: ["admin-login-history"], queryFn: api.loginHistory });
+  return (
+    <div className="view-stack">
+      <div className="logs-tabs">
+        <button className={tab === "requests" ? "logs-tab active" : "logs-tab"} onClick={() => setTab("requests")}>调用请求</button>
+        <button className={tab === "gateway" ? "logs-tab active" : "logs-tab"} onClick={() => setTab("gateway")}>网关日志</button>
+        <button className={tab === "system" ? "logs-tab active" : "logs-tab"} onClick={() => setTab("system")}>系统日志</button>
+        <button className={tab === "login" ? "logs-tab active" : "logs-tab"} onClick={() => setTab("login")}>登录历史</button>
+      </div>
+      {tab === "requests"
+        ? <RequestsView page={page} channels={channels} filters={filters} refreshInterval={refreshInterval} onRefreshIntervalChange={onRefreshIntervalChange} onFilterChange={onFilterChange} onPageChange={onPageChange} />
+        : tab === "login"
+          ? <section className="surface logs-surface"><SectionHead title="登录历史" meta="最近 10 条，包含登录 IP" />{loginHistory.isLoading ? <div className="security-empty">正在加载登录记录…</div> : loginHistory.error ? <div className="security-empty danger-text">登录记录加载失败。</div> : loginHistory.data?.length ? <div className="login-history-list">{loginHistory.data.map((record) => <LoginHistoryRow record={record} key={record.id} />)}</div> : <div className="security-empty">暂无登录记录。</div>}</section>
+          : <LogsView tab={tab} gatewayPage={gatewayPage} systemPage={systemPage} gatewayFilters={gatewayFilters} systemFilters={systemFilters} refreshInterval={logRefreshInterval} onRefreshIntervalChange={onLogRefreshIntervalChange} retentionDays={retentionDays} savingRetention={savingRetention} onRetentionChange={onRetentionChange} clearing={clearing} onClearAll={onClearAll} onGatewayFilterChange={onGatewayFilterChange} onSystemFilterChange={onSystemFilterChange} onGatewayPageChange={onGatewayPageChange} onSystemPageChange={onSystemPageChange} />}
+    </div>
+  );
+}
+
+function RequestsView({ page, channels, filters, refreshInterval, onRefreshIntervalChange, onFilterChange, onPageChange }: { page: RequestLogPage | undefined; channels: Channel[]; filters: RequestFilters; refreshInterval: number | false; onRefreshIntervalChange: (interval: number | false) => void; onFilterChange: (filters: RequestFilters) => void; onPageChange: (offset: number) => void }) {
   const items = page?.items ?? [];
   const total = page?.total ?? 0;
   const from = total === 0 ? 0 : filters.offset + 1;
   const to = Math.min(filters.offset + items.length, total);
   const canPrevious = filters.offset > 0;
   const canNext = Boolean(page?.hasMore);
+  const autoRefreshOn = refreshInterval !== false;
 
   function update<K extends keyof RequestFilters>(key: K, value: RequestFilters[K]) {
     onFilterChange({ ...filters, [key]: value, offset: 0 });
@@ -1110,16 +1542,11 @@ function RequestsView({ page, channels, filters, refreshInterval, onRefreshInter
           <label>来源 IP<select aria-label="来源 IP" value={filters.sourceIp} onChange={(event) => update("sourceIp", event.target.value)}>{selectOptions(options.sourceIps, "全部来源 IP")}</select></label>
           <span className="request-range">{total ? `${from}-${to} / 共 ${total} 条` : "暂无请求记录"}</span>
           <div className="request-auto-refresh">
-            <label className="request-refresh-control">自动刷新
-              <select aria-label="调用请求自动刷新间隔" value={refreshInterval === false ? "off" : String(refreshInterval / 1000)} onChange={(event) => onRefreshIntervalChange(event.target.value === "off" ? false : Number(event.target.value) * 1000)}>
-                <option value="off">关闭</option>
-                <option value="5">5 秒</option>
-                <option value="10">10 秒</option>
-                <option value="20">20 秒</option>
-                <option value="30">30 秒</option>
-              </select>
+            <span className="auto-refresh-label">自动刷新</span>
+            <label className="toggle-switch" title={autoRefreshOn ? "点击关闭自动刷新" : "点击开启自动刷新"}>
+              <input type="checkbox" checked={autoRefreshOn} aria-label="自动刷新调用请求" onChange={(event) => onRefreshIntervalChange(event.target.checked ? 5_000 : false)} />
+              <span className="toggle-slider" />
             </label>
-            <button className="icon-button" type="button" title="刷新请求" aria-label="刷新请求" onClick={onRefresh}><RefreshCw size={16} /></button>
           </div>
         </form>
         <RequestTable items={items} channels={channels} />
@@ -1251,61 +1678,29 @@ function LoginPage({ onAuthenticated }: { onAuthenticated: (username: string) =>
   </form></div>;
 }
 
-function SecurityView({ username, onLogout }: { username: string; onLogout: () => void }) {
-  const history = useQuery({ queryKey: ["admin-login-history"], queryFn: api.loginHistory });
-  const changePassword = useMutation({ mutationFn: api.changePassword });
-  const [message, setMessage] = useState<string | null>(null);
-
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const currentPassword = String(form.get("currentPassword") ?? "");
-    const newPassword = String(form.get("newPassword") ?? "");
-    const confirmPassword = String(form.get("confirmPassword") ?? "");
-    if (newPassword !== confirmPassword) {
-      setMessage("两次输入的新密码不一致。");
-      return;
-    }
-    const formElement = event.currentTarget;
-    setMessage(null);
-    changePassword.mutate({ currentPassword, newPassword }, {
-      onSuccess: () => {
-        formElement.reset();
-        setMessage("密码已修改，下次登录请使用新密码。");
-      },
-      onError: (error) => setMessage(error instanceof Error ? error.message : "密码修改失败。"),
-    });
-  }
-
+function SecurityView() {
+  const checkinState = useQuery({ queryKey: ["checkin-state"], queryFn: apiCheckin.getState });
+  const checkinQueryClient = useQueryClient();
+  const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+  const notify: SettingsNotify = (title, message) => {
+    setSettingsNotice(`${title}：${message}`);
+    window.setTimeout(() => setSettingsNotice(null), 4500);
+  };
+  const settings = checkinState.data?.settings;
   return <div className="view-stack security-view">
-    <section className="security-summary">
-      <div><span>当前账号</span><strong>{username}</strong></div>
-      <div><span>会话状态</span><strong className="security-online">已登录</strong></div>
-      <button className="button secondary" onClick={onLogout}><LogOut size={15} /> 退出登录</button>
+    {settingsNotice ? <div className="form-notice" role="status">{settingsNotice}</div> : null}
+    <section className="surface checkin-module">
+      {checkinState.isLoading ? <div className="security-empty">正在加载签到设置…</div> : checkinState.error ? <div className="security-empty danger-text">签到设置加载失败。</div> : settings ? <SettingsView settings={settings} onSaved={async () => { await checkinQueryClient.invalidateQueries({ queryKey: ["checkin-state"] }); }} notify={notify} /> : <div className="security-empty">暂无签到设置。</div>}
     </section>
-    <div className="security-grid">
-      <section className="surface security-panel">
-        <SectionHead title="修改密码" meta="修改后立即生效" />
-        <form className="security-form" onSubmit={submit}>
-          <label className="field"><span>当前密码</span><input name="currentPassword" type="password" autoComplete="current-password" required /></label>
-          <label className="field"><span>新密码</span><input name="newPassword" type="password" autoComplete="new-password" minLength={8} required /><small>至少 8 个字符。</small></label>
-          <label className="field"><span>确认新密码</span><input name="confirmPassword" type="password" autoComplete="new-password" minLength={8} required /></label>
-          {message ? <div className="form-notice" role="status">{message}</div> : null}
-          <button className="button primary" disabled={changePassword.isPending}>{changePassword.isPending ? "保存中…" : "保存新密码"}</button>
-        </form>
-      </section>
-      <section className="surface security-panel login-history-panel">
-        <SectionHead title="登录历史" meta="最近 10 条，包含登录 IP" />
-        {history.isLoading ? <div className="security-empty">正在加载登录记录…</div> : history.error ? <div className="security-empty danger-text">登录记录加载失败。</div> : history.data?.length ? <div className="login-history-list">{history.data.map((record) => <LoginHistoryRow record={record} key={record.id} />)}</div> : <div className="security-empty">暂无登录记录。</div>}
-      </section>
-    </div>
   </div>;
 }
 
 function LoginHistoryRow({ record }: { record: AdminLoginRecord }) {
   return <div className="login-history-row">
     <span className={`login-result ${record.success ? "success" : "failed"}`}>{record.success ? "成功" : "失败"}</span>
-    <div><strong>{record.ip}</strong><span>{record.username} · {formatDateTime(record.createdAt)}</span></div>
+    <span className="login-history-ip" title={record.ip}>{record.ip}</span>
+    <span className="login-history-username">{record.username}</span>
+    <time className="login-history-time" dateTime={record.createdAt}>{formatDateTime(record.createdAt)}</time>
     <span className="login-user-agent" title={record.userAgent}>{record.userAgent}</span>
   </div>;
 }
@@ -1323,7 +1718,7 @@ function refreshAll(client: ReturnType<typeof useQueryClient>) {
 }
 
 function pageTitle(view: View) {
-  return { overview: "网关概览", channels: "渠道管理", pools: "模型路由", usage: "用量分析", requests: "调用请求", playground: "模型测试", checkin: "公益站签到", security: "安全设置" }[view];
+  return { overview: "概览/用量", channels: "渠道/模型池", requests: "日志中心", playground: "模型测试", checkin: "公益站签到", security: "控制面板" }[view];
 }
 
 function formatDateTime(value: string) {

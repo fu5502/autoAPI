@@ -74,7 +74,6 @@ type ChannelImportStatus = {
 const navItems: Array<{ id: CheckinView; label: string; icon: typeof LayoutDashboard }> = [
   { id: 'dashboard', label: '今日概览', icon: LayoutDashboard },
   { id: 'history', label: '签到记录', icon: ListChecks },
-  { id: 'settings', label: '设置', icon: Settings },
 ]
 
 function supportsAutomaticChannelImport(site: Site) {
@@ -578,7 +577,6 @@ export default function CheckinModule({ view = 'dashboard' }: { view?: CheckinVi
           <>
             {view === 'dashboard' && <Dashboard state={state} onAdd={() => setAddOpen(true)} onRun={runCheckin} onRunRefresh={() => void runCheckin(undefined, 'balance_refresh')} onLocalExecution={startLocalExecution} onAuthorize={openAuthAssistant} onImport={startChannelImport} importedSiteIds={importedSiteIds} onSelect={setSelectedSite} onRefresh={() => refresh(true)} notify={notify} activeRunId={activeRunId} cancellingRunId={cancellingRunId} cancellingSiteId={cancellingSiteId} onCancelRun={cancelActiveRun} onCancelSite={cancelActiveSite} progressByRun={progressByRun} />}
             {view === 'history' && <HistoryView state={state} />}
-            {view === 'settings' && <SettingsView settings={state.settings} onSaved={() => refresh(true)} notify={notify} />}
           </>
         ) : null}
       </div>
@@ -979,7 +977,9 @@ function HistoryView({ state }: { state: AppState }) {
   </div>
 }
 
-function SettingsView({ settings, onSaved, notify }: { settings: AppSettings; onSaved: () => Promise<void>; notify: (title: string, message: string, tone?: Toast['tone']) => void }) {
+export type SettingsNotify = (title: string, message: string, tone?: 'default' | 'success' | 'danger' | 'warning') => void
+
+export function SettingsView({ settings, onSaved, notify }: { settings: AppSettings; onSaved: () => Promise<void>; notify: SettingsNotify }) {
   const [draft, setDraft] = useState(settings)
   const [saving, setSaving] = useState(false)
   const [testingTelegram, setTestingTelegram] = useState(false)
@@ -1006,22 +1006,22 @@ function SettingsView({ settings, onSaved, notify }: { settings: AppSettings; on
   }
   return <div className="page settings-page"><PageHeader title="设置" description="配置自动签到、重试和记录保留策略" />
     <form onSubmit={save}>
-      <section className="settings-section"><div className="settings-intro"><CalendarDays size={19} /><div><h2>自动签到</h2><p>每天在时间窗口内随机选择一个执行时刻</p></div></div><div className="settings-fields">
+      <section className="settings-section"><div className="settings-intro"><CalendarDays size={19} /><div><h2>自动签到</h2></div></div><div className="settings-fields">
         <SettingRow label="启用每日自动签到" hint="电脑和本地服务需要保持运行"><button type="button" className={`toggle ${draft.scheduleEnabled ? 'on' : ''}`} role="switch" aria-label="启用每日自动签到" aria-checked={draft.scheduleEnabled} onClick={() => setDraft({ ...draft, scheduleEnabled: !draft.scheduleEnabled })}><span /></button></SettingRow>
         <SettingRow label="执行时间窗口" hint="避免所有站点在同一固定时间收到请求"><div className="time-range"><input type="time" value={draft.scheduleWindowStart} onChange={(event) => setDraft({ ...draft, scheduleWindowStart: event.target.value })} /><span>至</span><input type="time" value={draft.scheduleWindowEnd} onChange={(event) => setDraft({ ...draft, scheduleWindowEnd: event.target.value })} /></div></SettingRow>
         <SettingRow label="时区" hint="首版固定使用中国标准时间"><select value={draft.timezone} disabled><option>Asia/Shanghai</option></select></SettingRow>
       </div></section>
-      <section className="settings-section"><div className="settings-intro"><RefreshCw size={19} /><div><h2>失败处理</h2><p>网络错误自动重试，人机验证只提醒不绕过</p></div></div><div className="settings-fields">
+      <section className="settings-section"><div className="settings-intro"><RefreshCw size={19} /><div><h2>失败处理</h2></div></div><div className="settings-fields">
         <SettingRow label="自动重试次数" hint="仅对普通网络或服务端失败生效"><NumberInput value={draft.retryCount} min={0} max={5} onChange={(value) => setDraft({ ...draft, retryCount: value })} suffix="次" /></SettingRow>
         <SettingRow label="重试间隔" hint="每次失败后的等待时间"><NumberInput value={draft.retryDelayMinutes} min={1} max={120} onChange={(value) => setDraft({ ...draft, retryDelayMinutes: value })} suffix="分钟" /></SettingRow>
         <SettingRow label="单次请求超时" hint="单个页面请求的网络等待上限"><NumberInput value={draft.requestTimeoutSeconds} min={10} max={120} onChange={(value) => setDraft({ ...draft, requestTimeoutSeconds: value })} suffix="秒" /></SettingRow>
         <SettingRow label="站点总超时" hint="一个站点签到、余额刷新及其 fallback 共用此上限"><NumberInput value={draft.siteTimeoutSeconds} min={5} max={120} onChange={(value) => setDraft({ ...draft, siteTimeoutSeconds: value })} suffix="秒" /></SettingRow>
       </div></section>
-      <section className="settings-section"><div className="settings-intro"><Bell size={19} /><div><h2>通知与数据</h2><p>登录状态通过本地授权助手同步，并以加密快照保存</p></div></div><div className="settings-fields">
+      <section className="settings-section"><div className="settings-intro"><Bell size={19} /><div><h2>通知与数据</h2></div></div><div className="settings-fields">
         <SettingRow label="浏览器通知" hint="页面打开时实时提示签到结果"><div className="inline-actions"><button type="button" className={`toggle ${draft.browserNotifications ? 'on' : ''}`} role="switch" aria-label="浏览器通知" aria-checked={draft.browserNotifications} onClick={() => setDraft({ ...draft, browserNotifications: !draft.browserNotifications })}><span /></button><button type="button" className="text-button" onClick={requestNotifications}>授权通知</button></div></SettingRow>
         <SettingRow label="历史记录保留" hint="过期记录会在保存设置时清理"><NumberInput value={draft.historyRetentionDays} min={30} max={3650} onChange={(value) => setDraft({ ...draft, historyRetentionDays: value })} suffix="天" /></SettingRow>
       </div></section>
-      <section className="settings-section"><div className="settings-intro"><Send size={19} /><div><h2>Telegram 渠道</h2><p>每次签到任务结束后发送逐站结果汇总</p></div></div><div className="settings-fields">
+      <section className="settings-section"><div className="settings-intro"><Send size={19} /><div><h2>Telegram 渠道</h2></div></div><div className="settings-fields">
         <SettingRow label="启用 Telegram 通知" hint="需先通过 BotFather 创建机器人"><button type="button" className={`toggle ${draft.telegramEnabled ? 'on' : ''}`} role="switch" aria-label="启用 Telegram 通知" aria-checked={draft.telegramEnabled} onClick={() => setDraft({ ...draft, telegramEnabled: !draft.telegramEnabled })}><span /></button></SettingRow>
         <SettingRow label="Bot Token" hint="机器人令牌仅保存在本机数据库"><input className="setting-input secret" type="password" autoComplete="off" aria-label="Telegram Bot Token" value={draft.telegramBotToken} onChange={(event) => setDraft({ ...draft, telegramBotToken: event.target.value })} placeholder="123456789:AA..." /></SettingRow>
         <SettingRow label="Chat ID" hint="可填写个人、群组或频道的会话 ID"><input className="setting-input" aria-label="Telegram Chat ID" value={draft.telegramChatId} onChange={(event) => setDraft({ ...draft, telegramChatId: event.target.value })} placeholder="-1001234567890" /></SettingRow>
@@ -1757,6 +1757,6 @@ function IconButton({ title, onClick, children, disabled, danger }: { title: str
 function EmptyState({ title, description }: { title: string; description: string }) { return <div className="empty-state"><ListChecks size={24} /><strong>{title}</strong><p>{description}</p></div> }
 function LoadingScreen() { return <div className="center-screen"><LoaderCircle className="spin" size={28} /><p>正在读取本地数据</p></div> }
 function ErrorScreen({ message, retry }: { message: string; retry: () => void }) { return <div className="center-screen error"><CircleAlert size={30} /><h2>无法打开签到台</h2><p>{message}</p><button className="button primary" onClick={retry}><RefreshCw size={16} />重试</button></div> }
-function SettingRow({ label, hint, children }: { label: string; hint: string; children: ReactNode }) { return <div className="setting-row"><div><strong>{label}</strong><p>{hint}</p></div><div>{children}</div></div> }
+function SettingRow({ label, hint, children }: { label: string; hint: string; children: ReactNode }) { return <div className="setting-row"><div><strong>{label}</strong><p title={hint}>{hint}</p></div><div>{children}</div></div> }
 function NumberInput({ value, min, max, onChange, suffix }: { value: number; min: number; max: number; onChange: (value: number) => void; suffix: string }) { return <label className="number-input"><input type="number" value={value} min={min} max={max} onChange={(event) => onChange(Number(event.target.value))} /><span>{suffix}</span></label> }
 function ToastRegion({ toasts, dismiss }: { toasts: Toast[]; dismiss: (id: number) => void }) { return <div className="toast-region" aria-live="polite">{toasts.map((toast) => <div className={`toast ${toast.tone}`} key={toast.id}><span>{toast.tone === 'success' ? <CheckCircle2 size={17} /> : toast.tone === 'danger' ? <CircleAlert size={17} /> : toast.tone === 'warning' ? <KeyRound size={17} /> : <Activity size={17} />}</span><div><strong>{toast.title}</strong><p>{toast.message}</p></div><button onClick={() => dismiss(toast.id)} aria-label="关闭通知"><X size={15} /></button></div>)}</div> }

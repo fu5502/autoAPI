@@ -120,6 +120,68 @@ describe("proxy HTTP surface", () => {
     });
   });
 
+  it("collapses Codex multi-turn history to one message after a 400 for mimo-v2.5", async () => {
+    const received: Array<{ input?: unknown[]; model?: string }> = [];
+    let responsesCalls = 0;
+    const mock = await startMockUpstream((upstream) => {
+      upstream.post("/v1/responses", async (request, reply) => {
+        responsesCalls += 1;
+        received.push(request.body as { input?: unknown[]; model?: string });
+        if (responsesCalls === 1) {
+          return reply.code(400).send({ error: { message: "Provider returned error" } });
+        }
+        return {
+          id: "resp_collapse_e2e",
+          object: "response",
+          status: "completed",
+          model: "mimo-v2.5",
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "collapse-e2e-ok", annotations: [] }] }],
+          usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+        };
+      });
+      upstream.post("/v1/chat/completions", async () => {
+        throw new Error("chat must not be called");
+      });
+    });
+    resources.push(mock.app);
+    const config = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-collapse-token",
+      GATEWAY_API_KEY: "gateway-collapse-token",
+      CREDENTIAL_ENCRYPTION_KEY: "collapse-e2e-encryption-key",
+      UPSTREAM_TIMEOUT_MS: "1000",
+    });
+    const store = new MemoryStore();
+    await addHealthyChannel(store, createSecretBox(config.credentialEncryptionKey), { name: "collapse-e2e-mimo", baseUrl: mock.baseUrl, model: "mimo-v2.5" });
+    const built = await buildApp({ config, store, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(built.app);
+
+    const response = await built.app.inject({
+      method: "POST",
+      url: "/codex/v1/responses",
+      headers: { "api-key": "gateway-collapse-token", "user-agent": "Codex/1.0" },
+      payload: {
+        model: "mimo-v2.5",
+        instructions: "Be concise",
+        input: [
+          { type: "message", id: "msg_u1", role: "user", content: [{ type: "input_text", text: "list files" }] },
+          { type: "message", id: "msg_a1", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+          { type: "message", id: "msg_u2", role: "user", content: [{ type: "input_text", text: "now what?" }] },
+        ],
+        stream: false,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["x-autoapi-channel"]).toBeTruthy();
+    expect(responsesCalls).toBe(2);
+    expect(received[0]?.model).toBe("mimo-v2.5");
+    expect(received[1]?.input).toHaveLength(1);
+    expect(JSON.stringify(received[1]?.input)).toContain("now what?");
+    expect(response.json()).toMatchObject({ object: "response", model: "mimo-v2.5", status: "completed" });
+  });
+
   it("preserves Codex function-call loops when Responses falls back to Chat Completions", async () => {
     let capturedBody: Record<string, unknown> | null = null;
     const mock = await startMockUpstream((upstream) => {
@@ -207,8 +269,9 @@ describe("proxy HTTP surface", () => {
       UPSTREAM_TIMEOUT_MS: "1000",
     });
     const store = new MemoryStore();
-    await store.createGatewayKey("WorkBuddy", hashGatewayKey("workbuddy-token"), "oken");
-    await store.createGatewayKey("cc", hashGatewayKey("cc-token"), "oken");
+    const secrets = createSecretBox(config.credentialEncryptionKey);
+    await store.createGatewayKey("WorkBuddy", hashGatewayKey("workbuddy-token"), "oken", secrets.encrypt("workbuddy-token"));
+    await store.createGatewayKey("cc", hashGatewayKey("cc-token"), "oken", secrets.encrypt("cc-token"));
     await addHealthyChannel(store, createSecretBox(config.credentialEncryptionKey), { name: "key-name-channel", baseUrl: mock.baseUrl, model: "gpt-key-name" });
     const built = await buildApp({ config, store, runtime: new MemoryRuntimeState(), startAgent: false });
     resources.push(built.app);

@@ -48,7 +48,8 @@ export interface GatewayStore {
   listHealthCheckChannels(): Promise<Channel[]>;
   listGatewayKeys(): Promise<GatewayKeySummary[]>;
   findGatewayKey(keyHash: string): Promise<GatewayKeySummary | null>;
-  createGatewayKey(name: string, keyHash: string, keyLast4: string): Promise<GatewayKey>;
+  createGatewayKey(name: string, keyHash: string, keyLast4: string, keyCiphertext: string): Promise<GatewayKey>;
+  revealGatewayKey(id: string): Promise<string | null>;
   deleteGatewayKey(id: string): Promise<boolean>;
   hasGatewayKey(keyHash: string): Promise<boolean>;
   getAdminAccount(): Promise<AdminAccount | null>;

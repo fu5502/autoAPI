@@ -21,6 +21,8 @@ const schema = z.object({
   DATA_DIR: z.string().trim().min(1).default(".autoapi-data"),
   PUBLIC_BASE_URL: z.string().url().optional(),
   CHECKIN_ENABLE_NOVNC: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+  LOG_RETENTION_DAYS: z.coerce.number().int().min(1).max(90).default(7),
+  LOG_CLEANUP_INTERVAL_MS: z.coerce.number().int().positive().default(60 * 60 * 1000),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -54,6 +56,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     dataDir: parsed.DATA_DIR,
     checkinEnableNoVnc: parsed.CHECKIN_ENABLE_NOVNC,
     gatewayBaseUrl: `${(parsed.PUBLIC_BASE_URL ?? `http://localhost:${parsed.PORT}`).replace(/\/+$/, "")}/v1`,
+    logRetentionDays: parsed.LOG_RETENTION_DAYS,
+    logCleanupIntervalMs: parsed.LOG_CLEANUP_INTERVAL_MS,
   } as const;
 }
 

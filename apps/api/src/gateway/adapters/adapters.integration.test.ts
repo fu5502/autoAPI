@@ -199,6 +199,234 @@ describe("protocol adapters", () => {
     await expect(attempt.streamUsage).resolves.toEqual({ promptTokens: 20, completionTokens: 4, cachedTokens: 12 });
   });
 
+  it("sanitizes Codex Responses tools before forwarding upstream (mimo-v2.5)", async () => {
+    const model = "mimo-v2.5";
+    let captured: { tools?: unknown[]; turn_id?: string; session_id?: string; thread_id?: string; prompt_cache_key?: string } = {};
+    const mock = await startMockUpstream((app) => {
+      app.post("/v1/responses", async (request) => {
+        captured = request.body as { tools?: unknown[]; turn_id?: string; session_id?: string; thread_id?: string; prompt_cache_key?: string };
+        return {
+          id: "resp_sanitize",
+          object: "response",
+          status: "completed",
+          model,
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "sanitize-ok", annotations: [] }] }],
+          usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+        };
+      });
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("openai-sanitize-tools-test");
+    const channel = await addHealthyChannel(store, secrets, { name: `sanitize-${model}`, baseUrl: mock.baseUrl, model });
+    const request: GatewayRequest = {
+      requestId: crypto.randomUUID(),
+      kind: "responses",
+      model,
+      stream: false,
+      body: {
+        model,
+        input: "hello",
+        tools: [
+          {
+            type: "function",
+            name: "shell_command",
+            description: "Run a shell command",
+            strict: true,
+            parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false },
+          },
+          { type: "custom", name: "apply_patch", description: "Edit files", format: { type: "grammar", syntax: "lark", definition: "start: x" } },
+          { type: "tool_search", execution: "client", description: "Tool discovery" },
+          { type: "web_search", external_web_access: false, search_content_types: ["text", "image"] },
+        ],
+        turn_id: "turn_1",
+        session_id: "sess_1",
+        thread_id: "thread_1",
+        prompt_cache_key: "cache_1",
+        client_metadata: { x: 1 },
+        instructions: "Be concise",
+        stream: false,
+      },
+      clientName: "codex",
+    };
+
+    const attempt = await new OpenAiAdapter().execute(channel, "sk-sanitize", request, model, 1_000);
+
+    expect(captured.tools).toHaveLength(1);
+    expect(captured.tools?.[0]).not.toHaveProperty("strict");
+    expect(captured.tools?.[0]).toMatchObject({ type: "function", name: "shell_command" });
+    expect(captured.turn_id).toBeUndefined();
+    expect(captured.session_id).toBeUndefined();
+    expect(captured.thread_id).toBeUndefined();
+    expect(captured.prompt_cache_key).toBeUndefined();
+    expect(JSON.parse(await readBody(attempt.result.body))).toMatchObject({ object: "response", model });
+  });
+
+  it("normalizes a non-compliant Responses stream into full events (mimo-v2.5)", async () => {
+    const mock = await startMockUpstream((app) => {
+      app.post("/v1/responses", async (_request, reply) => {
+        reply.hijack();
+        reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+        reply.raw.end([
+          ": keep-alive\n\n",
+          "event: response.output_text.delta\ndata: {\"id\":\"gen_abc\",\"type\":\"response.output_text.delta\",\"delta\":\"Hel\",\"response\":{\"id\":\"gen_abc\",\"model\":\"mimo-v2.5\"}}\n\n",
+          "event: response.output_text.delta\ndata: {\"id\":\"gen_abc\",\"type\":\"response.output_text.delta\",\"delta\":\"lo\",\"response\":{\"id\":\"gen_abc\",\"model\":\"mimo-v2.5\"}}\n\n",
+          "event: response.completed\ndata: {\"id\":\"gen_abc\",\"type\":\"response.completed\",\"response\":{\"id\":\"gen_abc\",\"model\":\"mimo-v2.5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n",
+          "data: [DONE]\n\n",
+        ].join(""));
+        return reply;
+      });
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("openai-normalize-stream-test");
+    const channel = await addHealthyChannel(store, secrets, { name: "normalize-mimo", baseUrl: mock.baseUrl, model: "mimo-v2.5" });
+    const request: GatewayRequest = {
+      requestId: crypto.randomUUID(),
+      kind: "responses",
+      model: "mimo-v2.5",
+      stream: true,
+      body: { model: "mimo-v2.5", input: "hello", stream: true },
+      clientName: "codex",
+    };
+
+    const attempt = await new OpenAiAdapter().execute(channel, "sk-normalize", request, "mimo-v2.5", 1_000);
+    const output = await readBody(attempt.result.body);
+
+    expect(output).toContain('"type":"response.created"');
+    expect(output).toContain('"type":"response.in_progress"');
+    expect(output).toContain('"type":"response.output_item.added"');
+    expect(output).toContain('"type":"response.content_part.added"');
+    expect(output).toContain('"type":"response.output_text.done"');
+    expect(output).toContain('"type":"response.content_part.done"');
+    expect(output).toContain('"type":"response.output_item.done"');
+    expect(output).toContain('"type":"response.completed"');
+    // synthesized item_id / output_index on deltas
+    expect(output).toContain('"item_id":"msg_gen_abc"');
+    expect(output).toContain('"output_index":0');
+  });
+
+  it("collapses multi-turn history into one message after repeated Responses 400s (mimo-v2.5)", async () => {
+    const received: Array<{ input?: unknown[] }> = [];
+    let responsesCalls = 0;
+    const mock = await startMockUpstream((app) => {
+      app.post("/v1/responses", async (request, reply) => {
+        responsesCalls += 1;
+        received.push(request.body as { input?: unknown[] });
+        if (responsesCalls < 3) {
+          return reply.code(400).send({ error: { message: "Provider returned error" } });
+        }
+        return {
+          id: "resp_collapse",
+          object: "response",
+          status: "completed",
+          model: "mimo-v2.5",
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "collapse-ok", annotations: [] }] }],
+          usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+        };
+      });
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("openai-collapse-test");
+    const channel = await addHealthyChannel(store, secrets, { name: "collapse-mimo", baseUrl: mock.baseUrl, model: "mimo-v2.5" });
+    const request: GatewayRequest = {
+      requestId: crypto.randomUUID(),
+      kind: "responses",
+      model: "mimo-v2.5",
+      stream: false,
+      body: {
+        model: "mimo-v2.5",
+        input: [
+          { type: "message", id: "msg_u1", role: "user", content: [{ type: "input_text", text: "list files" }] },
+          {
+            type: "message",
+            id: "msg_a1",
+            role: "assistant",
+            content: [
+              { type: "output_text", text: "I ran the command." },
+              { type: "function_call", call_id: "call_1", id: "fc_1", name: "shell_command", arguments: "{\"command\":\"ls\"}", status: "completed" },
+            ],
+          },
+          { type: "function_call_output", call_id: "call_1", id: "fco_1", output: "file1.txt" },
+          { type: "message", id: "msg_u2", role: "user", content: [{ type: "input_text", text: "now what?" }] },
+        ],
+        stream: false,
+      },
+      clientName: "codex",
+    };
+
+    const attempt = await new OpenAiAdapter().execute(channel, "sk-collapse", request, "mimo-v2.5", 1_000);
+
+    expect(responsesCalls).toBe(3);
+    // attempt 1: original structured history
+    expect(JSON.stringify(received[0]?.input)).toContain("function_call");
+    // attempt 2: flattened multi-turn text history
+    expect(JSON.stringify(received[1]?.input)).not.toContain("function_call");
+    expect(JSON.stringify(received[1]?.input)).toContain("[tool_call shell_command]");
+    // attempt 3: single collapsed user message
+    const collapsed = received[2]?.input;
+    expect(Array.isArray(collapsed)).toBe(true);
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed?.[0]).toMatchObject({ type: "message", role: "user" });
+    const collapsedText = JSON.stringify(collapsed);
+    expect(collapsedText).toContain("list files");
+    expect(collapsedText).toContain("[tool_result] file1.txt");
+    expect(JSON.parse(await readBody(attempt.result.body))).toMatchObject({ object: "response", model: "mimo-v2.5" });
+  });
+
+  it("normalizes a non-compliant tool-call stream into full events (mimo-v2.5)", async () => {
+    const mock = await startMockUpstream((app) => {
+      app.post("/v1/responses", async (_request, reply) => {
+        reply.hijack();
+        reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+        reply.raw.end([
+          ": keep-alive\n\n",
+          "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"call_abc\",\"type\":\"function_call\",\"name\":\"shell_command\",\"call_id\":\"call_abc\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n",
+          "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"call_abc\",\"output_index\":0,\"delta\":\"{\\\"command\\\":\\\"ls\\\"}\"}\n\n",
+          "event: response.completed\ndata: {\"id\":\"gen_tool\",\"type\":\"response.completed\",\"response\":{\"id\":\"gen_tool\",\"model\":\"mimo-v2.5\"}}\n\n",
+          "data: [DONE]\n\n",
+        ].join(""));
+        return reply;
+      });
+    });
+    servers.push(mock.app);
+    const store = new MemoryStore();
+    const secrets = createSecretBox("openai-normalize-tool-test");
+    const channel = await addHealthyChannel(store, secrets, { name: "normalize-tool-mimo", baseUrl: mock.baseUrl, model: "mimo-v2.5" });
+    const request: GatewayRequest = {
+      requestId: crypto.randomUUID(),
+      kind: "responses",
+      model: "mimo-v2.5",
+      stream: true,
+      body: { model: "mimo-v2.5", input: "你好", stream: true },
+      clientName: "codex",
+    };
+
+    const attempt = await new OpenAiAdapter().execute(channel, "sk-normalize-tool", request, "mimo-v2.5", 1_000);
+    const output = await readBody(attempt.result.body);
+
+    // tool call is finalized with done events (no ghost message events)
+    const types = [...output.matchAll(/"type":"([^"]+)"/g)].map((match) => match[1]);
+    const expected = [
+      "response.created",
+      "response.in_progress",
+      "response.output_item.added",
+      "response.function_call_arguments.delta",
+      "response.function_call_arguments.done",
+      "response.output_item.done",
+      "response.completed",
+    ];
+    for (const type of expected) expect(types).toContain(type);
+    expect(output).toContain('"name":"shell_command"');
+    expect(output).toContain('"call_id":"call_abc"');
+    // prelude precedes the tool call
+    expect(output.indexOf('"type":"response.created"')).toBeLessThan(output.indexOf('"type":"response.output_item.added"'));
+    expect(output).toContain('"type":"response.function_call_arguments.done"');
+    expect(output).toContain('"type":"response.output_item.done"');
+    expect(output).not.toContain('"type":"response.output_text.done"');
+  });
+
   it("maps streamed Chat tool calls into Codex Responses events", async () => {
     const mock = await startMockUpstream((app) => {
       app.post("/v1/responses", async (_request, reply) => reply.code(404).send({ error: { message: "not supported" } }));

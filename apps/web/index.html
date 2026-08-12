@@ -2,7 +2,31 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <script>
+      // iOS Safari 从 iOS 10 起忽略 user-scalable=no，必须用 JS 拦截手势缩放。
+      (function () {
+        function preventZoom(e) { e.preventDefault(); }
+        document.addEventListener("gesturestart", preventZoom);
+        document.addEventListener("gesturechange", preventZoom);
+        document.addEventListener("gestureend", preventZoom);
+        // 双指捏合缩放（touchmove 需要非 passive 才能 preventDefault）
+        document.addEventListener("touchmove", function (e) {
+          if (e.touches.length > 1) e.preventDefault();
+        }, { passive: false });
+        // 双击缩放
+        var lastTouchEnd = 0;
+        document.addEventListener("touchend", function (e) {
+          var now = Date.now();
+          if (now - lastTouchEnd <= 350) e.preventDefault();
+          lastTouchEnd = now;
+        }, { passive: false });
+        // 桌面 Ctrl+滚轮 缩放
+        document.addEventListener("wheel", function (e) {
+          if (e.ctrlKey) e.preventDefault();
+        }, { passive: false });
+      })();
+    </script>
     <meta name="theme-color" content="#f5f7f8" />
     <link rel="icon" href="/favicon.svg" />
     <title>autoAPI 控制台</title>

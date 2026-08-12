@@ -8,7 +8,7 @@ import { isClaudePath, requireGatewayToken } from "./auth.js";
 
 export async function registerProxyRoutes(
   app: FastifyInstance,
-  dependencies: { router: GatewayRouter; store: GatewayStore },
+  dependencies: { router: GatewayRouter; store: GatewayStore; diagnostic?: import("../logger/diagnostic-log.js").DiagnosticLogger },
 ) {
   const auth = requireGatewayToken(dependencies.store);
   const proxy = (kind: RequestKind) => async (request: FastifyRequest, reply: FastifyReply) => {
@@ -68,35 +68,43 @@ export async function registerProxyRoutes(
   }
 }
 
-export function gatewayErrorHandler(error: Error, request: FastifyRequest, reply: FastifyReply) {
-  if (error instanceof GatewayError) {
-    return sendProtocolError(reply, request, error.statusCode, sanitizeErrorMessage(error.message), error.errorType);
-  }
-  if (error.name === "ZodError") {
-    return sendProtocolError(reply, request, 400, "Invalid request payload", "invalid_request_error");
-  }
-  const statusCode = Number((error as Error & { statusCode?: number }).statusCode);
-  if (Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 500) {
-    const message = statusCode === 429 ? "请求过于频繁，请稍后再试" : sanitizeErrorMessage(error.message);
-    return sendProtocolError(reply, request, statusCode, message, statusCode === 429 ? "rate_limited" : "request_error");
-  }
-  request.log.error({
-    errorName: error.name,
-    errorMessage: sanitizeErrorMessage(error.message),
-    requestId: request.id,
-    method: request.method,
-    path: request.url.split("?", 1)[0],
-  }, "Unhandled request error");
-  if (request.url.startsWith("/admin/checkin")) {
-    return reply.code(500).send({
-      error: {
-        message: sanitizeErrorMessage(error.message) || "签到请求处理失败",
-        type: "checkin_error",
-        requestId: request.id,
-      },
+export function gatewayErrorHandler(diagnostic?: import("../logger/diagnostic-log.js").DiagnosticLogger) {
+  return (error: Error, request: FastifyRequest, reply: FastifyReply) => {
+    if (error instanceof GatewayError) {
+      return sendProtocolError(reply, request, error.statusCode, sanitizeErrorMessage(error.message), error.errorType);
+    }
+    if (error.name === "ZodError") {
+      return sendProtocolError(reply, request, 400, "Invalid request payload", "invalid_request_error");
+    }
+    const statusCode = Number((error as Error & { statusCode?: number }).statusCode);
+    if (Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 500) {
+      const message = statusCode === 429 ? "请求过于频繁，请稍后再试" : sanitizeErrorMessage(error.message);
+      return sendProtocolError(reply, request, statusCode, message, statusCode === 429 ? "rate_limited" : "request_error");
+    }
+    request.log.error({
+      errorName: error.name,
+      errorMessage: sanitizeErrorMessage(error.message),
+      requestId: request.id,
+      method: request.method,
+      path: request.url.split("?", 1)[0],
+    }, "Unhandled request error");
+    diagnostic?.logSystem("error", "gateway", "未处理请求错误", {
+      method: request.method,
+      path: request.url.split("?", 1)[0],
+      errorName: error.name,
+      errorMessage: sanitizeErrorMessage(error.message),
     });
-  }
-  return sendProtocolError(reply, request, 500, "Internal gateway error", "internal_error");
+    if (request.url.startsWith("/admin/checkin")) {
+      return reply.code(500).send({
+        error: {
+          message: sanitizeErrorMessage(error.message) || "签到请求处理失败",
+          type: "checkin_error",
+          requestId: request.id,
+        },
+      });
+    }
+    return sendProtocolError(reply, request, 500, "Internal gateway error", "internal_error");
+  };
 }
 
 function sanitizeErrorMessage(message: string): string {
@@ -131,6 +139,9 @@ function clientName(request: FastifyRequest, kind: RequestKind): string {
   if (/claude[-_ ]?code/i.test(userAgent)) return "claude-code";
   if (/\bcodex\b|openai-codex/i.test(userAgent)) return "codex";
   if (/\bhermes\b/i.test(userAgent)) return "hermes";
+  if (/\bopencode\b/i.test(userAgent)) return "opencode";
+  if (/python[-_ ]?requests|python[-_ ]?http/i.test(userAgent)) return "python-requests";
+  if (/curl\/|wget\//i.test(userAgent)) return userAgent.slice(0, 120);
   if (/\/codex(?:\/|$)/i.test(request.url)) return "codex";
   if (isClaudePath(request.url) || kind === "messages") return "claude-code";
   return userAgent.slice(0, 120) || "unknown";

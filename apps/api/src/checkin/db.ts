@@ -796,14 +796,18 @@ export class AppDatabase {
       result.balanceDeltaAmount,
       ['failed', 'manual_required'].includes(result.status) ? result.message : null,
       // 登录状态与签到状态分开判断：签到需人工（如站点签到要求验证码）时，只要本次
-      // 已确认登录仍然有效（loginVerified），登录列就保持“登录有效”，不跟着变成“需人工处理”。
+      // 已确认登录仍然有效（loginVerified），登录列就保持"登录有效"，不跟着变成"需人工处理"。
+      // loginVerified === false 表示余额读取失败，登录不应视为有效，降级为 expired。
+      // loginVerified === undefined 表示未明确判定，保持原状态。
       result.status === 'manual_required'
         ? (result.loginVerified ? 'valid' : 'manual_required')
         : ['success', 'already_checked'].includes(result.status)
           ? 'valid'
           : result.loginVerified
             ? 'valid'
-            : site.authStatus,
+            : result.loginVerified === false
+              ? 'expired'
+              : site.authStatus,
       nowIso(),
       siteId,
     )

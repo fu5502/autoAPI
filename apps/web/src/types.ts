@@ -261,7 +261,51 @@ export interface ProbeResponse {
   probe: ProbeResult;
 }
 
-export type View = "overview" | "channels" | "pools" | "usage" | "requests" | "playground" | "checkin" | "security";
+export type View = "overview" | "channels" | "requests" | "playground" | "checkin" | "security";
+
+export interface RetryTraceEntry {
+  channelName: string | null;
+  statusCode: number;
+  errorType: string | null;
+  latencyMs: number;
+}
+
+export interface GatewayLogEntry {
+  ts: string;
+  requestId: string;
+  kind: string;
+  model: string;
+  channelId: string | null;
+  channelName: string | null;
+  upstreamModel: string | null;
+  statusCode: number;
+  errorType: string | null;
+  errorDetail: string | null;
+  upstreamBody: string | null;
+  requestBody: string | null;
+  retryCount: number;
+  retryTrace: RetryTraceEntry[];
+  latencyMs: number;
+  streamed: boolean;
+  clientName: string;
+  endpoint: string | null;
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface SystemLogEntry {
+  ts: string;
+  level: "info" | "warn" | "error";
+  source: string;
+  message: string;
+  detail: Record<string, unknown> | null;
+}
+
+export interface LogPage<T> {
+  items: T[];
+  total: number;
+  hasMore: boolean;
+}
 
 export interface AdminLoginRecord {
   id: string;

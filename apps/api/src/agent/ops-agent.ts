@@ -1,6 +1,7 @@
 import type { GatewayStore } from "../domain/store.js";
 import { randomUUID } from "node:crypto";
 import type { Channel, ChannelModelDiscoveryInput, ChannelUpdateInput, ModelDiscoveryResult, ProbeResult, Protocol, ProviderImportInput, ProviderProbeInput } from "../domain/types.js";
+import type { DiagnosticLogger } from "../logger/diagnostic-log.js";
 import type { SecretBox } from "../security/secret-box.js";
 import type { AdapterRegistry } from "../gateway/adapter.js";
 import { GatewayError } from "../gateway/errors.js";
@@ -12,6 +13,7 @@ export interface OpsAgentOptions {
   timeoutMs: number;
   failureThreshold: number;
   intervalMs: number;
+  diagnostic?: DiagnosticLogger;
 }
 
 export interface ChannelImportPreview {
@@ -294,6 +296,15 @@ export class OpsAgent {
     }
     await this.options.store.applyProbeResult(channelId, result, this.options.failureThreshold);
     await this.recordProbeUsage(channel, result, Date.now() - startedAt);
+    this.options.diagnostic?.logSystem(result.ok ? "info" : "warn", "probe", `渠道探测 ${channel.name}`, {
+      channelId: channel.id,
+      channelName: channel.name,
+      ok: result.ok,
+      protocol: result.protocol,
+      latencyMs: Date.now() - startedAt,
+      models: result.models.length,
+      error: result.error ?? null,
+    });
     return result;
   }
 

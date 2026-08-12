@@ -34,6 +34,24 @@ export class OpenAiAdapter implements UpstreamAdapter {
     try {
       return await executeOpenAiPath(channel, apiKey, request, upstreamModel, timeoutMs, "/v1/responses", request.body);
     } catch (error) {
+      if (error instanceof UpstreamError && error.statusCode === 400 && Array.isArray(request.body.input)) {
+        const retry = (body: Record<string, unknown>) =>
+          executeOpenAiPath(channel, apiKey, request, upstreamModel, timeoutMs, "/v1/responses", body);
+        // Some relays reject structured tool history (function_call /
+        // function_call_output) for certain models with a generic 400. First retry
+        // flattens it to plain text; if the relay also rejects multi-message inputs
+        // (e.g. opencode.ai Console Go for mimo-v2.5), a second retry collapses the
+        // whole conversation into a single user message.
+        const flattened = flattenResponsesInput(request.body.input);
+        if (JSON.stringify(flattened) !== JSON.stringify(request.body.input)) {
+          try {
+            return await retry({ ...request.body, input: flattened });
+          } catch (flatError) {
+            if (!(flatError instanceof UpstreamError) || flatError.statusCode !== 400) throw flatError;
+          }
+        }
+        return await retry({ ...request.body, input: collapseResponsesInput(request.body.input) });
+      }
       if (!(error instanceof UpstreamError) || (error.statusCode !== 404 && error.statusCode !== 405)) throw error;
       return executeResponsesViaChat(channel, apiKey, request, upstreamModel, timeoutMs);
     }
@@ -107,11 +125,14 @@ async function executeOpenAiPath(
   body: Record<string, unknown>,
 ): Promise<AdapterAttempt> {
   const payload = {
-    ...body,
+    ...(path === "/v1/responses" ? sanitizeResponsesBody(body) : body),
     model: upstreamModel,
     stream: request.stream,
     ...(request.stream && path === "/v1/chat/completions"
       ? { stream_options: { ...(isRecord(body.stream_options) ? body.stream_options : {}), include_usage: true } }
+      : {}),
+    ...(path === "/v1/responses" && Array.isArray(body.tools)
+      ? { tools: sanitizeResponsesTools(body.tools) }
       : {}),
   };
   const { response, body: responseBody, firstByteLatencyMs, streamError } = await fetchUpstream(
@@ -122,12 +143,18 @@ async function executeOpenAiPath(
   );
   const usage = responseBody instanceof Uint8Array ? readUsage(responseBody) : { promptTokens: 0, completionTokens: 0, cachedTokens: null };
   const observed = responseBody instanceof Uint8Array ? null : observeSseUsage(responseBody, readStreamUsage);
+  const upstreamStream = responseBody instanceof Uint8Array ? null : (observed?.stream ?? responseBody);
+  const resultBody: Uint8Array | AsyncIterable<Uint8Array> = responseBody instanceof Uint8Array
+    ? responseBody
+    : path === "/v1/responses"
+      ? normalizeResponsesStream(upstreamStream!)
+      : observed!.stream;
   return {
     result: {
       channelId: channel.id,
       status: response.status,
       headers: responseHeaders(response, request.stream),
-      body: observed?.stream ?? responseBody,
+      body: resultBody,
       streaming: request.stream,
     },
     ...usage,
@@ -168,6 +195,489 @@ async function executeResponsesViaChat(
     ...attempt,
     result: { ...attempt.result, body: converted.stream, streaming: true },
     moderation: converted.moderation,
+  };
+}
+
+/**
+ * Codex sends special tool kinds besides `function` (`tool_search`, `web_search`,
+ * `custom` like apply_patch). Many relay backends reject those for non-official
+ * models with a generic 400 "Provider returned error", so we forward only
+ * standard function tools. `strict: true` is also dropped because some relays
+ * reject strict schemas for certain models.
+ */
+function sanitizeResponsesTools(tools: unknown[]): unknown[] {
+  return tools.flatMap((tool) => {
+    if (!isRecord(tool) || tool.type !== "function") return [];
+    if (!("strict" in tool)) return [tool];
+    const { strict: _strict, ...rest } = tool;
+    return [rest];
+  });
+}
+
+/** Codex-only session/metadata fields that strict relays reject. */
+const CODEX_ONLY_FIELDS = new Set([
+  "prompt_cache_key",
+  "client_metadata",
+  "turn_id",
+  "session_id",
+  "thread_id",
+  "x-codex-installation-id",
+  "x-codex-turn-metadata",
+  "x-codex-window-id",
+]);
+
+function sanitizeResponsesBody(body: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body)) {
+    if (CODEX_ONLY_FIELDS.has(key)) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
+/**
+ * Replaces every `function_call` / `function_call_output` item or content part
+ * in a Responses input with plain-text descriptions. Some relays reject the
+ * structured tool history for non-official models with a generic 400, while the
+ * same conversation flattened to text succeeds. Text-only turns are kept as-is.
+ */
+function flattenResponsesInput(input: unknown[]): unknown[] {
+  const out: unknown[] = [];
+  for (const item of input) {
+    if (!isRecord(item)) {
+      out.push(item);
+      continue;
+    }
+    if (item.type === "function_call") {
+      pushTextMessage(out, "assistant", describeToolCall(item));
+      continue;
+    }
+    if (item.type === "function_call_output") {
+      pushTextMessage(out, "user", describeToolOutput(item));
+      continue;
+    }
+    if (item.type === "message" && Array.isArray(item.content)) {
+      const content = item.content.map((part) => {
+        if (!isRecord(part)) return part;
+        if (part.type === "function_call") return { type: "output_text", text: describeToolCall(part) };
+        if (part.type === "function_call_output") return { type: "output_text", text: describeToolOutput(part) };
+        return part;
+      });
+      out.push({ ...item, content });
+      continue;
+    }
+    out.push(item);
+  }
+  return out;
+}
+
+function pushTextMessage(messages: unknown[], role: "user" | "assistant", text: string): void {
+  const last = messages[messages.length - 1];
+  if (isRecord(last) && last.type === "message" && last.role === role && Array.isArray(last.content)) {
+    last.content = [...last.content, { type: "output_text", text }];
+    return;
+  }
+  messages.push({ type: "message", id: `msg_${randomSuffix()}`, role, content: [{ type: "output_text", text }] });
+}
+
+function randomSuffix(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function describeToolCall(item: Record<string, unknown>): string {
+  const name = typeof item.name === "string" ? item.name : "tool";
+  const args = typeof item.arguments === "string" && item.arguments ? item.arguments : "{}";
+  return `[tool_call ${name}] ${args}`;
+}
+
+function describeToolOutput(item: Record<string, unknown>): string {
+  const output = item.output;
+  const text = output === undefined || output === null
+    ? ""
+    : typeof output === "string"
+      ? output
+      : JSON.stringify(output);
+  return text ? `[tool_result] ${text}` : "[tool_result]";
+}
+
+/**
+ * Collapses the whole Responses input into a single user message. Some relays
+ * reject multi-message inputs entirely for certain models (e.g. opencode.ai
+ * Console Go rejects every multi-turn request for mimo-v2.5 with a generic 400),
+ * even when the history contains no tool calls. A single concatenated message
+ * keeps the conversation context while satisfying that constraint.
+ */
+function collapseResponsesInput(input: unknown[]): unknown[] {
+  const lines: string[] = [];
+  for (const item of input) {
+    if (!isRecord(item)) continue;
+    if (item.type === "function_call") {
+      lines.push(describeToolCall(item));
+      continue;
+    }
+    if (item.type === "function_call_output") {
+      lines.push(describeToolOutput(item));
+      continue;
+    }
+    if (item.type !== "message") continue;
+    const role = item.role === "assistant" ? "assistant" : "user";
+    const texts: string[] = [];
+    const content = Array.isArray(item.content) ? item.content : [];
+    for (const part of content) {
+      if (!isRecord(part)) continue;
+      if (part.type === "input_text" || part.type === "output_text") {
+        if (typeof part.text === "string" && part.text.trim()) texts.push(part.text);
+      } else if (part.type === "function_call") {
+        texts.push(describeToolCall(part));
+      } else if (part.type === "function_call_output") {
+        texts.push(describeToolOutput(part));
+      }
+    }
+    if (texts.length > 0) lines.push(`${role}: ${texts.join("\n")}`);
+  }
+  const text = lines.length > 0 ? lines.join("\n") : "";
+  return [{ type: "message", id: `msg_${randomSuffix()}`, role: "user", content: [{ type: "input_text", text }] }];
+}
+
+/**
+ * Some relays emit non-compliant Responses SSE: they send `output_text.delta` /
+ * `function_call_arguments.delta` without the standard `response.created` /
+ * `in_progress` prelude and without the `*_done` / `output_item.done` closing
+ * events (e.g. opencode.ai Console Go for mimo-v2.5). Codex depends on that
+ * sequence to render output and finish tool calls, so we synthesize the missing
+ * events and patch deltas that lack `item_id` / `output_index`. Compliant
+ * streams already carrying those events pass through unchanged.
+ */
+type NormalizedItemKind = "message" | "reasoning" | "function_call";
+
+interface NormalizedItem {
+  kind: NormalizedItemKind;
+  outputIndex: number;
+  text: string;
+  done: boolean;
+  callId?: string;
+  name?: string;
+}
+
+function normalizeResponsesStream(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
+  const normalized: AsyncIterable<Uint8Array> = {
+    async *[Symbol.asyncIterator]() {
+      const decoder = new TextDecoder();
+      const encoder = new TextEncoder();
+      let buffer = "";
+      let responseId = "";
+      let responseModel = "";
+      let started = false;
+      let inProgress = false;
+      const items = new Map<string, NormalizedItem>();
+
+      const ensureHeader = (eventId: string): Uint8Array[] => {
+        const out: Uint8Array[] = [];
+        if (!started) {
+          started = true;
+          out.push(sseEvent(encoder, "response.created", {
+            type: "response.created",
+            id: eventId,
+            response: { id: eventId, status: "in_progress", ...(responseModel ? { model: responseModel } : {}) },
+          }));
+        }
+        if (!inProgress) {
+          inProgress = true;
+          out.push(sseEvent(encoder, "response.in_progress", {
+            type: "response.in_progress",
+            id: eventId,
+            response: { id: eventId, status: "in_progress", ...(responseModel ? { model: responseModel } : {}) },
+          }));
+        }
+        return out;
+      };
+
+      const synthesizeItemPrelude = (itemId: string, item: NormalizedItem): Uint8Array[] => {
+        const out = ensureHeader(responseId || itemId);
+        if (item.kind === "function_call") {
+          out.push(sseEvent(encoder, "response.output_item.added", {
+            type: "response.output_item.added",
+            output_index: item.outputIndex,
+            item: {
+              type: "function_call",
+              id: itemId,
+              call_id: item.callId ?? itemId,
+              name: item.name ?? "",
+              arguments: "",
+              status: "in_progress",
+            },
+          }));
+        } else if (item.kind === "reasoning") {
+          out.push(sseEvent(encoder, "response.output_item.added", {
+            type: "response.output_item.added",
+            output_index: item.outputIndex,
+            item: { type: "reasoning", id: itemId, summary: [] },
+          }));
+          out.push(sseEvent(encoder, "response.content_part.added", {
+            type: "response.content_part.added",
+            item_id: itemId,
+            output_index: item.outputIndex,
+            content_index: 0,
+            part: { type: "summary_text", text: "" },
+          }));
+        } else {
+          out.push(sseEvent(encoder, "response.output_item.added", {
+            type: "response.output_item.added",
+            output_index: item.outputIndex,
+            item: { type: "message", id: itemId, status: "in_progress", role: "assistant", content: [] },
+          }));
+          out.push(sseEvent(encoder, "response.content_part.added", {
+            type: "response.content_part.added",
+            item_id: itemId,
+            output_index: item.outputIndex,
+            content_index: 0,
+            part: { type: "output_text", text: "", annotations: [] },
+          }));
+        }
+        return out;
+      };
+
+      const finalizeItem = (itemId: string, item: NormalizedItem): Uint8Array[] => {
+        const out: Uint8Array[] = [];
+        if (item.kind === "function_call") {
+          out.push(sseEvent(encoder, "response.function_call_arguments.done", {
+            type: "response.function_call_arguments.done",
+            item_id: itemId,
+            output_index: item.outputIndex,
+            arguments: item.text,
+          }));
+          out.push(sseEvent(encoder, "response.output_item.done", {
+            type: "response.output_item.done",
+            output_index: item.outputIndex,
+            item: {
+              type: "function_call",
+              id: itemId,
+              call_id: item.callId ?? itemId,
+              name: item.name ?? "",
+              arguments: item.text,
+              status: "completed",
+            },
+          }));
+        } else if (item.kind === "reasoning") {
+          out.push(sseEvent(encoder, "response.reasoning_text.done", {
+            type: "response.reasoning_text.done",
+            item_id: itemId,
+            output_index: item.outputIndex,
+            text: item.text,
+          }));
+          out.push(sseEvent(encoder, "response.output_item.done", {
+            type: "response.output_item.done",
+            output_index: item.outputIndex,
+            item: { type: "reasoning", id: itemId, summary: [{ type: "summary_text", text: item.text }] },
+          }));
+        } else {
+          out.push(sseEvent(encoder, "response.output_text.done", {
+            type: "response.output_text.done",
+            item_id: itemId,
+            output_index: item.outputIndex,
+            content_index: 0,
+            text: item.text,
+          }));
+          out.push(sseEvent(encoder, "response.content_part.done", {
+            type: "response.content_part.done",
+            item_id: itemId,
+            output_index: item.outputIndex,
+            content_index: 0,
+            part: { type: "output_text", text: item.text, annotations: [] },
+          }));
+          out.push(sseEvent(encoder, "response.output_item.done", {
+            type: "response.output_item.done",
+            output_index: item.outputIndex,
+            item: {
+              type: "message",
+              id: itemId,
+              status: "completed",
+              role: "assistant",
+              content: [{ type: "output_text", text: item.text, annotations: [] }],
+            },
+          }));
+        }
+        return out;
+      };
+
+      for await (const chunk of source) {
+        buffer += decoder.decode(chunk, { stream: true });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() ?? "";
+        for (const block of blocks) {
+          if (!block.trim()) continue;
+          const dataLine = block.split(/\r?\n/).find((line) => line.startsWith("data:"));
+          if (!dataLine) {
+            yield encoder.encode(`${block}\n\n`);
+            continue;
+          }
+          const raw = dataLine.slice(5).trim();
+          if (!raw || raw === "[DONE]") {
+            yield encoder.encode(`${block}\n\n`);
+            continue;
+          }
+          let event: Record<string, unknown>;
+          try {
+            event = JSON.parse(raw) as Record<string, unknown>;
+          } catch {
+            yield encoder.encode(`${block}\n\n`);
+            continue;
+          }
+          const type = typeof event.type === "string" ? event.type : "";
+          const id = typeof event.id === "string" ? event.id : "";
+          if (!responseId && id) responseId = id;
+          const resp = isRecord(event.response) ? event.response : {};
+          if (!responseModel && typeof resp.model === "string") responseModel = resp.model;
+
+          if (type === "response.created" || type === "response.in_progress") {
+            if (type === "response.created") started = true;
+            if (type === "response.in_progress") inProgress = true;
+            yield encoder.encode(`${block}\n\n`);
+            continue;
+          }
+          // Guarantee the prelude precedes any other event, even when the
+          // upstream stream starts directly with an output_item/delta.
+          if (!started) {
+            for (const piece of ensureHeader(responseId || id)) yield piece;
+          }
+          if (type === "response.output_item.added") {
+            const item = isRecord(event.item) ? event.item : {};
+            if (typeof item.id === "string") {
+              const base: NormalizedItem = {
+                kind: item.type === "function_call" ? "function_call" : item.type === "reasoning" ? "reasoning" : "message",
+                outputIndex: typeof event.output_index === "number" ? event.output_index : 0,
+                text: "",
+                done: false,
+              };
+              if (item.type === "function_call") {
+                if (typeof item.call_id === "string") base.callId = item.call_id;
+                if (typeof item.name === "string") base.name = item.name;
+              }
+              items.set(item.id, base);
+            }
+            yield encoder.encode(`${block}\n\n`);
+            continue;
+          }
+          if (type === "response.output_text.delta" || type === "response.reasoning_text.delta") {
+            const text = typeof event.delta === "string" ? event.delta : "";
+            const itemId = typeof event.item_id === "string" ? event.item_id : `msg_${responseId || id}`;
+            const outputIndex = typeof event.output_index === "number" ? event.output_index : 0;
+            let item = items.get(itemId);
+            if (!item) {
+              item = {
+                kind: type === "response.reasoning_text.delta" ? "reasoning" : "message",
+                outputIndex,
+                text: "",
+                done: false,
+              };
+              items.set(itemId, item);
+              for (const piece of synthesizeItemPrelude(itemId, item)) yield piece;
+            }
+            item.text += text;
+            if (typeof event.item_id === "string" && typeof event.output_index === "number") {
+              yield encoder.encode(`${block}\n\n`);
+            } else {
+              yield encoder.encode(`data: ${JSON.stringify({ ...event, item_id: itemId, output_index: outputIndex, content_index: 0 })}\n\n`);
+            }
+            continue;
+          }
+          if (type === "response.function_call_arguments.delta") {
+            const text = typeof event.delta === "string" ? event.delta : "";
+            const itemId = typeof event.item_id === "string" ? event.item_id : `call_${responseId || id}`;
+            const outputIndex = typeof event.output_index === "number" ? event.output_index : 0;
+            let item = items.get(itemId);
+            if (!item) {
+              item = {
+                kind: "function_call",
+                outputIndex,
+                text: "",
+                done: false,
+                ...(typeof event.function_call_id === "string"
+                  ? { callId: event.function_call_id as string }
+                  : {}),
+              };
+              items.set(itemId, item);
+              for (const piece of synthesizeItemPrelude(itemId, item)) yield piece;
+            }
+            item.text += text;
+            if (typeof event.item_id === "string" && typeof event.output_index === "number") {
+              yield encoder.encode(`${block}\n\n`);
+            } else {
+              yield encoder.encode(`data: ${JSON.stringify({ ...event, item_id: itemId, output_index: outputIndex })}\n\n`);
+            }
+            continue;
+          }
+          if (type === "response.function_call_arguments.done") {
+            const itemId = typeof event.item_id === "string" ? event.item_id : "";
+            const item = itemId ? items.get(itemId) : undefined;
+            if (item) {
+              item.done = true;
+              if (typeof event.arguments === "string" && event.arguments) item.text = event.arguments;
+            }
+            yield encoder.encode(`${block}\n\n`);
+            continue;
+          }
+          if (type === "response.output_item.done") {
+            const item = isRecord(event.item) ? event.item : {};
+            const itemId = typeof item.id === "string" ? item.id : "";
+            const tracked = itemId ? items.get(itemId) : undefined;
+            if (tracked) tracked.done = true;
+            yield encoder.encode(`${block}\n\n`);
+            continue;
+          }
+          if (type === "response.completed") {
+            const prelude: Uint8Array[] = [];
+            for (const [itemId, item] of items) {
+              if (item.done) continue;
+              item.done = true;
+              prelude.push(...finalizeItem(itemId, item));
+            }
+            for (const piece of prelude) yield piece;
+            yield encoder.encode(`${block}\n\n`);
+            continue;
+          }
+          yield encoder.encode(`${block}\n\n`);
+        }
+      }
+      if (buffer.trim()) yield encoder.encode(`${buffer}\n\n`);
+    },
+  };
+  return trackResponsesEvents(normalized);
+}
+
+/**
+ * 诊断观测器：记录每次 Responses 流实际发送给客户端的事件序列。
+ * 当客户端提前断开（499）时输出最后发送的事件，用于定位"断在哪个
+ * 事件后"。仅匹配 `response.*` 顶层事件（排除 item 内嵌的 type），
+ * 并依据是否出现 `response.completed` / `response.failed` 判定完整结束，
+ * 避免消费方提前 return() generator 造成的误报。仅排查用，写 stderr。
+ */
+function trackResponsesEvents(stream: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      const events: string[] = [];
+      let sawTerminal = false;
+      try {
+        for await (const chunk of stream) {
+          const text = new TextDecoder().decode(chunk);
+          const matches = [...text.matchAll(/"type":"(response\.[^"]+)"/g)];
+          for (const match of matches) {
+            events.push(match[1]!);
+            if (events.length > 80) events.shift();
+            if (match[1] === "response.completed" || match[1] === "response.failed") sawTerminal = true;
+          }
+          yield chunk;
+        }
+        console.error(`[responses-stream-diag] finished=yes terminal=${sawTerminal} events=${JSON.stringify(events.slice(-40))}`);
+      } catch (error) {
+        console.error(`[responses-stream-diag] finished=aborted error=${error instanceof Error ? error.message : String(error)} events=${JSON.stringify(events.slice(-40))}`);
+        throw error;
+      } finally {
+        if (!sawTerminal) {
+          console.error(`[responses-stream-diag] finished=client_closed events=${JSON.stringify(events.slice(-40))}`);
+        }
+      }
+    },
   };
 }
 

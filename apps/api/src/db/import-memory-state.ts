@@ -115,6 +115,7 @@ export function prepareState(
 
   if (options.gatewayApiKey) {
     const developmentHash = hashGatewayKey("change-me-gateway");
+    const targetSecrets = options.targetCredentialKey ? createSecretBox(options.targetCredentialKey) : null;
     gatewayKeys = state.gatewayKeys.map((key) => {
       if (key.keyHash !== developmentHash) return key;
       developmentGatewayKeysRotated += 1;
@@ -122,6 +123,7 @@ export function prepareState(
         ...key,
         keyHash: hashGatewayKey(options.gatewayApiKey!),
         keyLast4: options.gatewayApiKey!.slice(-4),
+        keyCiphertext: targetSecrets ? targetSecrets.encrypt(options.gatewayApiKey!) : key.keyCiphertext,
         lastUsedAt: null,
       };
     });
@@ -318,14 +320,15 @@ async function insertUsage(client: PoolClient, usage: PersistedUsage[]) {
 async function insertGatewayKeys(client: PoolClient, keys: GatewayKey[]) {
   for (const key of keys) {
     await client.query(
-      `INSERT INTO gateway_keys (id, name, key_hash, key_last4, enabled, created_at, last_used_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO gateway_keys (id, name, key_hash, key_last4, key_ciphertext, enabled, created_at, last_used_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (key_hash) DO UPDATE SET
          name = EXCLUDED.name,
          key_last4 = EXCLUDED.key_last4,
+         key_ciphertext = COALESCE(EXCLUDED.key_ciphertext, gateway_keys.key_ciphertext),
          enabled = EXCLUDED.enabled,
          last_used_at = EXCLUDED.last_used_at`,
-      [key.id, key.name, key.keyHash, key.keyLast4, key.enabled, key.createdAt, key.lastUsedAt],
+      [key.id, key.name, key.keyHash, key.keyLast4, key.keyCiphertext ?? null, key.enabled, key.createdAt, key.lastUsedAt],
     );
   }
 }

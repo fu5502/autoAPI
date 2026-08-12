@@ -9,6 +9,8 @@ export function GatewayKeyDialog({ open, onClose }: { open: boolean; onClose: ()
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
+  const [copyingId, setCopyingId] = useState<string | null>(null);
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const keys = useQuery({
     queryKey: ["gateway-keys"],
     queryFn: api.gatewayKeys,
@@ -38,6 +40,8 @@ export function GatewayKeyDialog({ open, onClose }: { open: boolean; onClose: ()
       setCopied(false);
       setError(null);
       setPendingDelete(null);
+      setCopyingId(null);
+      setCopiedKeyId(null);
     }
   }, [open]);
 
@@ -66,6 +70,21 @@ export function GatewayKeyDialog({ open, onClose }: { open: boolean; onClose: ()
     setPendingDelete({ id, name });
   }
 
+  async function copyExistingKey(id: string) {
+    setError(null);
+    setCopyingId(id);
+    try {
+      const result = await api.revealGatewayKey(id);
+      await copyText(result.key);
+      setCopiedKeyId(id);
+      window.setTimeout(() => setCopiedKeyId(null), 1800);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "密钥复制失败，请重试。");
+    } finally {
+      setCopyingId(null);
+    }
+  }
+
   return (
     <div className={open ? "modal-layer open" : "modal-layer"} aria-hidden={!open}>
       <button className="drawer-backdrop" aria-label="关闭访问密钥弹窗" onClick={onClose} />
@@ -75,7 +94,7 @@ export function GatewayKeyDialog({ open, onClose }: { open: boolean; onClose: ()
           <button className="icon-button" title="关闭" aria-label="关闭" onClick={onClose}><X size={18} /></button>
         </div>
         <div className="gateway-key-content">
-          <div className="key-intro">用于 Codex、Hermes、Claude Code 等客户端访问 autoAPI 网关。完整密钥只会在创建成功后显示一次。</div>
+          <div className="key-intro">用于 Codex、Hermes、Claude Code 等客户端访问 autoAPI 网关。点击已有密钥的复制按钮可获取完整密钥。</div>
           {createdKey ? (
             <div className="key-reveal" role="status">
               <div><strong>新密钥已创建</strong><span>请立即复制并保存，关闭弹窗后将无法再次查看。</span></div>
@@ -99,7 +118,12 @@ export function GatewayKeyDialog({ open, onClose }: { open: boolean; onClose: ()
                     <button className="button secondary" onClick={() => setPendingDelete(null)} disabled={deleteKey.isPending}>取消</button>
                     <button className="button danger-button" onClick={() => { deleteKey.mutate(key.id); setPendingDelete(null); }} disabled={deleteKey.isPending}><Trash2 size={14} /> 删除</button>
                   </div>
-                ) : <button className="icon-button danger-button" title={`删除 ${key.name}`} aria-label={`删除 ${key.name}`} onClick={() => requestDelete(key.id, key.name)} disabled={deleteKey.isPending}><Trash2 size={15} /></button>}
+                ) : (
+                  <div className="key-row-actions">
+                    <button className="icon-button key-copy-btn" title={copiedKeyId === key.id ? "已复制" : "复制密钥"} aria-label={copiedKeyId === key.id ? "已复制" : "复制密钥"} onClick={() => void copyExistingKey(key.id)} disabled={copyingId === key.id}>{copiedKeyId === key.id ? <Check size={15} /> : copyingId === key.id ? <span className="key-copy-spinner" /> : <Copy size={15} />}</button>
+                    <button className="icon-button danger-button" title={`删除 ${key.name}`} aria-label={`删除 ${key.name}`} onClick={() => requestDelete(key.id, key.name)} disabled={deleteKey.isPending}><Trash2 size={15} /></button>
+                  </div>
+                )}
               </div>
             )) : <div className="key-list-empty">暂无访问密钥。</div>}
           </div>

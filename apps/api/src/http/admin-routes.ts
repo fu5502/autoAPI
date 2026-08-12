@@ -6,6 +6,7 @@ import type { GatewayStore } from "../domain/store.js";
 import type { GatewayRequest, PlaygroundSession, PlaygroundSessionMessage } from "../domain/types.js";
 import type { GatewayRouter } from "../gateway/router.js";
 import { GatewayError } from "../gateway/errors.js";
+import type { DiagnosticLogger } from "../logger/diagnostic-log.js";
 import { generateGatewayKey, hashGatewayKey } from "../security/gateway-key.js";
 import { AdminAuthService } from "../security/admin-auth.js";
 import type { AppDatabase } from "../checkin/db.js";
@@ -126,6 +127,7 @@ export async function registerAdminRoutes(
     checkinDb?: AppDatabase | undefined;
     siteIcons?: SiteIconService | undefined;
     checkin?: { db: AppDatabase; coordinator: CheckinCoordinator } | undefined;
+    diagnostic?: DiagnosticLogger | undefined;
   },
 ) {
   app.post("/admin/auth/login", {
@@ -317,8 +319,28 @@ export async function registerAdminRoutes(
       if (await dependencies.store.hasGatewayKey(keyHash)) {
         return reply.code(409).send({ error: { message: "Gateway key already exists", type: "conflict" } });
       }
-      const created = await dependencies.store.createGatewayKey(input.name, keyHash, key.slice(-4));
+      if (!dependencies.secrets) {
+        return reply.code(500).send({ error: { message: "Secret encryption is not configured", type: "internal_error" } });
+      }
+      const keyCiphertext = dependencies.secrets.encrypt(key);
+      const created = await dependencies.store.createGatewayKey(input.name, keyHash, key.slice(-4), keyCiphertext);
       return reply.code(201).send({ key, gatewayKey: sanitizeGatewayKey(created) });
+    });
+
+    admin.get<{ Params: { id: string } }>("/gateway-keys/:id/reveal", async (request, reply) => {
+      if (!dependencies.secrets) {
+        return reply.code(500).send({ error: { message: "Secret encryption is not configured", type: "internal_error" } });
+      }
+      const ciphertext = await dependencies.store.revealGatewayKey(request.params.id);
+      if (ciphertext === null) {
+        const keys = await dependencies.store.listGatewayKeys();
+        const exists = keys.some((k) => k.id === request.params.id);
+        if (exists) {
+          return reply.code(409).send({ error: { message: "Gateway key ciphertext is missing", type: "ciphertext_missing" } });
+        }
+        return reply.code(404).send({ error: { message: "Gateway key not found", type: "not_found" } });
+      }
+      return { key: dependencies.secrets.decrypt(ciphertext) };
     });
 
     admin.delete<{ Params: { id: string } }>("/gateway-keys/:id", async (request, reply) => {
@@ -504,6 +526,57 @@ export async function registerAdminRoutes(
         ...(request.query.sourceIp?.trim() ? { sourceIp: request.query.sourceIp.trim() } : {}),
       };
       return dependencies.store.listRequestLogs(filters);
+    });
+    admin.get<{ Querystring: { limit?: string; offset?: string; startTime?: string; endTime?: string; model?: string; channel?: string; statusCode?: string; errorType?: string } }>("/gateway-logs", async (request, reply) => {
+      if (!dependencies.diagnostic) return reply.code(404).send({ error: { message: "诊断日志未启用", type: "not_found" } });
+      const limit = Math.min(200, Math.max(1, Number.parseInt(request.query.limit ?? "50", 10) || 50));
+      const offset = Math.max(0, Number.parseInt(request.query.offset ?? "0", 10) || 0);
+      return dependencies.diagnostic.listGatewayLogs({
+        limit,
+        offset,
+        ...(request.query.startTime?.trim() ? { startTime: request.query.startTime.trim() } : {}),
+        ...(request.query.endTime?.trim() ? { endTime: request.query.endTime.trim() } : {}),
+        ...(request.query.model?.trim() ? { model: request.query.model.trim() } : {}),
+        ...(request.query.channel?.trim() ? { channel: request.query.channel.trim() } : {}),
+        ...(request.query.statusCode?.trim() ? { statusCode: request.query.statusCode.trim() } : {}),
+        ...(request.query.errorType?.trim() ? { errorType: request.query.errorType.trim() } : {}),
+      });
+    });
+    admin.get<{ Querystring: { limit?: string; offset?: string; level?: string; source?: string; startTime?: string; endTime?: string } }>("/system-logs", async (request, reply) => {
+      if (!dependencies.diagnostic) return reply.code(404).send({ error: { message: "诊断日志未启用", type: "not_found" } });
+      const limit = Math.min(200, Math.max(1, Number.parseInt(request.query.limit ?? "50", 10) || 50));
+      const offset = Math.max(0, Number.parseInt(request.query.offset ?? "0", 10) || 0);
+      return dependencies.diagnostic.listSystemLogs({
+        limit,
+        offset,
+        ...(request.query.level?.trim() ? { level: request.query.level.trim() } : {}),
+        ...(request.query.source?.trim() ? { source: request.query.source.trim() } : {}),
+        ...(request.query.startTime?.trim() ? { startTime: request.query.startTime.trim() } : {}),
+        ...(request.query.endTime?.trim() ? { endTime: request.query.endTime.trim() } : {}),
+      });
+    });
+    admin.get("/logs/settings", async (_request, reply) => {
+      if (!dependencies.diagnostic) return reply.code(404).send({ error: { message: "诊断日志未启用", type: "not_found" } });
+      return { retentionDays: dependencies.diagnostic.getRetentionDays() };
+    });
+    admin.post<{ Body: { retentionDays?: number } }>("/logs/settings", async (request, reply) => {
+      if (!dependencies.diagnostic) return reply.code(404).send({ error: { message: "诊断日志未启用", type: "not_found" } });
+      const retentionDays = z.number().int().min(1).max(90).parse(request.body.retentionDays);
+      dependencies.diagnostic.setRetentionDays(retentionDays);
+      await dependencies.diagnostic.logSystem("info", "logs", "日志保留天数已更新", { retentionDays });
+      return { retentionDays: dependencies.diagnostic.getRetentionDays() };
+    });
+    admin.post("/logs/cleanup", async (request, reply) => {
+      if (!dependencies.diagnostic) return reply.code(404).send({ error: { message: "诊断日志未启用", type: "not_found" } });
+      const removed = await dependencies.diagnostic.cleanup();
+      await dependencies.diagnostic.logSystem("info", "logs", "手动清理过期日志", { removed });
+      return { removed };
+    });
+    admin.post("/logs/clear-all", async (request, reply) => {
+      if (!dependencies.diagnostic) return reply.code(404).send({ error: { message: "诊断日志未启用", type: "not_found" } });
+      const removed = await dependencies.diagnostic.clearAll();
+      await dependencies.diagnostic.logSystem("warn", "logs", "清空全部日志", { removed });
+      return { removed };
     });
     admin.get("/balances", async () => serializeAdminChannels(await dependencies.store.getBalances(), dependencies.checkinDb));
   }, { prefix: "/admin" });
@@ -860,7 +933,7 @@ function balanceRefreshSucceeded(result: { balanceAfterAmount: number | null; me
   return result.balanceAfterAmount !== null && /余额已刷新|余额刷新成功|balance.*refresh/i.test(result.message);
 }
 
-function sanitizeGatewayKey(key: { keyHash: string; name: string; id: string; keyLast4: string; enabled: boolean; createdAt: string; lastUsedAt: string | null }) {
-  const { keyHash: _keyHash, ...safe } = key;
+function sanitizeGatewayKey(key: { keyHash: string; keyCiphertext: string; name: string; id: string; keyLast4: string; enabled: boolean; createdAt: string; lastUsedAt: string | null }) {
+  const { keyHash: _keyHash, keyCiphertext: _keyCiphertext, ...safe } = key;
   return safe;
 }
