@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Continue"
+﻿$ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
