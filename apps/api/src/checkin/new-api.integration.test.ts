@@ -52,6 +52,7 @@ describe('NewApiService CHY authorization', () => {
 
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       waitForLoadState: async () => undefined,
       waitForTimeout: async () => undefined,
       isClosed: () => false,
@@ -85,7 +86,7 @@ describe('NewApiService CHY authorization', () => {
     }
 
     expect(state.status).toBe('success')
-    expect(evaluateCount).toBe(2)
+    expect(evaluateCount).toBe(3)
     expect(database.getSite(site.id)).toMatchObject({
       adapter: 'chy-traffic',
       authStatus: 'valid',
@@ -110,6 +111,7 @@ describe('NewApiService disabled New API check-in', () => {
     const requestedPaths: string[] = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           const source = String(callback)
@@ -175,6 +177,7 @@ describe('NewApiService disabled New API check-in', () => {
     const refreshedPaths: string[] = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string }) => {
         if (!input?.pathname) return String(callback).includes('document.title') ? { title: 'ooioo', text: '' } : []
         refreshedPaths.push(input.pathname)
@@ -300,6 +303,7 @@ describe('NewApiService YiAPI balance', () => {
     const requestedPaths: string[] = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           expect(String(callback)).toContain('auth_token')
@@ -333,7 +337,7 @@ describe('NewApiService YiAPI balance', () => {
       balanceAfterAmount: 12.75,
       loginVerified: true,
     })
-    expect(requestedPaths).toEqual(['/api/v1/user/profile'])
+    expect(requestedPaths).toEqual(['/api/v1/auth/me', '/api/v1/user/profile'])
   })
 })
 
@@ -395,6 +399,7 @@ describe('NewApiService dashboard balance fallback', () => {
       goto: async (url: string) => {
         navigatedTo.push(url)
       },
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           const source = String(callback)
@@ -449,6 +454,7 @@ describe('NewApiService dashboard balance fallback', () => {
     const requestedPaths: string[] = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           if (String(callback).includes('auth_token')) return null
@@ -494,6 +500,7 @@ describe('NewApiService dashboard balance fallback', () => {
     const requestedPaths: string[] = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           if (String(callback).includes('auth_token')) return 'fastai-expired-token'
@@ -562,8 +569,8 @@ describe('NewApiService dashboard balance fallback', () => {
     const requestedPaths: string[] = []
     const page = {
       goto: async () => undefined,
-      addInitScript: async () => undefined,
       reload: async () => undefined,
+      addInitScript: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string>; accessToken?: string; refreshToken?: string | null }) => {
         if (!input?.pathname) {
           if (String(callback).includes('auth_token')) return 'old-access'
@@ -622,6 +629,7 @@ describe('NewApiService dashboard balance fallback', () => {
     const requestedPaths: string[] = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           const source = String(callback)
@@ -672,6 +680,7 @@ describe('NewApiService TrueSOTA balance', () => {
     const requestedPaths: string[] = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string }) => {
         if (!input?.pathname) {
           expect(String(callback)).toContain('auth_token')
@@ -721,6 +730,7 @@ describe('NewApiService TrueSOTA balance', () => {
     const requestedPaths: string[] = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string }) => {
         if (!input?.pathname) {
           const source = String(callback)
@@ -762,6 +772,7 @@ describe('NewApiService channel import', () => {
 
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       waitForLoadState: async () => undefined,
       waitForTimeout: async () => undefined,
       evaluate: async (_callback: unknown, input: { pathname?: string }) => {
@@ -829,6 +840,7 @@ describe('NewApiService 黑与白福利站签到', () => {
 
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       waitForTimeout: async () => undefined,
       getByRole: (role: string, options: { name: RegExp }) => ({
         count: async () => {
@@ -917,6 +929,7 @@ describe('NewApiService authorization snapshot persistence', () => {
     const page = {
       url: () => site.baseUrl,
       goto: async () => undefined,
+      reload: async () => undefined,
       addInitScript: async () => undefined,
       waitForTimeout: async () => undefined,
       evaluate: async (_callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
@@ -963,6 +976,7 @@ describe('NewApiService authorization snapshot persistence', () => {
     const page = {
       url: () => site.baseUrl,
       goto: async () => undefined,
+      reload: async () => undefined,
       addInitScript: async () => undefined,
       waitForTimeout: async () => undefined,
       evaluate: async (_callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
@@ -1031,6 +1045,7 @@ describe('NewApiService known balance-only sites', () => {
     const requestedPaths: string[] = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           if (String(callback).includes('auth_token')) return 'gateai-access-token'
@@ -1083,6 +1098,7 @@ describe('NewApiService known balance-only sites', () => {
     const requestedPaths: string[] = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           if (String(callback).includes('auth_token')) return 'aihub-access-token'
@@ -1196,6 +1212,7 @@ describe('NewApiService known balance-only sites', () => {
     const balanceUpdatedAtBefore = database.getSite(site.id)!.lastBalanceUpdatedAt
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       waitForTimeout: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
@@ -1251,6 +1268,7 @@ describe('NewApiService known balance-only sites', () => {
     database.updateSiteCheckinMode(site.id, 'balance_only')
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string }) => {
         if (!input?.pathname) return String(callback).includes('document.title') ? { title: 'AnyRouter console', text: '' } : null
         if (input.pathname === '/api/status') {
@@ -1292,6 +1310,7 @@ describe('NewApiService known balance-only sites', () => {
     let selfRequests = 0
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       waitForTimeout: async (milliseconds: number) => { waits.push(milliseconds) },
       evaluate: async (callback: unknown, input?: { pathname?: string }) => {
         if (!input?.pathname) return String(callback).includes('document.title') ? { title: 'AnyRouter console', text: '' } : null
@@ -1337,6 +1356,7 @@ describe('NewApiService known balance-only sites', () => {
     const requests: Array<{ pathname: string; authorization: string | undefined }> = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           if (String(callback).includes('localStorage')) return 'anyrouter-access-token'
@@ -1392,6 +1412,7 @@ describe('NewApiService known balance-only sites', () => {
     const requested: Array<{ pathname: string; userId: string | undefined }> = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           const source = String(callback)
@@ -1511,6 +1532,7 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
     const page = {
       url: () => 'https://login-redirect.example/login',
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (_callback: unknown, input?: { pathname?: string }) => {
         if (input?.pathname) requestedPaths.push(input.pathname)
         return null
@@ -1537,6 +1559,7 @@ describe('NewApiService keeps valid sessions on proxy error pages', () => {
     const requested: Array<{ pathname: string; userId: string | undefined }> = []
     const page = {
       goto: async () => undefined,
+      reload: async () => undefined,
       evaluate: async (callback: unknown, input?: { pathname?: string; headers?: Record<string, string> }) => {
         if (!input?.pathname) {
           const source = String(callback)

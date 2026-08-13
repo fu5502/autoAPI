@@ -147,7 +147,7 @@ export function createCheckinModule(
     progress,
   });
   verifyLogin = async (snapshot, site) => {
-    if (['new-api-modern', 'new-api-legacy'].includes(site.adapter)) {
+    if (['new-api-modern', 'new-api-legacy', 'sub2api'].includes(site.adapter)) {
       return newApi.verifySnapshotLogin(site, snapshot)
     }
     return true

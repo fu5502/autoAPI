@@ -75,6 +75,7 @@ export function parseRemoteResponseBody<T = unknown>(raw: RawRemoteResponse): Re
         ? record?.ok === true
         : declaresCode
           ? record?.code === 0 || record?.code === 200 || record?.code === '0' || record?.code === '200'
+            || (typeof record?.code === 'string' && ['ok', 'success'].includes(record.code.toLowerCase()))
           : raw.httpStatus >= 200 && raw.httpStatus < 300,
     data: (declaresSuccess || declaresOk || declaresCode ? record?.data ?? payload : payload) as T,
   }
@@ -289,7 +290,6 @@ const sub2ApiMoney = { currencySymbol: '白晶', quotaPerUnit: 1, displayScale: 
 const gateAiMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const fengwindWelfareMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const hybgzsWelfareMoney = { currencySymbol: '$', quotaPerUnit: 500_000, displayScale: 1 }
-const yiApiMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const trueSotaMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const fastAiTokenMoney = { currencySymbol: '$', quotaPerUnit: 1, displayScale: 1 }
 const fengwindMainSiteUrl = 'https://api.fengwind.com/'
@@ -643,11 +643,10 @@ export class NewApiService {
         const trueSotaSite = isTrueSotaSite(site.baseUrl)
         const fengwindWelfareSite = isFengwindWelfareSite(site.baseUrl)
         const hybgzsWelfareSite = isHybgzsWelfareSite(site.baseUrl)
-        const yiApiSite = isYiApiSite(site.baseUrl)
         if (sub2ApiSite) {
           await page.goto(new URL('/login', site.baseUrl).toString(), { waitUntil: 'domcontentloaded' })
         }
-        const initialStatus = isChyTrafficSite(site.baseUrl) || sub2ApiSite || trueSotaSite || fengwindWelfareSite || hybgzsWelfareSite || yiApiSite ? null : await this.getRemoteStatus(page)
+        const initialStatus = isChyTrafficSite(site.baseUrl) || sub2ApiSite || trueSotaSite || fengwindWelfareSite || hybgzsWelfareSite ? null : await this.getRemoteStatus(page)
         const effectiveBaseUrl = resolveServerBaseUrl(initialStatus?.data?.server_address, site.baseUrl)
         allowedAuthOrigins.add(new URL(effectiveBaseUrl).origin)
         if (effectiveBaseUrl !== site.baseUrl) {
@@ -662,6 +661,12 @@ export class NewApiService {
               const auth = await this.detectHybgzsWelfareAuthentication(page, 30_000)
               if (auth) {
                 const balanceRaw = await this.readHybgzsWelfareBalance(page, 30_000)
+                // 黑与白福利站必须读取到余额才算登录成功；读取失败时等待重试。
+                if (balanceRaw === null) {
+                  state.message = '已检测到登录，正在等待余额读取成功'
+                  await page.waitForTimeout(4_000)
+                  continue
+                }
                 this.db.updateSiteAuth(site.id, {
                   adapter: 'hybgzs-welfare',
                   authStatus: 'valid',
@@ -684,6 +689,12 @@ export class NewApiService {
               const auth = await this.detectTrueSotaAuthentication(page, 30_000)
               if (auth) {
                 const balanceRaw = numberOrNull(auth.user.balance ?? auth.user.quota)
+                // TrueSOTA 必须读取到余额才算登录成功；读取失败时等待重试。
+                if (balanceRaw === null) {
+                  state.message = '已检测到登录，正在等待余额读取成功'
+                  await page.waitForTimeout(4_000)
+                  continue
+                }
                 this.db.updateSiteAuth(site.id, {
                   adapter: 'sub2api',
                   authStatus: 'valid',
@@ -705,6 +716,14 @@ export class NewApiService {
             } else if (fengwindWelfareSite) {
               const auth = await this.detectFengwindWelfareAuthentication(page, 30_000)
               if (auth) {
+                // Fengwind 福利站必须读取到主站余额才算登录成功。
+                const balanceRaw = await this.readFengwindMainSiteBalance(page, 30_000)
+                if (balanceRaw === null) {
+                  state.message = '已检测到登录，正在等待余额读取成功'
+                  await page.goto(effectiveBaseUrl, { waitUntil: 'domcontentloaded' })
+                  await page.waitForTimeout(4_000)
+                  continue
+                }
                 this.db.updateSiteAuth(site.id, {
                   adapter: 'fengwind-welfare',
                   authStatus: 'valid',
@@ -713,6 +732,8 @@ export class NewApiService {
                   currencySymbol: fengwindWelfareMoney.currencySymbol,
                   quotaPerUnit: fengwindWelfareMoney.quotaPerUnit,
                   displayScale: fengwindWelfareMoney.displayScale,
+                  lastBalanceRaw: balanceRaw,
+                  lastBalanceAmount: quotaToAmount(balanceRaw, fengwindWelfareMoney.quotaPerUnit, fengwindWelfareMoney.displayScale),
                   lastError: null,
                 })
                 state.status = 'success'
@@ -725,64 +746,78 @@ export class NewApiService {
               const auth = await this.detectSub2ApiAuthentication(page, 30_000, site)
               if (auth) {
                 const money = moneyForSub2ApiSite(site)
-                this.db.updateSiteAuth(site.id, {
-                  adapter: 'sub2api',
-                  authStatus: 'valid',
-                  baseUrl: effectiveBaseUrl,
-                  username: auth.user.username || auth.user.email || null,
-                  currencySymbol: money.currencySymbol,
-                  quotaPerUnit: money.quotaPerUnit,
-                  displayScale: money.displayScale,
-                  lastBalanceRaw: numberOrNull(auth.user.balance),
-                  lastBalanceAmount: quotaToAmount(numberOrNull(auth.user.balance), money.quotaPerUnit, money.displayScale),
-                  lastError: null,
-                })
-                state.status = 'success'
-                state.message = '授权成功，已识别为 Sub2API'
-                state.completedAt = nowIso()
-                this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 已可自动签到`, data: { siteId: site.id } })
-                return
-              }
-            } else if (yiApiSite) {
-              const auth = await this.detectYiApiAuthentication(page, 30_000)
-              if (auth) {
-                const balanceRaw = numberOrNull(auth.user.balance ?? auth.user.quota)
-                this.db.updateSiteAuth(site.id, {
-                  adapter: 'new-api-modern',
-                  authStatus: 'valid',
-                  baseUrl: effectiveBaseUrl,
-                  username: auth.user.display_name || auth.user.username || null,
-                  currencySymbol: yiApiMoney.currencySymbol,
-                  quotaPerUnit: yiApiMoney.quotaPerUnit,
-                  displayScale: yiApiMoney.displayScale,
-                  lastBalanceRaw: balanceRaw,
-                  lastBalanceAmount: quotaToAmount(balanceRaw, yiApiMoney.quotaPerUnit, yiApiMoney.displayScale),
-                  lastError: null,
-                })
-                state.status = 'success'
-                state.message = '授权成功，已识别为 YiAPI'
-                state.completedAt = nowIso()
-                this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 已记录 YiAPI 登录状态`, data: { siteId: site.id } })
-                return
+                const balanceRaw = numberOrNull(auth.user.balance)
+                // 中转站必须读取到余额才算登录成功；读取失败时等待重试。
+                if (balanceRaw === null) {
+                  state.message = '已检测到登录，正在等待余额读取成功'
+                  await page.waitForTimeout(4_000)
+                  continue
+                }
+                // 强制重新加载页面验证 token 和余额是实时的，避免读到导入快照后的旧 token 缓存数据
+                await page.reload({ waitUntil: 'domcontentloaded' })
+                const verified = await this.detectSub2ApiAuthentication(page, 30_000, site)
+                if (verified) {
+                  const verifiedBalance = numberOrNull(verified.user.balance)
+                  if (verifiedBalance !== null) {
+                    this.db.updateSiteAuth(site.id, {
+                      adapter: 'sub2api',
+                      authStatus: 'valid',
+                      baseUrl: effectiveBaseUrl,
+                      username: verified.user.username || verified.user.email || null,
+                      currencySymbol: money.currencySymbol,
+                      quotaPerUnit: money.quotaPerUnit,
+                      displayScale: money.displayScale,
+                      lastBalanceRaw: verifiedBalance,
+                      lastBalanceAmount: quotaToAmount(verifiedBalance, money.quotaPerUnit, money.displayScale),
+                      lastError: null,
+                    })
+                    state.status = 'success'
+                    state.message = '授权成功，已识别为 Sub2API'
+                    state.completedAt = nowIso()
+                    this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 已可自动签到`, data: { siteId: site.id } })
+                    return
+                  }
+                }
+                // reload 后登录失效或读不到余额，说明之前读到的是缓存旧数据
+                state.message = '已检测到登录，正在等待余额读取成功'
+                await page.waitForTimeout(4_000)
+                continue
               }
             } else if (isChyTrafficSite(effectiveBaseUrl)) {
               const traffic = await readChyTrafficPage(page)
+              if (traffic.authenticated && traffic.stats.remaining !== null) {
+                // 强制重新加载页面验证数据是实时的，避免读到导入快照后的缓存旧视图
+                // （旧 session 可能已过期，但首次 goto 仍渲染了已登录页面）
+                await page.reload({ waitUntil: 'domcontentloaded' })
+                const verified = await readChyTrafficPage(page)
+                if (verified.authenticated && verified.stats.remaining !== null) {
+                  this.db.updateSiteAuth(site.id, {
+                    adapter: 'chy-traffic',
+                    authStatus: 'valid',
+                    baseUrl: effectiveBaseUrl,
+                    username: verified.username,
+                    currencySymbol: chyTrafficMoney.currencySymbol,
+                    quotaPerUnit: chyTrafficMoney.quotaPerUnit,
+                    displayScale: chyTrafficMoney.displayScale,
+                    lastBalanceRaw: verified.stats.remaining,
+                    lastBalanceAmount: quotaToAmount(verified.stats.remaining, chyTrafficMoney.quotaPerUnit, chyTrafficMoney.displayScale),
+                    lastError: null,
+                  })
+                  state.status = 'success'
+                  state.message = '授权成功，已识别为 CHY 流量签到'
+                  state.completedAt = nowIso()
+                  this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 已可自动签到`, data: { siteId: site.id } })
+                  return
+                }
+                // reload 后登录失效或读不到余额，说明之前读到的是缓存旧数据
+                state.message = '已检测到登录，正在等待余额读取成功'
+                await page.waitForTimeout(4_000)
+                continue
+              }
               if (traffic.authenticated) {
-                this.db.updateSiteAuth(site.id, {
-                  adapter: 'chy-traffic',
-                  authStatus: 'valid',
-                  baseUrl: effectiveBaseUrl,
-                  username: traffic.username,
-                  currencySymbol: chyTrafficMoney.currencySymbol,
-                  quotaPerUnit: chyTrafficMoney.quotaPerUnit,
-                  displayScale: chyTrafficMoney.displayScale,
-                  lastError: null,
-                })
-                state.status = 'success'
-                state.message = '授权成功，已识别为 CHY 流量签到'
-                state.completedAt = nowIso()
-                this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 已可自动签到`, data: { siteId: site.id } })
-                return
+                state.message = '已检测到登录，正在等待余额读取成功'
+                await page.waitForTimeout(4_000)
+                continue
               }
             } else {
               await Promise.all([...pendingResponseChecks])
@@ -915,9 +950,6 @@ export class NewApiService {
         }
         if (isAnyRouterSite(site.baseUrl)) {
           return this.checkinPageTriggeredSite(page, site, runId, startedAt, requestTimeoutMs)
-        }
-        if (isYiApiSite(site.baseUrl)) {
-          return this.refreshYiApiBalance(page, site, runId, startedAt, requestTimeoutMs)
         }
 
         const statusResponse = await this.getRemoteStatus(page, requestTimeoutMs)
@@ -1078,11 +1110,6 @@ export class NewApiService {
           await this.openImportedStorage(page, site)
           return this.refreshTrueSotaBalance(page, site, runId, startedAt, requestTimeoutMs)
         }
-        if (isYiApiSite(site.baseUrl)) {
-          await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
-          await this.openImportedStorage(page, site)
-          return this.refreshYiApiBalance(page, site, runId, startedAt, requestTimeoutMs)
-        }
         if (site.adapter === 'hybgzs-welfare' || isHybgzsWelfareSite(site.baseUrl)) {
           await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded' })
           await this.openImportedStorage(page, site)
@@ -1141,6 +1168,8 @@ export class NewApiService {
         }
 
         if (isChyTrafficSite(site.baseUrl)) {
+          // 强制重新加载页面，确保读到的是实时余额而非导入快照后的缓存旧视图
+          await page.reload({ waitUntil: 'domcontentloaded' })
           const traffic = await readChyTrafficPage(page)
           if (!traffic.authenticated) {
             return this.authenticationRequiredResult(site, runId, startedAt, { money: chyTrafficMoney })
@@ -1156,6 +1185,8 @@ export class NewApiService {
         }
 
         if (sub2ApiSite) {
+          // 强制重新加载页面，确保 token 和余额是实时数据而非导入快照后的缓存
+          await page.reload({ waitUntil: 'domcontentloaded' })
           const auth = await this.detectSub2ApiAuthentication(page, requestTimeoutMs, site)
           const money = moneyForSub2ApiSite(site)
           if (!auth) {
@@ -1684,6 +1715,8 @@ export class NewApiService {
     runId: number,
     startedAt: string,
   ): Promise<CheckinResult> {
+    // 强制重新加载页面，确保 before 余额是实时数据而非导入快照后的缓存旧视图
+    await page.reload({ waitUntil: 'domcontentloaded' })
     const before = await readChyTrafficPage(page)
     if (!before.authenticated) {
       return this.authenticationRequiredResult(site, runId, startedAt, { money: chyTrafficMoney })
@@ -1815,49 +1848,6 @@ export class NewApiService {
     return pageRequest<RemoteStatus>(page, '/api/status', 'GET', {}, timeoutMs)
   }
 
-  private async refreshYiApiBalance(
-    page: Page,
-    site: Site,
-    runId: number,
-    startedAt: string,
-    timeoutMs: number,
-  ): Promise<CheckinResult> {
-    const auth = await this.detectYiApiAuthentication(page, timeoutMs)
-    if (!auth) {
-      return this.authenticationRequiredResult(site, runId, startedAt, {
-        beforeRaw: site.lastBalanceRaw,
-        money: yiApiMoney,
-      })
-    }
-
-    const balance = numberOrNull(auth.user.balance ?? auth.user.quota)
-    if (balance === null) {
-      return this.makeResult(site, runId, startedAt, 'failed', '无法读取 YiAPI 余额', {
-        beforeRaw: site.lastBalanceRaw,
-        money: yiApiMoney,
-        loginVerified: false,
-      })
-    }
-
-    this.db.updateSiteAuth(site.id, {
-      adapter: 'new-api-modern',
-      authStatus: 'valid',
-      baseUrl: site.baseUrl,
-      username: auth.user.display_name || auth.user.username || null,
-      currencySymbol: yiApiMoney.currencySymbol,
-      quotaPerUnit: yiApiMoney.quotaPerUnit,
-      displayScale: yiApiMoney.displayScale,
-      lastBalanceRaw: balance,
-      lastBalanceAmount: quotaToAmount(balance, yiApiMoney.quotaPerUnit, yiApiMoney.displayScale),
-      lastError: null,
-    })
-    return this.makeResult(site, runId, startedAt, 'disabled', 'YiAPI 未提供签到接口，余额已刷新', {
-      beforeRaw: site.lastBalanceRaw,
-      afterRaw: balance,
-      money: yiApiMoney,
-      loginVerified: true,
-    })
-  }
 
   private async refreshTrueSotaBalance(
     page: Page,
@@ -1946,6 +1936,32 @@ export class NewApiService {
         await page.goto('about:blank')
         await page.goto(site.baseUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
         await page.waitForTimeout(3_000)
+
+        // Sub2API 站点使用不同的 token 格式和 API 路径，需用专用检测逻辑校验
+        if (isSub2ApiSite(site.baseUrl)) {
+          let sub2Auth: { accessToken: string; user: Sub2ApiUser } | null = null
+          for (let attempt = 0; attempt < 2 && !sub2Auth; attempt += 1) {
+            sub2Auth = await this.detectSub2ApiAuthentication(page, 30_000, site)
+            if (!sub2Auth) await page.waitForTimeout(1_500)
+          }
+          if (!sub2Auth) return false
+          // 必须读取到余额才算登录成功
+          if (numberOrNull(sub2Auth.user.balance) === null) return false
+          // 持久化 access token 到快照
+          const items = snapshot.localStorageByHost[host] ??= {}
+          items.auth_token = sub2Auth.accessToken
+          try {
+            this.authAssistant?.updateSnapshotLocalStorage(site.id, host, { auth_token: sub2Auth.accessToken })
+          } catch {
+            // 快照更新失败不致命，余额刷新时可重试
+          }
+          // 修正 adapter 为 sub2api（旧记录可能是 new-api-modern）
+          if (site.adapter !== 'sub2api') {
+            this.db.updateSiteAuth(site.id, { adapter: 'sub2api', authStatus: 'valid' })
+          }
+          return true
+        }
+
         let auth: RemoteAuth | null = null
         for (let attempt = 0; attempt < 2 && !auth; attempt += 1) {
           auth = await this.detectAuthentication(page, site.legacyUserId, 30_000)
@@ -2266,21 +2282,6 @@ export class NewApiService {
     return null
   }
 
-  private async detectYiApiAuthentication(page: Page, timeoutMs = 30_000): Promise<RemoteAuth | null> {
-    this.beginAuthenticationProbe()
-    const accessToken = await readYiApiAccessToken(page)
-    if (!accessToken) return null
-    const headers = { Authorization: `Bearer ${accessToken}` }
-    for (const pathname of ['/api/v1/user/profile', '/api/v1/auth/me']) {
-      const response = await pageRequest<unknown>(page, pathname, 'GET', headers, timeoutMs)
-      this.noteAuthenticationResponse(response)
-      if (!response.success) continue
-      const user = normalizeYiApiUser(response.data)
-      if (!user) continue
-      return { adapter: 'new-api-modern', accessToken, user }
-    }
-    return null
-  }
 
   private async detectTrueSotaAuthentication(page: Page, timeoutMs = 30_000): Promise<RemoteAuth | null> {
     this.beginAuthenticationProbe()
@@ -2994,17 +2995,6 @@ async function readSub2ApiToken(page: Page, kind: 'access' | 'refresh'): Promise
   }, kind).catch(() => null)
 }
 
-async function readYiApiAccessToken(page: Page): Promise<string | null> {
-  return page.evaluate(() => {
-    for (const storage of [localStorage, sessionStorage]) {
-      for (const key of ['auth_token', 'access_token', 'accessToken']) {
-        const value = storage.getItem(key)?.trim()
-        if (value) return value.replace(/^Bearer\s+/i, '')
-      }
-    }
-    return null
-  }).catch(() => null)
-}
 
 function normalizeNewApiUser(value: unknown): RemoteUser | null {
   if (!value || typeof value !== 'object') return null
@@ -3175,6 +3165,7 @@ function isSub2ApiSite(baseUrl: string): boolean {
     || isFastAiTokenSite(baseUrl)
     || isAihubSite(baseUrl)
     || isGateAiSite(baseUrl)
+    || isYiApiSite(baseUrl)
 }
 
 function isFastAiTokenSite(baseUrl: string): boolean {
