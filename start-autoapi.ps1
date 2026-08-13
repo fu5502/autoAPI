@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Continue"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
@@ -7,6 +7,12 @@ $ApiPort = 8080
 $WebPort = 5173
 $ApiUrl = "http://127.0.0.1:$ApiPort"
 $WebUrl = "http://127.0.0.1:$WebPort"
+
+try {
+  $script:AppVersion = (Get-Content (Join-Path $Root "package.json") -Raw | ConvertFrom-Json).version
+} catch {
+  $script:AppVersion = "unknown"
+}
 
 $script:DevJob = [IntPtr]::Zero
 $script:DevServices = @()
@@ -199,8 +205,9 @@ function Show-ServiceStatus {
 
 function Show-Menu {
   Clear-Screen
+  $Host.UI.RawUI.WindowTitle = "autoAPI v$script:AppVersion - 控制台"
   Write-Host "============================================================" -ForegroundColor DarkCyan
-  Write-Host " autoAPI 多渠道模型网关 - 控制台" -ForegroundColor White
+  Write-Host " autoAPI 多渠道模型网关 - 控制台 (v$script:AppVersion)" -ForegroundColor White
   Write-Host "============================================================" -ForegroundColor DarkCyan
   Write-Host "网关入口  " -NoNewline -ForegroundColor Gray
   Write-Host $ApiUrl -ForegroundColor Cyan
