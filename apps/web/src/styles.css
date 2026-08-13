@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   font-family: "Segoe UI Variable", "Segoe UI", Arial, sans-serif;
   color: #2a3b48;
   background: #eef2f7;
@@ -322,6 +322,16 @@ select:focus-visible {
   border: 0;
   padding: 0;
   max-width: none;
+}
+
+.github-version-link.version-outdated {
+  color: var(--red);
+}
+
+.github-version-link.version-outdated .runtime-version {
+  color: var(--red);
+  font-weight: 700;
+  white-space: pre-line;
 }
 
 .gateway-endpoint {

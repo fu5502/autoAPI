@@ -146,6 +146,13 @@ export default function App() {
   const [operationLog, setOperationLog] = useState<OperationLogEntry[]>(initialOperationLog);
 
   const status = useQuery({ queryKey: ["status"], queryFn: api.status, enabled: authenticated, refetchInterval: 30_000 });
+  const latestVersion = useQuery({ queryKey: ["latestVersion"], queryFn: api.latestVersion, enabled: authenticated, refetchInterval: 5 * 60_000 });
+  const currentVersion = status.data?.version ?? null;
+  const remoteLatest = latestVersion.data?.latest ?? null;
+  const versionOutdated = Boolean(currentVersion && remoteLatest && currentVersion !== remoteLatest);
+  const versionTitle = versionOutdated
+    ? `当前版本 ${currentVersion} 不是最新\n最新版本 ${remoteLatest}\n点击查看 GitHub 仓库`
+    : "autoAPI GitHub 项目地址";
   const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels, enabled: authenticated, refetchInterval: 30_000 });
   const pools = useQuery({ queryKey: ["pools"], queryFn: api.pools, enabled: authenticated, refetchInterval: 30_000 });
   const usage = useQuery({ queryKey: ["usage", usageWindow], queryFn: () => api.usage(usageWindow), enabled: authenticated, refetchInterval: 30_000 });
@@ -523,7 +530,7 @@ export default function App() {
                 </div>
               ) : null}
             </div>
-            <a className="github-version-link" href="https://github.com/fu5502/autoAPI" target="_blank" rel="noreferrer" title="autoAPI GitHub 项目地址" aria-label="autoAPI GitHub 项目地址"><Github size={14} /><span className="runtime-version">{status.data?.version ?? "加载中…"}</span></a>
+            <a className={"github-version-link" + (versionOutdated ? " version-outdated" : "")} href="https://github.com/fu5502/autoAPI" target="_blank" rel="noreferrer" aria-label="autoAPI GitHub 项目地址" title={versionTitle}><Github size={14} /><span className="runtime-version">{status.data?.version ?? "加载中…"}</span></a>
           </div>
         </header>
         {actionError ? <div className="action-error" role="alert">{actionError}</div> : null}

@@ -117,6 +117,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   if (checkin) void checkin.balanceSync.syncAll().catch(() => undefined);
 
   app.get("/healthz", async () => ({ status: "ok", mode: config.appMode, version, timestamp: new Date().toISOString() }));
+  app.get("/latest-version", async () => ({ latest: await fetchLatestVersion(), current: version }));
   if (diagnostic) {
     diagnostic.startAutoCleanup(config.logCleanupIntervalMs);
     void diagnostic.init().then(() => diagnostic.logSystem("info", "system", "服务启动", {
@@ -192,5 +193,42 @@ function resolveVersion(): string {
     return packageJson.version ?? "unknown";
   } catch {
     return "unknown";
+  }
+}
+
+// Cached latest version from GitHub repo package.json (5 min TTL).
+let latestVersionCache: { value: string | null; fetchedAt: number } | null = null;
+const LATEST_VERSION_TTL_MS = 5 * 60_000;
+
+async function fetchLatestVersion(): Promise<string | null> {
+  const now = Date.now();
+  if (latestVersionCache && now - latestVersionCache.fetchedAt < LATEST_VERSION_TTL_MS) {
+    return latestVersionCache.value;
+  }
+  try {
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "autoapi-version-check",
+    };
+    // Private repo requires a token; GITHUB_TOKEN is typically set in the
+    // deployment environment. Without it the API returns 404 and we silently
+    // skip the update check.
+    const githubToken = process.env.GITHUB_TOKEN?.trim();
+    if (githubToken) headers.Authorization = `Bearer ${githubToken}`;
+    const response = await fetch("https://api.github.com/repos/fu5502/autoAPI/contents/package.json", {
+      headers,
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!response.ok) throw new Error(`GitHub API ${response.status}`);
+    const data = await response.json() as { content?: string; encoding?: string };
+    if (typeof data.content !== "string" || data.encoding !== "base64") throw new Error("Unexpected GitHub response");
+    const decoded = Buffer.from(data.content, "base64").toString("utf8");
+    const parsed = JSON.parse(decoded) as { version?: string };
+    const value = parsed.version ?? null;
+    latestVersionCache = { value, fetchedAt: now };
+    return value;
+  } catch {
+    if (latestVersionCache) return latestVersionCache.value;
+    return null;
   }
 }
