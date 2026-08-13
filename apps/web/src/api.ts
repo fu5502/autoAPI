@@ -118,7 +118,7 @@ function translateApiError(message: string | undefined, status: number) {
 
 export const api = {
   status: () => adminFetch<GatewayStatus>("/status"),
-  latestVersion: () => fetch("/latest-version").then((r) => r.json() as Promise<{ latest: string | null; current: string }>),
+  latestVersion: () => fetch("/latest-version").then((r) => r.json() as Promise<{ latest: string | null; current: string }>).catch(() => ({ latest: null, current: "" })),
   login: (body: { username: string; password: string }) => publicFetch<{ token: string; username: string; expiresAt: string }>("/auth/login", {
     method: "POST",
     body: JSON.stringify(body),

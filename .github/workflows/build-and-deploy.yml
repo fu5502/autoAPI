@@ -127,14 +127,16 @@ jobs:
           test -n "$DEPLOY_USER"
           test -n "$DEPLOY_PATH"
           test -n "$DEPLOY_VERSION"
+          pkg_version=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' package.json)
           remote_path=$(printf '%q' "$DEPLOY_PATH")
           remote_image=$(printf '%q' "$IMAGE_TAG")
           remote_version=$(printf '%q' "$DEPLOY_VERSION")
+          remote_pkg_version=$(printf '%q' "$pkg_version")
           ssh -o BatchMode=yes -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "set -eu
             cd $remote_path
             test -f .env
             docker image inspect $remote_image >/dev/null
-            AUTOAPI_IMAGE=$remote_image AUTOAPI_VERSION=$remote_version docker compose up -d --no-build --force-recreate autoapi
+            AUTOAPI_IMAGE=$remote_image AUTOAPI_VERSION=$remote_pkg_version docker compose up -d --no-build --force-recreate autoapi
             for attempt in \$(seq 1 45); do
               if docker compose exec -T autoapi wget -qO- http://127.0.0.1:8080/healthz >/dev/null; then
                 docker compose ps

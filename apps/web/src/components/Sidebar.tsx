@@ -10,7 +10,10 @@ const nav = [
   { id: "security" as const, label: "控制面板", icon: ShieldCheck },
 ];
 
-export function Sidebar({ view, onChange, version }: { view: View; onChange: (view: View) => void; version: string }) {
+export function Sidebar({ view, onChange, version, versionOutdated, latestVersion }: { view: View; onChange: (view: View) => void; version: string; versionOutdated?: boolean; latestVersion?: string | null }) {
+  const title = versionOutdated && latestVersion
+    ? `当前版本 ${version} 不是最新\n最新版本 ${latestVersion}\n点击查看 GitHub 仓库`
+    : "autoAPI GitHub 项目地址";
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -26,7 +29,7 @@ export function Sidebar({ view, onChange, version }: { view: View; onChange: (vi
         ))}
       </nav>
       <div className="sidebar-foot">
-        <a className="sidebar-version" href="https://github.com/fu5502/autoAPI" target="_blank" rel="noreferrer" title="autoAPI GitHub 项目地址">
+        <a className={"sidebar-version" + (versionOutdated ? " version-outdated" : "")} href="https://github.com/fu5502/autoAPI" target="_blank" rel="noreferrer" title={title}>
           <Github size={14} />
           <span>v{version}</span>
         </a>

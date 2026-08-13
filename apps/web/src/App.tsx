@@ -487,7 +487,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar view={view} onChange={setView} version={status.data?.version ?? "加载中…"} />
+      <Sidebar view={view} onChange={setView} version={status.data?.version ?? "加载中…"} versionOutdated={versionOutdated} latestVersion={remoteLatest} />
       <main className="workspace">
         <header className={`topbar${view === "checkin" ? " topbar-checkin" : ""}`}>
           <div className="topbar-heading">

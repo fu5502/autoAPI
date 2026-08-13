@@ -200,6 +200,11 @@ select:focus-visible {
   gap: 6px;
 }
 
+.sidebar-version.version-outdated {
+  color: var(--red);
+  font-weight: 700;
+}
+
 .live-dot {
   display: inline-block;
   width: 7px;
