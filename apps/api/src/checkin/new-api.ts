@@ -657,6 +657,7 @@ export class NewApiService {
           if (page.isClosed()) throw new Error('授权窗口已关闭')
           const current = new URL(page.url())
           if (current.origin === effectiveBaseUrl) {
+            try {
             if (hybgzsWelfareSite) {
               const auth = await this.detectHybgzsWelfareAuthentication(page, 30_000)
               if (auth) {
@@ -886,6 +887,11 @@ export class NewApiService {
                 this.events.emit({ type: 'auth_changed', title: '站点授权成功', message: `${site.name} 已可自动签到`, data: { siteId: site.id } })
                 return
               }
+            }
+            } catch (probeError) {
+              // 授权等待期间单次检测的临时错误（页面导航中断、网络波动等）
+              // 不应终止整个授权流程，继续等待用户完成手动登录。
+              state.message = safeMessage(probeError, '授权检测异常，正在等待登录完成')
             }
           }
           await page.waitForTimeout(4000)
