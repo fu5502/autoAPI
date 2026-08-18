@@ -424,6 +424,14 @@ export async function registerCheckinRoutes(
       }
       return reply.code(201).send({ created, skipped });
     });
+    checkin.post("/sites/reorder", async (request) => {
+      const input = z.object({
+        siteIds: z.array(z.number().int().positive()).min(1).max(500),
+      }).parse(request.body);
+      module.db.reorderSites(input.siteIds);
+      module.events.emit({ type: "state_changed", title: "站点排序已更新", message: "站点顺序已保存", data: {} });
+      return { ok: true as const };
+    });
     checkin.patch<{ Params: { id: string } }>("/sites/:id", async (request) => {
       const input = siteUpdateSchema.parse(request.body);
       const id = parseId(request.params.id);

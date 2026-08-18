@@ -1,6 +1,7 @@
 import Fastify from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { OpsAgent } from '../agent/ops-agent.js'
+import { gatewayErrorHandler } from '../http/proxy-routes.js'
 import { AppDatabase } from './db.js'
 import { EventBus } from './events.js'
 import { LocalExecutionService, type LocalExecutionPersistInput } from './local-execution.js'
@@ -333,6 +334,45 @@ describe('check-in run cancellation routes', () => {
 
     expect(response.statusCode).toBe(200)
     expect(cancelActiveSite).toHaveBeenCalledWith(5, 7)
+    await app.close()
+  })
+})
+
+describe('check-in site reorder route', () => {
+  it('persists the requested order and emits a state change', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const a = database.createSite('A', 'https://a.example')
+    const b = database.createSite('B', 'https://b.example')
+    const c = database.createSite('C', 'https://c.example')
+    const emit = vi.fn()
+    const checkinModule = { db: database, events: { emit } } as unknown as CheckinModule
+    const app = Fastify()
+    await registerCheckinRoutes(app, checkinModule, async () => undefined, { agent: {} as OpsAgent })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/admin/checkin/sites/reorder',
+      payload: { siteIds: [c.id, a.id, b.id] },
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ ok: true })
+    expect(database.listSites().map((site) => site.id)).toEqual([c.id, a.id, b.id])
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'state_changed' }))
+    await app.close()
+  })
+
+  it('rejects an empty site id list', async () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const checkinModule = { db: database, events: { emit: vi.fn() } } as unknown as CheckinModule
+    const app = Fastify()
+    app.setErrorHandler(gatewayErrorHandler())
+    await registerCheckinRoutes(app, checkinModule, async () => undefined, { agent: {} as OpsAgent })
+
+    const response = await app.inject({ method: 'POST', url: '/admin/checkin/sites/reorder', payload: { siteIds: [] } })
+    expect(response.statusCode).toBe(400)
     await app.close()
   })
 })

@@ -13,6 +13,7 @@ import {
   Clock3,
   Download,
   ExternalLink,
+  GripVertical,
   KeyRound,
   LayoutDashboard,
   ListChecks,
@@ -835,7 +836,14 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
   const [editingSite, setEditingSite] = useState<Site | null>(null)
   const [importingSiteId, setImportingSiteId] = useState<number | null>(null)
   const [refreshingBalanceSiteId, setRefreshingBalanceSiteId] = useState<number | null>(null)
+  const [draggingId, setDraggingId] = useState<number | null>(null)
+  const [dragOver, setDragOver] = useState<{ id: number; after: boolean } | null>(null)
+  const [reordering, setReordering] = useState(false)
   const runningSiteId = state.sites.find((site) => site.lastStatus === 'running')?.id ?? null
+  // Drag-reorder is only meaningful when the full group is on screen; a search
+  // or status filter would otherwise reorder a partial view and discard the
+  // hidden sites' positions.
+  const canReorder = !query && filter === 'all' && !reordering
   const sites = useMemo(() => state.sites.filter((site) => {
     const searchMatch = `${site.name} ${site.baseUrl} ${site.note}`.toLowerCase().includes(query.toLowerCase())
     const filterMatch = filter === 'all' || (filter === 'valid' && site.authStatus === 'valid') || (filter === 'attention' && (['expired', 'manual_required', 'unknown'].includes(site.authStatus) || ['failed', 'manual_required'].includes(site.lastStatus))) || (filter === 'disabled' && !site.enabled)
@@ -843,6 +851,39 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
   }), [filter, query, state.sites])
   const groupedSites = useMemo(() => partitionSites(sites), [sites])
   const activeGroupSites = groupedSites[managementGroup]
+
+  const handleReorder = useCallback(async (group: SiteManagementGroup, nextGroupSites: Site[]) => {
+    const siteIds = nextGroupSites.map((site) => site.id)
+    setReordering(true)
+    try {
+      await api.reorderSites(siteIds)
+      await onRefresh()
+      notify('排序已保存', `${group === 'welfare' ? '公益站' : '中转站'}顺序已更新`, 'success')
+    } catch (cause) {
+      notify('排序失败', cause instanceof Error ? cause.message : '未知错误', 'danger')
+    } finally {
+      setReordering(false)
+      setDraggingId(null)
+      setDragOver(null)
+    }
+  }, [notify, onRefresh])
+
+  const moveDraggedBefore = useCallback((group: SiteManagementGroup, targetId: number, after: boolean) => {
+    const groupSites = groupedSites[group]
+    if (!groupSites.length || draggingId === null) return
+    const fromIndex = groupSites.findIndex((site) => site.id === draggingId)
+    if (fromIndex === -1) return
+    let toIndex = groupSites.findIndex((site) => site.id === targetId)
+    if (toIndex === -1 || toIndex === fromIndex) return
+    if (after) toIndex += 1
+    if (toIndex > fromIndex) toIndex -= 1 // removing the dragged item shifts later indices down
+    if (toIndex === fromIndex) return
+    const next = [...groupSites]
+    const [moved] = next.splice(fromIndex, 1)
+    if (!moved) return
+    next.splice(toIndex, 0, moved)
+    void handleReorder(group, next)
+  }, [groupedSites, draggingId, handleReorder])
   const activeGroupIsRelay = managementGroup === 'relay'
 
   const toggle = async (site: Site) => {
@@ -916,8 +957,15 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
     return <div className="table-wrap management-table-wrap">
       <table className="data-table management-table" aria-label={`${balanceOnly ? '中转站' : '公益站'}列表`}>
         <thead><tr><th>站点</th><th>适配器</th><th>登录</th><th>{balanceOnly ? '余额状态 / 时间' : '签到状态'}</th>{!balanceOnly ? <th>签到奖励 / 时间</th> : null}<th>当前余额</th><th>加入渠道</th><th>{balanceOnly ? '自动刷新' : '自动签到'}</th><th>操作</th></tr></thead>
-        <tbody>{groupSites.length ? groupSites.map((site) => <tr key={site.id} data-site-group={group}>
-          <td><button className="site-cell" onClick={() => onSelect(site)}><SiteAvatar site={site} /><span><strong>{site.name}</strong><small>{site.baseUrl}</small>{site.note ? <small className="site-note" title={site.note}>备注：{site.note}</small> : null}</span></button></td>
+        <tbody>{groupSites.length ? groupSites.map((site) => {
+          const isDragging = draggingId === site.id
+          const dropTarget = dragOver && dragOver.id === site.id
+          return <tr key={site.id} data-site-group={group}
+            className={`${isDragging ? 'row-dragging' : ''} ${dropTarget ? (dragOver!.after ? 'row-drop-after' : 'row-drop-before') : ''} ${canReorder ? 'row-reorderable' : ''}`}
+            onDragOver={(event) => { if (!canReorder || draggingId === null || draggingId === site.id) return; event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setDragOver({ id: site.id, after: (event.clientY - rect.top) > rect.height / 2 }) }}
+            onDrop={(event) => { if (!canReorder || draggingId === null || draggingId === site.id) return; event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); moveDraggedBefore(group, site.id, (event.clientY - rect.top) > rect.height / 2) }}
+          >
+          <td className="site-name-cell"><span className={`drag-handle ${canReorder ? '' : 'disabled'}`} title={canReorder ? '拖动调整顺序' : '清除搜索/筛选后可拖动排序'} draggable={canReorder} onDragStart={(event) => { if (!canReorder) return; setDraggingId(site.id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(site.id)); const row = event.currentTarget.closest('tr'); if (row) event.dataTransfer.setDragImage(row, 24, 14) }} onDragEnd={() => { setDraggingId(null); setDragOver(null) }}><GripVertical size={15} /></span><button className="site-cell" onClick={() => onSelect(site)}><SiteAvatar site={site} /><span><strong>{site.name}</strong><small>{site.baseUrl}</small>{site.note ? <small className="site-note" title={site.note}>备注：{site.note}</small> : null}</span></button></td>
           <td><span className="adapter-label">{siteAdapterLabel(site)}</span></td>
           <td><div className="site-auth-cell"><div className="auth-badge-row"><StatusBadge tone={statusTone(site.authStatus)}>{authLabel(site.authStatus)}</StatusBadge>{(site.authStatus !== 'valid' || site.authSyncStatus === 'failed') ? <button type="button" className="auth-action-button" title="重新登录授权" onClick={() => onAuthorize(site)}><KeyRound size={13} /></button> : null}</div>{site.authSyncStatus === 'success' && site.authSyncedAt ? <small className="auth-sync-meta">已同步 {formatDateTime(site.authSyncedAt)}</small> : site.authSyncStatus === 'failed' ? <small className="auth-sync-meta danger-text" title={site.authSyncMessage ?? undefined}>同步失败</small> : null}</div></td>
           <td>{balanceOnly
@@ -930,7 +978,8 @@ function SitesView({ state, onRun, onLocalExecution, onAuthorize, onImport, impo
           <td><div className="row-actions"><IconButton title="编辑站点" onClick={() => setEditingSite(site)}><Pencil size={16} /></IconButton><IconButton title={balanceOnly ? '改为自动签到' : '改为仅刷新余额'} onClick={() => void switchMode(site)}><ArrowLeftRight size={16} /></IconButton><IconButton title="授权" onClick={() => onAuthorize(site)}><KeyRound size={16} /></IconButton>{balanceOnly
             ? <RunLogPopover busy={refreshingBalanceSiteId === site.id || (Boolean(activeRunId) && site.lastStatus === 'running')} logs={progressByRun[activeRunId ?? -1] ?? []} siteId={site.id} label="余额刷新中" runId={activeRunId} onCancel={onCancelRun} cancelling={cancellingRunId === activeRunId} onCancelSite={onCancelSite} cancellingSiteId={cancellingSiteId} runningSiteId={runningSiteId}><IconButton title="刷新余额" onClick={() => void refreshBalance(site)} disabled={refreshingBalanceSiteId !== null || Boolean(activeRunId)}><RefreshCw size={16} className={refreshingBalanceSiteId === site.id ? 'spin' : undefined} /></IconButton></RunLogPopover>
             : <RunLogPopover busy={Boolean(activeRunId) && site.lastStatus === 'running'} logs={progressByRun[activeRunId ?? -1] ?? []} siteId={site.id} label="签到中" runId={activeRunId} onCancel={onCancelRun} cancelling={cancellingRunId === activeRunId} onCancelSite={onCancelSite} cancellingSiteId={cancellingSiteId} runningSiteId={runningSiteId}><IconButton title="立即签到" onClick={() => onRun([site.id])} disabled={Boolean(activeRunId) || refreshingBalanceSiteId !== null}>{Boolean(activeRunId) && site.lastStatus === 'running' ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}</IconButton></RunLogPopover>}<IconButton title={importedSiteIds.includes(site.id) ? '重新导入渠道池' : site.authStatus !== 'valid' ? '点击后先授权，授权成功后继续接入渠道或关联余额' : supportsAutomaticChannelImport(site) ? '导入渠道池' : '关联已有渠道并同步余额'} disabled={importingSiteId === site.id} onClick={() => void prepareImport(site)}><ArrowDownToLine size={16} className={importingSiteId === site.id ? 'spin' : undefined} /></IconButton><IconButton title="删除" danger onClick={() => remove(site)}><Trash2 size={16} /></IconButton></div></td>
-        </tr>) : <tr className="management-empty-row"><td colSpan={balanceOnly ? 8 : 9}>{query || filter !== 'all' ? '当前筛选条件下没有站点' : balanceOnly ? '暂无仅刷新余额的中转站' : '暂无支持签到的公益站'}</td></tr>}</tbody>
+        </tr>
+        }) : <tr className="management-empty-row"><td colSpan={balanceOnly ? 8 : 9}>{query || filter !== 'all' ? '当前筛选条件下没有站点' : balanceOnly ? '暂无仅刷新余额的中转站' : '暂无支持签到的公益站'}</td></tr>}</tbody>
       </table>
     </div>
   }

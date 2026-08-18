@@ -57,6 +57,7 @@ export const api = {
   addSite: (input: { name?: string; baseUrl: string; note?: string; faviconUrl?: string | null; checkinMode?: CheckinMode }) => request<Site>('/admin/checkin/sites', { method: 'POST', body: JSON.stringify(input) }),
   addSitesBulk: (urls: string[], checkinMode: CheckinMode = 'checkin') => request<{ created: Site[]; skipped: Array<{ input: string; reason: string }> }>('/admin/checkin/sites/bulk', { method: 'POST', body: JSON.stringify({ urls, checkinMode }) }),
   updateSite: (id: number, input: Partial<Pick<Site, 'name' | 'baseUrl' | 'note' | 'faviconUrl' | 'enabled' | 'checkinMode'>>) => request<Site>(`/admin/checkin/sites/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  reorderSites: (siteIds: number[]) => request<{ ok: true }>('/admin/checkin/sites/reorder', { method: 'POST', body: JSON.stringify({ siteIds }) }),
   refreshSiteFavicon: (id: number) => request<Site>(`/admin/checkin/sites/${id}/favicon/refresh`, { method: 'POST', body: '{}' }),
   deleteSite: (id: number) => request<{ ok: true; warnings?: string[] }>(`/admin/checkin/sites/${id}`, { method: 'DELETE' }),
   createAuthAssistantPair: (id: number) => request<AuthAssistantPairing>(`/admin/checkin/sites/${id}/auth-assistant/pair`, { method: 'POST', body: '{}' }),

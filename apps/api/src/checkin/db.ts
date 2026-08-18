@@ -343,6 +343,10 @@ export class AppDatabase {
       this.db.exec("UPDATE sites SET checkin_mode = 'balance_only' WHERE last_status = 'disabled'")
     }
     this.addColumnIfMissing('site_models', 'enabled', 'INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))')
+    // sort_order drives manual drag-and-drop reordering of the site list.
+    // Existing rows default to 0 so they keep their previous id-based order
+    // (the ORDER BY below falls back to id ASC when sort_order ties).
+    this.addColumnIfMissing('sites', 'sort_order', 'INTEGER NOT NULL DEFAULT 0')
     this.db.exec(`
       UPDATE sites
       SET last_reward_at = last_checked_at
@@ -381,7 +385,7 @@ export class AppDatabase {
   }
 
   listSites(): Site[] {
-    return (this.db.prepare(this.siteSelect('ORDER BY s.enabled DESC, s.id ASC')).all() as Row[]).map(mapSite)
+    return (this.db.prepare(this.siteSelect('ORDER BY s.sort_order ASC, s.id ASC')).all() as Row[]).map(mapSite)
   }
 
   getSite(id: number): Site | null {
@@ -482,11 +486,36 @@ export class AppDatabase {
 
   createSite(name: string, baseUrl: string, note = '', faviconUrl: string | null = null, checkinMode: CheckinMode = 'checkin'): Site {
     const timestamp = nowIso()
+    // New sites are appended after every existing one so they show up at the
+    // bottom of their management group until the user reorders them.
+    const nextRow = this.db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM sites').get() as Row | undefined
+    const sortOrder = nextRow ? Number(nextRow.next) : 0
     const result = this.db.prepare(`
-      INSERT INTO sites (name, base_url, note, favicon_url, favicon_custom, checkin_mode, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(name, baseUrl, note, faviconUrl, Number(Boolean(faviconUrl)), checkinMode, timestamp, timestamp)
+      INSERT INTO sites (name, base_url, note, favicon_url, favicon_custom, checkin_mode, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(name, baseUrl, note, faviconUrl, Number(Boolean(faviconUrl)), checkinMode, sortOrder, timestamp, timestamp)
     return this.getSite(Number(result.lastInsertRowid))!
+  }
+
+  /**
+   * Persist a manual reordering. `siteIds` is the full desired order for one
+   * management group (公益站 or 中转站); each id receives `sort_order = index`.
+   * Sites from the other group keep their own sort_orders untouched, so the two
+   * groups can be reordered independently (partitionSites preserves each
+   * group's sort_order order regardless of how the two ranges interleave).
+   */
+  reorderSites(siteIds: number[]): void {
+    if (!siteIds.length) return
+    const timestamp = nowIso()
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const update = this.db.prepare('UPDATE sites SET sort_order = ?, updated_at = ? WHERE id = ?')
+      siteIds.forEach((id, index) => update.run(index, timestamp, id))
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   updateSite(id: number, input: { name?: string; baseUrl?: string; note?: string; faviconUrl?: string | null; enabled?: boolean; checkinMode?: CheckinMode }): Site | null {

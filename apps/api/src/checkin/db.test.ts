@@ -271,3 +271,38 @@ describe('check-in site balance updates', () => {
     expect(database.getSite(site.id)).toMatchObject({ lastStatus: 'disabled', lastBalanceAmount: 10 })
   })
 })
+
+describe('check-in site reorder', () => {
+  it('appends new sites after existing ones and persists a manual order', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const a = database.createSite('A', 'https://a.example')
+    const b = database.createSite('B', 'https://b.example')
+    const c = database.createSite('C', 'https://c.example')
+
+    // New sites come back in creation order (sort_order ascending, id ascending
+    // as the tiebreaker while all defaults are 0).
+    expect(database.listSites().map((site) => site.id)).toEqual([a.id, b.id, c.id])
+
+    // Reverse the order of a single group; only those ids are renumbered.
+    database.reorderSites([c.id, a.id, b.id])
+    expect(database.listSites().map((site) => site.id)).toEqual([c.id, a.id, b.id])
+  })
+
+  it('keeps the two management groups independently ordered', () => {
+    const database = new AppDatabase(':memory:')
+    databases.push(database)
+    const w1 = database.createSite('公益1', 'https://w1.example')
+    const w2 = database.createSite('公益2', 'https://w2.example')
+    const r1 = database.createSite('中转1', 'https://r1.example', '', null, 'balance_only')
+    const r2 = database.createSite('中转2', 'https://r2.example', '', null, 'balance_only')
+
+    // Reorder only the welfare group; relay keeps its creation order.
+    database.reorderSites([w2.id, w1.id])
+    const sites = database.listSites()
+    const welfare = sites.filter((site) => site.checkinMode === 'checkin').map((site) => site.id)
+    const relay = sites.filter((site) => site.checkinMode === 'balance_only').map((site) => site.id)
+    expect(welfare).toEqual([w2.id, w1.id])
+    expect(relay).toEqual([r1.id, r2.id])
+  })
+})

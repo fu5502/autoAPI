@@ -1738,3 +1738,18 @@
   background: #3a211f;
 }
 
+/* ---- site list drag-and-drop reorder ---- */
+.checkin-module .site-name-cell { position: relative; padding-left: 28px; }
+.checkin-module .drag-handle {
+  position: absolute; left: 4px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; color: var(--subtle); cursor: grab; touch-action: none;
+  z-index: 1;
+}
+.checkin-module .drag-handle.disabled { cursor: not-allowed; opacity: .3; }
+.checkin-module .drag-handle:active { cursor: grabbing; }
+.checkin-module .management-table tr.row-reorderable { transition: background .12s ease; }
+.checkin-module .management-table tr.row-dragging { opacity: .45; background: var(--surface-soft); }
+.checkin-module .management-table tr.row-drop-before td { box-shadow: inset 0 2px 0 0 var(--blue); }
+.checkin-module .management-table tr.row-drop-after td { box-shadow: inset 0 -2px 0 0 var(--blue); }
+
