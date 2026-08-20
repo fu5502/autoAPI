@@ -135,6 +135,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     router,
     adminAuth,
     gatewayBaseUrl: config.gatewayBaseUrl,
+    publicBaseUrl: config.publicBaseUrl,
     version,
     loginRateLimitMax: config.adminLoginRateLimitMax,
     loginRateLimitWindowMs: config.adminLoginRateLimitWindowMs,

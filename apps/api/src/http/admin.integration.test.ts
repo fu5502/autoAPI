@@ -204,6 +204,60 @@ describe("admin channel management", () => {
     });
   });
 
+  it("resolves gatewayBaseUrl dynamically based on headers or configuration", async () => {
+    const configWithUrl = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-url-test-1",
+      GATEWAY_API_KEY: "gateway-url-test-1",
+      CREDENTIAL_ENCRYPTION_KEY: "url-status-encryption-test",
+      PUBLIC_BASE_URL: "https://external.example.com",
+    });
+    const appWithUrl = await buildApp({ config: configWithUrl, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(appWithUrl.app);
+
+    const responseWithUrl = await appWithUrl.app.inject({
+      method: "GET",
+      url: "/admin/status",
+      headers: { authorization: "Bearer admin-url-test-1" },
+    });
+    expect(responseWithUrl.statusCode).toBe(200);
+    expect(responseWithUrl.json().gatewayBaseUrl).toBe("https://external.example.com/v1");
+
+    const configWithoutUrl = loadConfig({
+      NODE_ENV: "test",
+      APP_MODE: "demo",
+      ADMIN_TOKEN: "admin-url-test-2",
+      GATEWAY_API_KEY: "gateway-url-test-2",
+      CREDENTIAL_ENCRYPTION_KEY: "url-status-encryption-test",
+    });
+    const appWithoutUrl = await buildApp({ config: configWithoutUrl, runtime: new MemoryRuntimeState(), startAgent: false });
+    resources.push(appWithoutUrl.app);
+
+    const responseWithoutUrl = await appWithoutUrl.app.inject({
+      method: "GET",
+      url: "/admin/status",
+      headers: {
+        authorization: "Bearer admin-url-test-2",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "dynamic.example.com",
+      },
+    });
+    expect(responseWithoutUrl.statusCode).toBe(200);
+    expect(responseWithoutUrl.json().gatewayBaseUrl).toBe("https://dynamic.example.com/v1");
+
+    const responseWithReferer = await appWithoutUrl.app.inject({
+      method: "GET",
+      url: "/admin/status",
+      headers: {
+        authorization: "Bearer admin-url-test-2",
+        referer: "https://referer.example.com/admin/dashboard",
+      },
+    });
+    expect(responseWithReferer.statusCode).toBe(200);
+    expect(responseWithReferer.json().gatewayBaseUrl).toBe("https://referer.example.com/v1");
+  });
+
   it("discovers models without creating a channel, then edits, disables, and deletes one", async () => {
     const upstream = await startMockUpstream((app) => {
       app.get("/v1/models", async () => ({ object: "list", data: [{ id: "gpt-admin-test" }] }));
