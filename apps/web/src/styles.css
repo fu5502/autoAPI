@@ -11,13 +11,13 @@
   --line-soft: #e4ebf2;
   --surface: #f7f9fb;
   --canvas: #eef2f7;
-  --canvas-grid: rgba(105, 129, 155, 0.022);
-  --canvas-stripe: rgba(141, 160, 181, 0.012);
+  --canvas-grid: rgba(70, 95, 125, 0.08);
+  --canvas-stripe: rgba(90, 115, 145, 0.04);
   --canvas-background:
     linear-gradient(to right, var(--canvas-grid) 1px, transparent 1px),
     linear-gradient(to bottom, var(--canvas-grid) 1px, transparent 1px),
     repeating-linear-gradient(135deg, transparent 0 6px, var(--canvas-stripe) 6px 7px, transparent 7px 14px);
-  --canvas-background-size: 32px 32px, 32px 32px, 12px 12px;
+  --canvas-background-size: 28px 28px, 28px 28px, 12px 12px;
   --green: #216e5b;
   --green-soft: #e8f3ef;
   --blue: #3267a8;
@@ -33,18 +33,26 @@
 }
 
 /* 浅色模式背景风格选项 */
+:root[data-bg-style="grid"] {
+  --canvas-background:
+    linear-gradient(to right, var(--canvas-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--canvas-grid) 1px, transparent 1px),
+    repeating-linear-gradient(135deg, transparent 0 6px, var(--canvas-stripe) 6px 7px, transparent 7px 14px);
+  --canvas-background-size: 28px 28px, 28px 28px, 12px 12px;
+}
 :root[data-bg-style="plain"] {
   --canvas-background: none;
   --canvas-background-size: auto;
 }
 :root[data-bg-style="dots"] {
-  --canvas-background: radial-gradient(circle, var(--canvas-grid) 1px, transparent 1.5px);
-  --canvas-background-size: 18px 18px;
+  --canvas-background: radial-gradient(circle, rgba(70, 95, 125, 0.16) 1.2px, transparent 1.5px);
+  --canvas-background-size: 20px 20px;
 }
 :root[data-bg-style="gradient"] {
   --canvas-background:
-    radial-gradient(ellipse at 15% 0%, rgba(33, 110, 91, 0.035), transparent 55%),
-    radial-gradient(ellipse at 85% 100%, rgba(50, 103, 168, 0.03), transparent 55%);
+    radial-gradient(ellipse at 10% 0%, rgba(33, 110, 91, 0.12), transparent 60%),
+    radial-gradient(ellipse at 90% 10%, rgba(50, 103, 168, 0.12), transparent 55%),
+    radial-gradient(ellipse at 50% 100%, rgba(166, 106, 19, 0.08), transparent 60%);
   --canvas-background-size: 100% 100%;
 }
 
@@ -5843,19 +5851,19 @@ th:last-child {
 }
 .bg-style-preview.bg-style-grid {
   background-image:
-    linear-gradient(to right, var(--canvas-grid) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--canvas-grid) 1px, transparent 1px);
-  background-size: 8px 8px;
+    linear-gradient(to right, rgba(70, 95, 125, 0.25) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(70, 95, 125, 0.25) 1px, transparent 1px);
+  background-size: 6px 6px;
 }
 .bg-style-preview.bg-style-plain { background-image: none; }
 .bg-style-preview.bg-style-dots {
-  background-image: radial-gradient(circle, var(--canvas-grid) 1px, transparent 1.5px);
-  background-size: 7px 7px;
+  background-image: radial-gradient(circle, rgba(70, 95, 125, 0.35) 1px, transparent 1.2px);
+  background-size: 6px 6px;
 }
 .bg-style-preview.bg-style-gradient {
   background-image:
-    radial-gradient(ellipse at 15% 0%, rgba(33, 110, 91, 0.18), transparent 60%),
-    radial-gradient(ellipse at 85% 100%, rgba(50, 103, 168, 0.15), transparent 60%);
+    radial-gradient(ellipse at 15% 0%, rgba(33, 110, 91, 0.35), transparent 60%),
+    radial-gradient(ellipse at 85% 100%, rgba(50, 103, 168, 0.30), transparent 60%);
 }
 
 /* 侧边栏底部版本号 + GitHub 链接 */
