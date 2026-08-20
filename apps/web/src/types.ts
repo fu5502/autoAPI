@@ -166,6 +166,7 @@ export interface GatewayStatus {
   requests24h: number;
   errorRate24h: number;
   averageLatencyMs24h: number;
+  publicBaseUrl?: string | null;
   gatewayBaseUrl: string;
   version: string;
 }
