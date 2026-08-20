@@ -496,11 +496,16 @@ export default function App() {
       });
   }
 
-  const effectiveGatewayBaseUrl = status.data?.publicBaseUrl
-    ? `${status.data.publicBaseUrl.replace(/\/+$/, "")}/v1`
-    : typeof window !== "undefined" && window.location?.origin
-      ? `${window.location.origin.replace(/\/+$/, "")}/v1`
-      : (status.data?.gatewayBaseUrl ?? "");
+  const effectiveGatewayBaseUrl = (() => {
+    const customUrl = status.data?.publicBaseUrl?.trim();
+    if (customUrl && !/^(?:http:\/\/localhost(?::\d+)?|http:\/\/127\.0\.0\.1(?::\d+)?|http:\/\/(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?)\/?$/i.test(customUrl)) {
+      return `${customUrl.replace(/\/+$/, "")}/v1`;
+    }
+    if (typeof window !== "undefined" && window.location?.origin) {
+      return `${window.location.origin.replace(/\/+$/, "")}/v1`;
+    }
+    return status.data?.gatewayBaseUrl ?? "";
+  })();
 
   async function copyBaseUrl() {
     const value = effectiveGatewayBaseUrl || status.data?.gatewayBaseUrl;
