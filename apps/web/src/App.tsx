@@ -496,8 +496,14 @@ export default function App() {
       });
   }
 
+  const effectiveGatewayBaseUrl = status.data?.publicBaseUrl
+    ? `${status.data.publicBaseUrl.replace(/\/+$/, "")}/v1`
+    : typeof window !== "undefined" && window.location?.origin
+      ? `${window.location.origin.replace(/\/+$/, "")}/v1`
+      : (status.data?.gatewayBaseUrl ?? "");
+
   async function copyBaseUrl() {
-    const value = status.data?.gatewayBaseUrl;
+    const value = effectiveGatewayBaseUrl || status.data?.gatewayBaseUrl;
     if (!value) return;
     try {
       await copyText(value);
@@ -524,8 +530,8 @@ export default function App() {
             <div className="gateway-endpoint">
               <GatewayStatusIndicator status={status.data} isLoading={status.isLoading} error={status.error} />
               <span>网关 Base URL</span>
-              <code className="mono">{status.data?.gatewayBaseUrl ?? "加载中…"}</code>
-              <button className="icon-button" title={baseUrlCopied ? "已复制" : "复制 Base URL"} aria-label={baseUrlCopied ? "已复制" : "复制 Base URL"} onClick={() => void copyBaseUrl()} disabled={!status.data?.gatewayBaseUrl}>{baseUrlCopied ? <Check size={15} /> : <Copy size={15} />}</button>
+              <code className="mono">{effectiveGatewayBaseUrl || (status.isLoading ? "加载中…" : "加载中…")}</code>
+              <button className="icon-button" title={baseUrlCopied ? "已复制" : "复制 Base URL"} aria-label={baseUrlCopied ? "已复制" : "复制 Base URL"} onClick={() => void copyBaseUrl()} disabled={!effectiveGatewayBaseUrl}>{baseUrlCopied ? <Check size={15} /> : <Copy size={15} />}</button>
             </div>
             <button className="icon-button theme-toggle" title={colorTheme === "light" ? "切换至深色模式" : "切换至浅色模式"} aria-label={colorTheme === "light" ? "切换至深色模式" : "切换至浅色模式"} onClick={() => setColorTheme((theme) => theme === "light" ? "dark" : "light")}>{colorTheme === "light" ? <Moon size={16} /> : <Sun size={16} />}</button>
             {colorTheme === "light" ? (

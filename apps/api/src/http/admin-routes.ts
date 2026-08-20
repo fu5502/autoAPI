@@ -203,6 +203,7 @@ export async function registerAdminRoutes(
         requests24h: usage24h.totalRequests,
         errorRate24h: usage24h.errorRate,
         averageLatencyMs24h: usage24h.averageLatencyMs,
+        publicBaseUrl: dependencies.publicBaseUrl ?? null,
         gatewayBaseUrl,
         version: dependencies.version,
       };
