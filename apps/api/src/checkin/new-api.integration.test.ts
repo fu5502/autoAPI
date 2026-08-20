@@ -965,7 +965,7 @@ describe('NewApiService authorization snapshot persistence', () => {
       updatedAt: '2026-08-10T00:00:00.000Z',
     }
 
-    await expect(service.verifySnapshotLogin(site, snapshot)).resolves.toBe(false)
+    await expect(service.verifySnapshotLogin(site, snapshot)).resolves.toEqual(expect.objectContaining({ verified: false }))
   })
 
   it('persists the rotated token and path-scoped cookie into the verified snapshot', async () => {
@@ -1026,7 +1026,7 @@ describe('NewApiService authorization snapshot persistence', () => {
       updatedAt: '2026-08-10T00:00:00.000Z',
     }
 
-    await expect(service.verifySnapshotLogin(site, snapshot)).resolves.toBe(true)
+    await expect(service.verifySnapshotLogin(site, snapshot)).resolves.toEqual(expect.objectContaining({ verified: true }))
     expect(snapshot.localStorageByHost['ooioo.work']).toMatchObject({ auth_token: 'fresh-token' })
     expect(snapshot.cookies).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'session', value: 'new-session' }),

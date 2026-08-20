@@ -1932,7 +1932,7 @@ export class NewApiService {
     })
   }
 
-  async verifySnapshotLogin(site: Site, snapshot: BrowserAuthSnapshot): Promise<boolean> {
+  async verifySnapshotLogin(site: Site, snapshot: BrowserAuthSnapshot): Promise<import("./auth-assistant.js").AuthSnapshotVerifyResult> {
     return this.browser.run({
       interactive: false,
       closeBrowserWhenDone: true,
@@ -1964,9 +1964,9 @@ export class NewApiService {
             sub2Auth = await this.detectSub2ApiAuthentication(page, 30_000, site)
             if (!sub2Auth) await page.waitForTimeout(1_500)
           }
-          if (!sub2Auth) return false
+          if (!sub2Auth) return this.authenticationProbe?.definitiveFailure ? { verified: false, reason: 'failed' } : { verified: false, reason: 'pending', message: '站点登录尚未完成，请完成 Linux DO 回调后再同步' }
           // 必须读取到余额才算登录成功
-          if (numberOrNull(sub2Auth.user.balance) === null) return false
+          if (numberOrNull(sub2Auth.user.balance) === null) return { verified: false, reason: 'pending', message: '已检测到登录，正在等待余额读取成功' }
           // 持久化 access token 到快照
           const items = snapshot.localStorageByHost[host] ??= {}
           items.auth_token = sub2Auth.accessToken
@@ -1979,7 +1979,7 @@ export class NewApiService {
           if (site.adapter !== 'sub2api') {
             this.db.updateSiteAuth(site.id, { adapter: 'sub2api', authStatus: 'valid' })
           }
-          return true
+          return { verified: true }
         }
 
         let auth: RemoteAuth | null = null
@@ -1987,7 +1987,7 @@ export class NewApiService {
           auth = await this.detectAuthentication(page, site.legacyUserId, 30_000)
           if (!auth) await page.waitForTimeout(1_500)
         }
-        if (!auth) return false
+        if (!auth) return this.authenticationProbe?.definitiveFailure ? { verified: false, reason: 'failed' } : { verified: false, reason: 'pending', message: '站点登录尚未完成，请稍后重试' }
 
         // All new-api sites must prove that the imported session can read a
         // real balance before authorization is considered successful.
@@ -1997,7 +1997,7 @@ export class NewApiService {
           if (balanceRead.kind === 'success') {
             auth = balanceRead.read.auth
           } else if (balanceRead.kind === 'auth_failed') {
-            return false
+            return { verified: false, reason: 'failed' }
           } else {
             // 'skip' — checkin is enabled so tryReadNewApiBalanceWithoutPage did not
             // attempt. Verify balance from the user info already obtained via
@@ -2005,7 +2005,7 @@ export class NewApiService {
             if (newApiUserBalance(auth.user) === null) {
               const self = await pageRequest<unknown>(page, '/api/user/self', 'GET', buildAuthHeaders(auth), 30_000)
               const user = self.success ? normalizeNewApiUser(self.data) : null
-              if (!user || newApiUserBalance(user) === null) return false
+              if (!user || newApiUserBalance(user) === null) return { verified: false, reason: 'pending', message: '已检测到登录，正在等待余额读取成功' }
               auth = { ...auth, user }
             }
           }
@@ -2036,13 +2036,10 @@ export class NewApiService {
             // Cookie capture is best-effort; the token was already saved.
           }
         }
-        return Boolean(auth.user && (
-          Number(auth.user.id ?? auth.legacyUserId) > 0
-          || Boolean(auth.user.username)
-          || Boolean(auth.user.display_name)
-        ))
+        const okFinal = Boolean(auth.user && (Number(auth.user.id ?? auth.legacyUserId) > 0 || Boolean(auth.user.username) || Boolean(auth.user.display_name)));
+        return okFinal ? { verified: true } : { verified: false, reason: 'failed' }
       } catch {
-        return false
+        return { verified: false, reason: 'pending', message: '校验暂时不可用，请稍后重试' }
       }
     })
   }

@@ -13,7 +13,11 @@ const MAX_STORAGE_ITEMS = 2_000
 const MAX_STORAGE_VALUE_LENGTH = 256 * 1024
 const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
 
-export type AuthSnapshotVerifier = (snapshot: BrowserAuthSnapshot, site: Site) => Promise<boolean>
+export type AuthSnapshotVerifyResult =
+  | { verified: true }
+  | { verified: false; reason: 'pending'; message?: string }
+  | { verified: false; reason: 'failed'; message?: string }
+export type AuthSnapshotVerifier = (snapshot: BrowserAuthSnapshot, site: Site) => Promise<boolean | AuthSnapshotVerifyResult>
 
 const AUTH_TOKEN_KEYS = new Set([
   'auth_token',
@@ -241,8 +245,15 @@ export class AuthAssistantService {
       if (this.verifyLogin) {
         assertKnownHostAuthState(snapshot, site.baseUrl)
         const verified = await this.verifyLogin(snapshot, site)
-        if (!verified) {
-          throw new Error('\u5df2\u4e0a\u4f20\u767b\u5f55\u72b6\u6001\uff0c\u4f46\u7ad9\u70b9\u5b9e\u9645\u4f1a\u8bdd\u6821\u9a8c\u672a\u901a\u8fc7\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u540e\u91cd\u8bd5')
+        const normalized = normalizeVerifyResult(verified)
+        if (!normalized.verified) {
+          if (normalized.reason === 'pending') {
+            throw Object.assign(
+              new Error(normalized.message ?? '站点登录仍在处理中，请完成 Linux DO 等第三方登录回调后再试'),
+              { code: 'auth_verify_pending' as const },
+            )
+          }
+          throw new Error(normalized.message ?? '\u5df2\u4e0a\u4f20\u767b\u5f55\u72b6\u6001\uff0c\u4f46\u7ad9\u70b9\u5b9e\u9645\u4f1a\u8bdd\u6821\u9a8c\u672a\u901a\u8fc7\uff0c\u8bf7\u91cd\u65b0\u767b\u5f55\u540e\u91cd\u8bd5')
         }
       } else {
         assertAuthenticatedSnapshot(snapshot, site.baseUrl)
@@ -279,6 +290,8 @@ export class AuthAssistantService {
       this.clearPairSecrets(pairing)
       return status
     } catch (error) {
+      const maybePending = error as unknown as { code?: string };
+      if (maybePending?.code === 'auth_verify_pending') throw error;
       const message = error instanceof Error ? error.message : '授权助手上传失败'
       pairing.status = 'failed'
       pairing.message = message
@@ -595,6 +608,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
+const SUB2API_KNOWN_HOSTS = new Set([
+  'token.dialoguedui.com',
+  'www.jiji.cc',
+  'jiji.cc',
+  'fastaitoken.com',
+  'www.fastaitoken.com',
+  'aihub.top',
+  'www.aihub.top',
+  'gateai.cc',
+  'www.gateai.cc',
+  'yiapi.ai',
+  'www.yiapi.ai',
+])
+
 function assertKnownHostAuthState(snapshot: BrowserAuthSnapshot, baseUrl: string): void {
   let host = ''
   try {
@@ -603,8 +630,8 @@ function assertKnownHostAuthState(snapshot: BrowserAuthSnapshot, baseUrl: string
     return
   }
   const storageItems = Object.values(snapshot.localStorageByHost).flatMap((values) => Object.entries(values))
-  if (host === 'token.dialoguedui.com' && !hasSub2ApiAuthStorage(storageItems)) {
-    throw new Error('未检测到 token.dialoguedui.com 的有效登录状态，请完成登录后再同步')
+  if (SUB2API_KNOWN_HOSTS.has(host) && !hasSub2ApiAuthStorage(storageItems)) {
+    throw Object.assign(new Error(`未检测到 ${host} 的有效登录状态，请完成 Linux DO 等第三方登录回调后再同步`), { code: 'auth_verify_pending' as const })
   }
   if ((host === 'chybenzun.top' || host === 'www.chybenzun.top') && !hasNewApiAuthStorage(storageItems)) {
     throw new Error('未检测到 chybenzun.top 的有效登录状态，请完成登录后再同步')
@@ -699,6 +726,11 @@ function meaningfulName(value: unknown): boolean {
   if (typeof value !== 'string' && typeof value !== 'number') return false
   const trimmed = String(value).trim()
   return Boolean(trimmed) && !/^(?:null|undefined|0|-1|guest|anonymous|public)$/i.test(trimmed)
+}
+
+function normalizeVerifyResult(value: boolean | AuthSnapshotVerifyResult): AuthSnapshotVerifyResult {
+  if (typeof value === 'boolean') return value ? { verified: true } : { verified: false, reason: 'failed' }
+  return value
 }
 
 function secureEqual(left: string, right: string): boolean {

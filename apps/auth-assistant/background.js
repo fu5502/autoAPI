@@ -557,8 +557,11 @@ async function uploadClaimedSnapshot({ autoApiOrigin, claim, tabId, current, coo
   })
   const uploaded = await readResponse(uploadResponse)
   if (!uploadResponse.ok) {
+    const maybePending = uploaded?.pending === true || uploaded?.error?.type === 'assistant_verify_pending' || uploadResponse.status === 202;
     const error = new Error(uploaded.error?.message || `上传授权状态失败（HTTP ${uploadResponse.status}）`)
     error.status = uploadResponse.status
+    error.type = uploaded?.error?.type
+    error.pending = maybePending
     throw error
   }
   await chrome.storage.local.set({ [TRUSTED_AUTOAPI_ORIGIN_KEY]: autoApiOrigin })
@@ -679,8 +682,11 @@ function scheduleAutoSyncRetry(pairId, delayMs = 3_000) {
 }
 
 function isTerminalAutoSyncFailure(error) {
+  if (error?.pending) return false;
   const message = error?.message || ''
   const status = Number(error?.status)
+  if (/实际会话校验未通过|站点登录仍在处理中|登录尚.*完成|Linux DO/.test(message)) return false
+  if (error?.type === 'assistant_verify_pending' || status === 202) return false
   return /授权任务|授权码|Token|已结束|过期/.test(message) || [400, 401, 403, 404, 413].includes(status)
 }
 

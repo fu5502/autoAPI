@@ -288,6 +288,11 @@ export async function registerCheckinRoutes(
       const status = await module.authAssistant.acceptUpload({ ...body, uploadToken: headerToken });
       return reply.headers(originHeaders).send({ status });
     } catch (error) {
+      const maybePending = error as unknown as { code?: string };
+      if (maybePending?.code === 'auth_verify_pending') {
+        const message = error instanceof Error ? error.message : '站点登录尚未完成';
+        return reply.code(202).headers(originHeaders).send({ error: { message, type: 'assistant_verify_pending' }, pending: true });
+      }
       const message = error instanceof Error ? error.message : "授权助手上传失败";
       return reply.code(/Token|授权任务|授权码/.test(message) ? 401 : 400).headers(originHeaders).send({ error: { message, type: "assistant_upload_error" } });
     }

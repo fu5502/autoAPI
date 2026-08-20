@@ -13,11 +13,24 @@ const AUTH_TOKEN_KEYS = new Set([
   'sub2api_token',
   'token',
 ])
+const SUB2API_HOSTS = new Set([
+  'token.dialoguedui.com',
+  'www.jiji.cc',
+  'jiji.cc',
+  'fastaitoken.com',
+  'www.fastaitoken.com',
+  'aihub.top',
+  'www.aihub.top',
+  'gateai.cc',
+  'www.gateai.cc',
+  'yiapi.ai',
+  'www.yiapi.ai',
+])
 const NEW_API_UID_KEYS = new Set(['uid', 'user_id', 'userid', 'new-api-user'])
 
 export function hasLikelyAuthState(cookies, storageItems, hostname) {
   const host = normalizeHostname(hostname)
-  if (host === 'token.dialoguedui.com') {
+  if (SUB2API_HOSTS.has(host)) {
     return hasSub2ApiAuthStorage(storageItems)
   }
   if (host === 'chybenzun.top' || host === 'www.chybenzun.top') {
