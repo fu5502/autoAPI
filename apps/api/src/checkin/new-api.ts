@@ -420,7 +420,13 @@ export class NewApiService {
   private async openBalanceDashboard(page: Page, site: Site): Promise<void> {
     const dashboardUrl = getDashboardUrl(site.baseUrl)
     if (!dashboardUrl) return
-    await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
+    try {
+      await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!/ERR_ABORTED|NS_BINDING_ABORTED|aborted/i.test(message)) throw error
+      await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => undefined)
+    }
     await this.openImportedStorage(page, site)
   }
 
@@ -1153,7 +1159,15 @@ export class NewApiService {
           await this.openImportedSitePage(context, page, site)
           if (isFastAiTokenSite(site.baseUrl)) {
             const dashboardUrl = getDashboardUrl(site.baseUrl)
-            if (dashboardUrl) await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
+            if (dashboardUrl) {
+              try {
+                await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' })
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                if (!/ERR_ABORTED|NS_BINDING_ABORTED|aborted/i.test(message)) throw error
+                await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => undefined)
+              }
+            }
           }
         }
         const sub2ApiSite = site.adapter === 'sub2api' || isSub2ApiSite(site.baseUrl)
@@ -3167,7 +3181,9 @@ function isChyTrafficSite(baseUrl: string): boolean {
 }
 
 function isSub2ApiSite(baseUrl: string): boolean {
-  return hasExactHostname(baseUrl, 'token.dialoguedui.com')
+  return hasExactHostname(baseUrl, 'www.jiji.cc')
+    || hasExactHostname(baseUrl, 'jiji.cc')
+    || hasExactHostname(baseUrl, 'token.dialoguedui.com')
     || isFastAiTokenSite(baseUrl)
     || isAihubSite(baseUrl)
     || isGateAiSite(baseUrl)
