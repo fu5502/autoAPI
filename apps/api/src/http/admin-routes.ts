@@ -121,6 +121,7 @@ export async function registerAdminRoutes(
     router: GatewayRouter;
     adminAuth: AdminAuthService;
     gatewayBaseUrl: string;
+    publicBaseUrl?: string | undefined;
     version: string;
     loginRateLimitMax?: number;
     loginRateLimitWindowMs?: number;
@@ -168,13 +169,28 @@ export async function registerAdminRoutes(
       return { ok: true, ...session };
     });
 
-    admin.get("/status", async () => {
+    admin.get("/status", async (request) => {
       const [channels, pools, usage1h, usage24h] = await Promise.all([
         dependencies.store.listChannels(),
         dependencies.store.getPools(),
         dependencies.store.getUsage("1h"),
         dependencies.store.getUsage("24h"),
       ]);
+      const gatewayBaseUrl = dependencies.publicBaseUrl
+        ? `${dependencies.publicBaseUrl.replace(/\/+$/, "")}/v1`
+        : (() => {
+            if (request.headers.referer) {
+              try {
+                const url = new URL(request.headers.referer);
+                if (url.protocol === "http:" || url.protocol === "https:") {
+                  return `${url.origin.replace(/\/+$/, "")}/v1`;
+                }
+              } catch {}
+            }
+            const proto = (request.headers["x-forwarded-proto"] as string) || request.protocol || "http";
+            const host = (request.headers["x-forwarded-host"] as string) || request.host;
+            return `${proto}://${host}/v1`;
+          })();
       return {
         status: "ok",
         channels: channels.length,
@@ -187,7 +203,7 @@ export async function registerAdminRoutes(
         requests24h: usage24h.totalRequests,
         errorRate24h: usage24h.errorRate,
         averageLatencyMs24h: usage24h.averageLatencyMs,
-        gatewayBaseUrl: dependencies.gatewayBaseUrl,
+        gatewayBaseUrl,
         version: dependencies.version,
       };
     });

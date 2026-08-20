@@ -55,6 +55,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     appMode: parsed.APP_MODE,
     dataDir: parsed.DATA_DIR,
     checkinEnableNoVnc: parsed.CHECKIN_ENABLE_NOVNC,
+    publicBaseUrl: parsed.PUBLIC_BASE_URL,
     gatewayBaseUrl: `${(parsed.PUBLIC_BASE_URL ?? `http://localhost:${parsed.PORT}`).replace(/\/+$/, "")}/v1`,
     logRetentionDays: parsed.LOG_RETENTION_DAYS,
     logCleanupIntervalMs: parsed.LOG_CLEANUP_INTERVAL_MS,
