@@ -311,6 +311,10 @@ pnpm.cmd build
 - [客户端接入](docs/clients.md)：Codex、Hermes、Claude Code、CPA/CLIProxyAPI、OpenAI SDK 和 curl 配置。
 - [管理 API](docs/api.md)：网关、后台、签到和本地授权助手接口概览。
 
+## 🌏 社区与友情链接
+
+- [LINUX DO](https://linux.do) —— 真诚、友善、团结、专业。本项目在 [LINUX DO](https://linux.do) 社区发布与交流，欢迎前往讨论反馈。
+
 ---
 
 <div align="center">
