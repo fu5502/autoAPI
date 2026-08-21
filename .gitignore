@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .env
+.env.local
+.env.production
+.env.*.local
 .pnpm-store/
 coverage/
 playwright-report/
@@ -8,8 +11,21 @@ test-results/
 .playwright-cli/
 .codex-ui-smoke/
 *.log
+logs/
 *.tsbuildinfo
 .autoapi-data/
 apps/api/.autoapi-data/
+
+# Build & deploy staging
+.deploy-staging/
+AppData/
+
+# AI assistants local memory & planning
+.workbuddy/
+.zcode/
+.kilo/
+.kilocode/
+
 # Project context (private)
 docs/project-context.md
+

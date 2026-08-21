@@ -74,6 +74,7 @@ jobs:
     name: Build image and deploy
     needs: verify
     runs-on: ubuntu-latest
+    if: ${{ secrets.AUTOAPI_DEPLOY_HOST != '' && secrets.AUTOAPI_DEPLOY_SSH_KEY != '' }}
     env:
       DEPLOY_HOST: ${{ secrets.AUTOAPI_DEPLOY_HOST }}
       DEPLOY_PORT: ${{ secrets.AUTOAPI_DEPLOY_PORT }}
