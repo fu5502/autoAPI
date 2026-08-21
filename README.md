@@ -1,35 +1,94 @@
-# autoAPI
+<div align="center">
 
-autoAPI 是一个自托管的多渠道模型网关。Codex、Claude Code、Hermes、CPA/CLIProxyAPI、OpenAI SDK 等客户端只需要连接一个稳定入口，autoAPI 会在后台多个中转站或 API 渠道之间完成模型路由、健康检查、余额同步和故障切换。
+# 🚀 autoAPI
 
-渠道的 Base URL 和 API Key 只保存在 autoAPI 后台，客户端不需要知道具体中转站信息。渠道密钥使用服务端密钥加密保存，管理页面、请求记录和日志默认脱敏。
+**自托管多渠道模型网关 · 渠道聚合调度 · 公益站自动签到**
 
-## 核心能力
+把散落各处的中转站与 API 渠道聚合成一个稳定入口，
+把每天要手动签到的公益站交给定时任务、本地授权助手和 Telegram 战报。
 
-- **统一兼容入口**：同时提供 OpenAI Chat Completions、OpenAI Responses 和 Claude Messages 协议，并兼容 `/codex/*`、`/openai/*`、`/anthropic/*`、`/claude/*` 等别名路径。
-- **模型池与模型别名**：一个模型别名可以对应多个渠道；客户端只填写模型池别名，不需要知道上游真实模型 ID 和渠道地址。
-- **自动路由与故障切换**：按优先级、权重、健康状态和余额选择渠道；非流式请求遇到连接失败、超时、429、5xx 或余额不足时可自动切换候选渠道。
-- **流式安全边界**：流式请求只在首个上游事件输出前允许切换；已经输出后不会拼接另一个渠道的内容，避免污染上下文。
-- **渠道健康与余额**：支持手动渠道探测、正常调用失败/成功统计、健康隔离与恢复、模型发现、批量余额刷新和余额不足自动规避。
-- **密钥与脱敏**：网关密钥、管理员登录和渠道密钥分别处理；渠道 API Key 不返回给前端，日志自动脱敏。
-- **公益站签到与余额同步**：内置公益站签到、余额刷新、站点模式识别、定时调度、执行进度和终止任务能力。
-- **本地授权助手**：提供 Chrome/Edge Manifest V3 扩展，在用户本地浏览器完成站点登录后同步 Cookie 和 Local Storage，不依赖公网 noVNC。
-- **容器化部署**：Docker Compose 编排 PostgreSQL、Redis 和应用容器，普通升级保留数据库、Redis、SQLite 和浏览器 profile 数据卷。
+![Node.js](https://img.shields.io/badge/node.js-22%2B-339933?logo=nodedotjs&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![Fastify](https://img.shields.io/badge/Fastify-5-000000?logo=fastify&logoColor=white)
+![Playwright](https://img.shields.io/badge/Playwright-Chromium-2EAD33?logo=playwright&logoColor=white)
+![Docker Compose](https://img.shields.io/badge/Docker%20Compose-ready-2496ED?logo=docker&logoColor=white)
+![CI](https://github.com/fu5502/autoAPI/actions/workflows/pr-check.yml/badge.svg)
 
-## 适用场景
+**Codex · Claude Code · Hermes · CLIProxyAPI · OpenAI SDK** —— 只需连接一个入口，
+autoAPI 在后台多个渠道之间完成模型路由、健康检查、余额同步和故障切换。
 
-autoAPI 适合个人或小团队自建模型网关，把多个中转站聚合成一个稳定入口，并通过一个后台统一管理渠道、模型、余额、用量和公益站签到。
+</div>
 
-它不提供多租户、公开注册、转售计费和复杂权限体系；也不会把网页 Cookie、网页登录 Token 或刷新 Token 当作渠道 API Key。渠道导入必须取得明确的官方 API Key。
+---
 
-## 总体架构
+## ✨ 核心特性
 
-系统由四部分组成：
+| | 特性 | 说明 |
+| --- | --- | --- |
+| 🎯 | **统一兼容入口** | 同时提供 OpenAI Chat Completions、OpenAI Responses 和 Claude Messages 协议，兼容 `/codex/*`、`/openai/*`、`/anthropic/*`、`/claude/*` 别名路径 |
+| 🧩 | **模型池与别名** | 一个模型别名对应多个渠道；客户端只填别名，不感知上游真实模型 ID 和渠道地址 |
+| 🔀 | **自动路由与故障切换** | 按优先级、权重、健康状态和余额选路；连接失败、超时、429、5xx、余额不足时自动切换候选渠道 |
+| 🌊 | **流式安全边界** | 只在首个上游事件输出前允许切换，已输出后绝不拼接另一渠道内容，避免污染上下文 |
+| 💓 | **渠道健康与余额** | 手动探测、失败统计、健康隔离与恢复、模型发现、批量余额刷新、余额不足自动规避 |
+| 🐑 | **公益站自动签到** | 定时签到、余额刷新、站点模式识别、失败重试、执行进度与终止任务 |
+| 🧑‍💻 | **本地授权助手** | Chrome/Edge Manifest V3 扩展在本地浏览器完成登录同步 Cookie 与 Local Storage，端到端加密上传，不依赖公网 noVNC |
+| 📮 | **Telegram 战报** | 每日签到结果推送：成功/失败站点、奖励明细、余额快照一目了然 |
+| 🔐 | **密钥与脱敏** | 渠道密钥服务端 AES 加密存储，管理页面与日志默认脱敏，客户端永不接触上游密钥 |
+| 🐳 | **容器化部署** | Docker Compose 编排 PostgreSQL、Redis 与应用容器，升级保留全部数据卷 |
 
-1. **Fastify API**：统一网关、管理 API、签到 API 和静态资源服务。
-2. **React/Vite Web**：管理后台、模型测试、调用请求和公益站签到页面。
-3. **持久化层**：本地开发使用 JSON 控制面，生产使用 PostgreSQL；Redis 保存生产路由运行时状态。
-4. **浏览器层**：签到适配器使用 Playwright Chromium；用户授权优先通过本地 Chrome/Edge 扩展完成。
+## 📸 界面一览
+
+### 🧭 概览 · 模型健康大盘
+
+![概览页](docs/images/overview.png)
+
+> 全量模型健康度可视化：可用渠道数、模型池数量、错误率与平均延迟一屏掌握，按时间窗口和状态灵活过滤。
+
+### 🔀 渠道与模型池
+
+![渠道与模型池](docs/images/channels.png)
+
+> 所有渠道的余额、延迟、健康百分比、协议类型集中管理。支持拖拽排序、批量刷新余额、一键探测、降级/隔离/禁用状态自动流转。
+
+| 渠道健康详情 | 中转站余额监控 |
+| :---: | :---: |
+| ![渠道详情](docs/images/pool-detail.png) | ![中转站](docs/images/relays.png) |
+| 展开模型池查看每条候选渠道的实时状态与端点 PING | 中转站登录态与余额自动刷新，可一键导入为网关渠道 |
+
+### 🐑 公益站自动签到
+
+![公益站签到](docs/images/checkin.png)
+
+> 今日签到进度、总资产折算、今日收获、下次执行时间尽在顶部仪表盘；
+> 每个站点独立开关自动签到，支持 New API / Sub2API / CHY 等多种站点类型。
+
+### 🧪 模型测试 Playground
+
+![模型测试](docs/images/playground.png)
+
+> 内置对话测试台：选择路由与模型直接对话，测试记录持久保存，结果计入用量统计。
+
+### 🔑 本地授权助手
+
+![授权助手](docs/images/auth-assistant.png)
+
+> 三步完成站点授权：后台发起授权 → 扩展自动打开登录页 → 登录后自动同步。
+> 授权码与临时密钥仅本次配对有效，服务端不保存明文 Cookie。
+
+### 📮 Telegram 每日战报
+
+![Telegram 战报](docs/images/telegram-report.png)
+
+> 每天签到完成后自动推送到 Telegram：运行概览、奖励汇总、成功/失败站点清单与失败原因全记录。
+
+### ⚙️ 控制面板
+
+![控制面板](docs/images/settings.png)
+
+> 签到执行窗口、失败重试策略、超时阈值、浏览器通知、历史保留天数与 Telegram 渠道，全部可视化配置。
+
+## 🏗️ 总体架构
 
 ```mermaid
 flowchart LR
@@ -41,22 +100,17 @@ flowchart LR
   Admin["管理后台"] --> Gateway
   Checkin["签到 / 余额同步"] --> Gateway
   Assistant["本地 Chrome/Edge 授权助手"] --> Checkin
+  Checkin --> TG["Telegram 战报"]
 ```
 
-## 项目结构
+系统由四部分组成：
 
-```text
-apps/
-  api/               Fastify API：网关、管理后台、存储、签到、浏览器管理
-  web/               React/Vite 管理后台
-  auth-assistant/    Chrome/Edge Manifest V3 本地授权助手
-docker/              容器启动、Xvfb、Chromium 和可选 noVNC 脚本
-docs/
-  clients.md         客户端接入示例
-  api.md             管理 API 与签到 API 概览
-```
+1. **Fastify API** —— 统一网关、管理 API、签到 API 和静态资源服务。
+2. **React/Vite Web** —— 管理后台、模型测试、请求日志和公益站签到页面。
+3. **持久化层** —— 本地开发使用 JSON 控制面，生产使用 PostgreSQL；Redis 保存生产路由运行时状态。
+4. **浏览器层** —— 签到适配器使用 Playwright Chromium；用户授权优先通过本地 Chrome/Edge 扩展完成。
 
-## 快速开始
+## 🚀 快速开始
 
 ### 本地开发模式
 
@@ -103,7 +157,7 @@ Compose 会启动 PostgreSQL、Redis 和应用容器。应用容器等待 Postgr
 
 也可以直接运行 `start-autoapi.ps1`。它提供开发模式、Docker 正式模式、完整检查、运行诊断、配置备份、签到数据迁移和备份、授权助手目录等菜单。
 
-## 客户端接入
+## 🔌 客户端接入
 
 客户端只配置 autoAPI 地址、网关 Key 和模型池别名，不直接配置渠道地址或渠道 API Key。
 
@@ -190,7 +244,7 @@ curl.exe http://localhost:8080/v1/chat/completions `
 
 网关认证同时支持 `Authorization: Bearer <key>`、`x-api-key: <key>` 和 `api-key: <key>`。
 
-## 核心配置
+## ⚙️ 核心配置
 
 主要环境变量：
 
@@ -216,23 +270,7 @@ curl.exe http://localhost:8080/v1/chat/completions `
 
 生产启动会拒绝 `change-me-*`、默认管理员密码和不安全数据库密码。`CREDENTIAL_ENCRYPTION_KEY` 一旦用于生产数据，后续升级必须保持不变，否则旧渠道密钥和授权快照无法解密。
 
-## 管理 API
-
-管理后台使用管理员登录会话，旧版脚本仍兼容 `Authorization: Bearer <ADMIN_TOKEN>` 或 `X-Admin-Token`。常用接口：
-
-| 分类 | 接口 |
-| --- | --- |
-| 登录 | `POST /admin/auth/login`、`GET /admin/auth/me` |
-| 状态 | `GET /admin/status` |
-| 渠道 | `GET /admin/channels`、`POST /admin/providers/import`、`PUT/DELETE /admin/channels/:id`、`POST /admin/channels/:id/probe` |
-| 模型池 | `GET /admin/pools`、`POST /admin/model-aliases` |
-| 用量 | `GET /admin/usage`、`GET /admin/requests`、`GET /admin/balances` |
-| 签到 | `/admin/checkin/*`：站点、授权、执行、结果、设置和导出 |
-| 本地授权助手 | `/auth-assistant/claim`、`/preview`、`/upload`、`/fail` |
-
-更完整的接口说明见 [管理 API](docs/api.md)。
-
-## 公益站签到与本地授权
+## 🤖 公益站签到与本地授权
 
 公益站签到模块支持添加、批量添加、编辑、删除、启用/禁用、授权、签到、余额刷新、站点渠道关联和渠道导入。
 
@@ -245,7 +283,7 @@ curl.exe http://localhost:8080/v1/chat/completions `
 
 授权任务只能使用一次，约 10 分钟过期。服务端不会把 Cookie、网页登录 Token 或刷新 Token 当作渠道 API Key。
 
-## 安全与数据边界
+## 🔒 安全与数据边界
 
 - 渠道 API Key 使用服务端密钥加密保存，管理页面和日志默认脱敏。
 - 网关请求日志不输出上游 API Key，网关密钥也不会被当作上游密钥转发。
@@ -254,7 +292,7 @@ curl.exe http://localhost:8080/v1/chat/completions `
 - Docker 数据卷 `autoapi-postgres`、`autoapi-redis`、`autoapi-checkin` 分别持久化 PostgreSQL、Redis、签到 SQLite 和浏览器 profile。
 - 普通升级禁止执行 `docker compose down -v`，也不允许删除 SQLite 或浏览器 profile 来修复运行问题。
 
-## 开发与验证
+## 🛠️ 开发与验证
 
 提交前至少运行：
 
@@ -268,14 +306,15 @@ pnpm.cmd build
 
 推送 `main` 后由 GitHub Actions 执行验证和构建；PR 变更只验证、不直接部署到生产。
 
-## 文档
+## 📚 文档
 
 - [客户端接入](docs/clients.md)：Codex、Hermes、Claude Code、CPA/CLIProxyAPI、OpenAI SDK 和 curl 配置。
 - [管理 API](docs/api.md)：网关、后台、签到和本地授权助手接口概览。
 
-## 最近更新
+---
 
-- 2026-08-09: Claude 渠道支持 OpenAI Chat Completions 协议，前端已隔离渠道可选择启用。
-- 2026-08-09: 渠道池状态操作菜单、Base URL 超链接、请求渠道名称链接和模型列表交互完善。
-- 2026-08-09: 部署流程优化，自动打 `latest` 标签并清理旧镜像。
-- 2026-08-09: 新增 PR check workflow，PR 只验证不部署。
+<div align="center">
+
+如果 autoAPI 对你有帮助，欢迎点一个 ⭐ Star 支持开发！
+
+</div>
