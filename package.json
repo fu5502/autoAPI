@@ -1,6 +1,7 @@
 {
   "name": "autoapi",
   "version": "0.2.49",
+  "license": "MIT",
   "private": true,
   "packageManager": "pnpm@10.14.0",
   "scripts": {
